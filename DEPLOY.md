@@ -156,7 +156,27 @@ getent passwd quizzy     # verify: low UID, shell /usr/sbin/nologin
 
 ```bash
 sudo git clone https://github.com/Delors/quiz.git /srv/quizzy
+
+# Step 7 hands the tree to the `quizzy` service user, but you keep operating on it
+# as root via sudo. Git refuses to touch a repository owned by someone else
+# ("detected dubious ownership"), so record the exception once, for root:
+sudo git config --global --add safe.directory /srv/quizzy
 ```
+
+> Without that last line, every later `sudo git pull` fails with
+> `fatal: detected dubious ownership in repository at '/srv/quizzy'`.
+>
+> **The `sudo` is not optional, on either command.** Run `git config` without it and
+> the exception goes into `/home/<you>/.gitconfig`, which fixes the ownership
+> complaint for the wrong account; the next unprivileged `git pull` then fails one
+> step later with `error: cannot open '.git/FETCH_HEAD': Permission denied`, because
+> your login user can read the `quizzy`-owned tree but not write to it. Configure it
+> for root, and pull as root:
+>
+> ```bash
+> sudo git config --global --get-all safe.directory   # expect /srv/quizzy
+> sudo git pull
+> ```
 
 Directory layout after checkout:
 
@@ -197,6 +217,37 @@ sudo pnpm build            # writes dist/
 
 `esbuild` is a dev dependency and is required for the build, so do **not** install with
 `--prod` unless you build elsewhere and copy `dist/` over.
+
+**About dependency build scripts.** pnpm 10+ refuses to run the lifecycle scripts of
+dependencies unless each one has an explicit decision recorded, and an *undecided*
+package makes `pnpm install` exit **1**. That matters more than it sounds: `pnpm
+build` runs a dependency-status check before your script, so a stray
+`ERR_PNPM_IGNORED_BUILDS` aborts the build with a `runDepsStatusCheck` stack trace
+rather than a useful message.
+
+The decision is committed in `pnpm-workspace.yaml`, so a clean checkout needs no
+interaction:
+
+```yaml
+allowBuilds:
+  esbuild: true
+```
+
+If pnpm has written a placeholder (`esbuild: set this to true or false`) into that
+file on this host, discard the local edit and take the committed version:
+`sudo git checkout pnpm-workspace.yaml`.
+
+`playwright` also appears in the tree — it is a dev dependency of the browser test
+suite, and this step cannot use `--prod` because the build needs `esbuild`. It is
+deliberately **not** listed in `allowBuilds`, so its postinstall never runs and **no
+browser binaries are downloaded**; the install stays around 40 MB.
+
+If `--frozen-lockfile` fails with `ERR_PNPM_OUTDATED_LOCKFILE`, the checkout has a
+`pnpm-lock.yaml` older than its `package.json` — someone changed a dependency
+without regenerating the lockfile. Fix it **at the source** (`pnpm install` locally,
+then commit `pnpm-lock.yaml`) rather than reaching for `--no-frozen-lockfile` here:
+the whole point of the frozen install is that the host gets the exact tree that was
+tested.
 
 Then hand the whole tree to the service user (default read permissions let the
 `caddy` user serve the static files):
@@ -434,6 +485,11 @@ rather than a restart.
 | `quizzy-backend` fails with `status=1`, ~150 ms | Script crashed on startup | `journalctl -u quizzy-backend -n 60`; usually wrong `WorkingDirectory`, missing deps, or `EADDRINUSE` |
 | `EADDRINUSE :::3000` | A stray hand-started `node` still holds the port | `sudo ss -ltnp \| grep :3000`; stop the old process / any pm2 daemon |
 | `Start request repeated too quickly` | Restart limiter tripped after repeated failures | `sudo systemctl reset-failed quizzy-backend` before restarting |
+| `git pull` → `detected dubious ownership in repository` | The tree is owned by `quizzy`, but you are pulling as root | `sudo git config --global --add safe.directory /srv/quizzy` (step 6) |
+| `git pull` → `cannot open '.git/FETCH_HEAD': Permission denied` | `safe.directory` was set for your login user instead of root, so the pull is running unprivileged against a `quizzy`-owned tree | Re-run both with `sudo`: `sudo git config --global --add safe.directory /srv/quizzy`, then `sudo git pull` |
+| Backend fails to start right after an update | `sudo git pull` / `sudo pnpm build` left root-owned files behind | `sudo chown -R quizzy:quizzy /srv/quizzy` |
+| `pnpm install` → `ERR_PNPM_OUTDATED_LOCKFILE` | `pnpm-lock.yaml` in the checkout predates a `package.json` change | Regenerate and commit the lockfile on the development machine, push, pull here. Do not paper over it with `--no-frozen-lockfile` |
+| `pnpm build` → `ERR_PNPM_IGNORED_BUILDS: esbuild`, then a `runDepsStatusCheck` stack trace | pnpm 10+ exits 1 for any dependency whose build script has no recorded decision, and `pnpm build` checks dependency status before running | `pnpm-workspace.yaml` must contain `allowBuilds:` / `  esbuild: true` (it is committed). If pnpm wrote a `set this to true or false` placeholder here, `sudo git checkout pnpm-workspace.yaml` |
 
 ---
 
@@ -444,7 +500,8 @@ rather than a restart.
   restarting" behaviour.
 - **Secrets** (TSIG key, any future API tokens) belong in root-owned `0640` env files
   referenced from the units, never in the Caddyfile or the git repo.
-- **Updating the app:** `cd /srv/quizzy && sudo git pull`, then
+- **Updating the app:** `cd /srv/quizzy && sudo git pull` (needs the
+  `safe.directory` exception from step 6), then
   `sudo pnpm install --frozen-lockfile && sudo pnpm build` (always — `dist/` is not in
   git), `sudo chown -R quizzy:quizzy /srv/quizzy`, then
   `sudo systemctl restart quizzy-backend` and `sudo systemctl reload caddy`.

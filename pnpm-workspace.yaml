@@ -1,2 +1,13 @@
 packages:
   - "packages/*"
+
+# pnpm 10+ blocks dependency lifecycle scripts by default, and an unresolved
+# decision makes `pnpm install` exit 1 -- which in turn aborts `pnpm build`,
+# because it runs a dependency-status check first.
+#
+# esbuild is allowed: the build executes its binary anyway, so refusing its own
+# install script buys nothing. Everything else stays blocked -- notably
+# playwright, whose postinstall would otherwise fetch several hundred megabytes
+# of browser binaries onto a production host that will never run browser tests.
+allowBuilds:
+  esbuild: true

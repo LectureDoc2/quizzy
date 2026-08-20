@@ -3,6 +3,7 @@ class QuizClient {
     this.ws = null;
     this.roomId = null;
     this.participantId = null;
+    this.quizTitle = null;
     this.state = 'join'; // join, question, results, ended
   }
 
@@ -36,54 +37,48 @@ class QuizClient {
   init() {
     const urlParams = new URLSearchParams(window.location.search);
     this.roomId = urlParams.get('room');
-    
+
     if (!this.roomId) {
       this.showError('No room ID provided');
       return;
     }
 
     document.getElementById('room-id').textContent = this.roomId;
-    this.renderJoinForm();
+    this.renderConnecting();
+    // One socket for the whole visit: the room's state is fetched over it
+    // before the name is asked for, and the join then reuses it.
+    this.connect();
   }
 
-  renderJoinForm() {
+  /**
+   * Set the page heading and the browser tab title together.
+   *
+   * The heading is outside #content, so none of the render* methods touch it;
+   * it therefore has to be updated explicitly at each state change. Missing
+   * that is what left "Join Quiz" above a question the student was answering.
+   */
+  setHeading(text) {
+    const heading = document.getElementById('page-title');
+    if (heading) heading.textContent = text;
+    document.title = text;
+  }
+
+  renderConnecting() {
     const content = document.getElementById('content');
     content.innerHTML = `
-      <form id="join-form">
-        <input type="text" id="name" class="input" placeholder="Enter your name" maxlength="50" required>
-        <button type="submit" class="btn btn--primary btn--full">Join Quiz</button>
-        <div id="name-error" class="error-text" style="display:none;margin-top:0.5rem;color:var(--error-color)"></div>
-      </form>
+      <div class="waiting">
+        <div class="spinner"></div>
+        <p>Checking the quiz...</p>
+      </div>
     `;
-
-    document.getElementById('join-form').addEventListener('submit', (e) => {
-      e.preventDefault();
-      const nameInput = document.getElementById('name');
-      const name = nameInput.value.trim();
-      const errorEl = document.getElementById('name-error');
-      
-      const validation = QuizClient.validateName(name);
-      if (!validation.valid) {
-        errorEl.textContent = validation.error;
-        errorEl.style.display = 'block';
-        return;
-      }
-      
-      errorEl.style.display = 'none';
-      this.connect(validation.name);
-    });
   }
 
-  connect(name) {
+  connect() {
     const wsUrl = window.location.origin.replace(/^http/, 'ws');
     this.ws = new WebSocket(`${wsUrl}/ws`);
 
     this.ws.onopen = () => {
-      this.ws.send(JSON.stringify({
-        type: 'join_room',
-        roomId: this.roomId,
-        name: name
-      }));
+      this.ws.send(JSON.stringify({ type: 'room_status', roomId: this.roomId }));
     };
 
     this.ws.onmessage = (event) => {
@@ -102,11 +97,97 @@ class QuizClient {
     };
   }
 
+  /**
+   * Render the join form, adapted to what the room is currently doing.
+   *
+   * The page used to offer a bare "Join Quiz" whatever the state, so a student
+   * arriving late had no idea the quiz was already running -- nor how much of
+   * it they had missed.
+   *
+   * @param {object|null} status The room_status payload, or null in the lobby.
+   */
+  renderJoinForm(status = null) {
+    this.state = 'join';
+    if (status && status.quizTitle) this.quizTitle = status.quizTitle;
+    const content = document.getElementById('content');
+    const inProgress = status && status.state !== 'lobby';
+    const missed = inProgress ? Math.max(0, status.currentQuestionIndex) : 0;
+
+    content.innerHTML = `
+      <div id="room-state" class="room-state"></div>
+      <form id="join-form">
+        <input type="text" id="name" class="input" placeholder="Enter your name" maxlength="50" required>
+        <button type="submit" class="btn btn--primary btn--full" id="join-btn"></button>
+        <div id="name-error" class="error-text" style="display:none;margin-top:0.5rem;color:var(--error-color)"></div>
+      </form>
+    `;
+
+    // Built with textContent: the quiz title is written by the lecturer and is
+    // not put through the HTML sanitizer, so it must not be parsed as markup.
+    const stateEl = document.getElementById('room-state');
+    if (status && status.quizTitle) {
+      const title = document.createElement('div');
+      title.className = 'room-state__title';
+      title.textContent = status.quizTitle;
+      stateEl.append(title);
+    }
+
+    this.setHeading(inProgress ? 'Quiz in progress' : 'Join Quiz');
+
+    const detail = document.createElement('div');
+    detail.className = inProgress ? 'room-state__detail room-state__detail--live' : 'room-state__detail';
+    if (inProgress) {
+      detail.textContent =
+        `Question ${Math.min(status.currentQuestionIndex + 1, status.totalQuestions)} of ${status.totalQuestions}` +
+        (missed > 0
+          ? ` \u2014 you have missed ${missed} question${missed === 1 ? '' : 's'} and cannot score on those.`
+          : '.');
+    } else {
+      detail.textContent = 'Waiting for the quiz to start.';
+    }
+    if (status) stateEl.append(detail);
+
+    document.getElementById('join-btn').textContent = inProgress ? 'Join now' : 'Join Quiz';
+
+    document.getElementById('join-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const nameInput = document.getElementById('name');
+      const name = nameInput.value.trim();
+      const errorEl = document.getElementById('name-error');
+
+      const validation = QuizClient.validateName(name);
+      if (!validation.valid) {
+        errorEl.textContent = validation.error;
+        errorEl.style.display = 'block';
+        return;
+      }
+
+      errorEl.style.display = 'none';
+      this.join(validation.name);
+    });
+  }
+
+  join(name) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.showError('Connection lost. Please refresh the page.');
+      return;
+    }
+    this.ws.send(JSON.stringify({
+      type: 'join_room',
+      roomId: this.roomId,
+      name: name
+    }));
+  }
+
   handleMessage(msg) {
     switch (msg.type) {
       case 'joined':
         this.participantId = msg.participantId;
         this.state = 'joined';
+        if (msg.quizTitle) this.quizTitle = msg.quizTitle;
+        // Past the join screen the heading has no business still reading
+        // "Join Quiz" -- from here on it names the quiz being played.
+        this.setHeading(this.quizTitle || 'Quiz');
         this.renderWaiting();
         break;
 
@@ -136,7 +217,21 @@ class QuizClient {
         this.showError('You have been removed from the quiz');
         break;
 
+      case 'room_status':
+        this.renderJoinForm(msg);
+        break;
+
       case 'error':
+        // Before joining, an error belongs next to the form -- the student can
+        // fix a mistyped name and try again without reloading.
+        if (this.state === 'join') {
+          const errorEl = document.getElementById('name-error');
+          if (errorEl) {
+            errorEl.textContent = msg.message;
+            errorEl.style.display = 'block';
+            break;
+          }
+        }
         this.showError(msg.message);
         break;
     }

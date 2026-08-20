@@ -1,5 +1,5 @@
 {
-  "_comment": "This list contains names of individuals convicted for crimes against humanity. Entries are case-insensitive. Only exact full-name matches are blocked. This list is created by Kimi K2.6",
+  "_comment": "This list contains names of individuals convicted for crimes against humanity. Entries are case-insensitive. Only exact full-name matches are blocked. This list is originally created by Kimi K2.6",
   "blacklist": [
     "adolf hitler",
     "hitler",
@@ -8,6 +8,7 @@
     "joseph goebbels",
     "goebbels",
     "hermann goering",
-    "rudolf hess"
+    "rudolf hess",
+    "benito mussolini"
   ]
 }

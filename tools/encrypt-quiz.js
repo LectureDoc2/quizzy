@@ -2,7 +2,13 @@ import { readFileSync, writeFileSync } from 'fs';
 import { createInterface } from 'readline';
 import { encryptAESGCMPBKDF } from '@lecturedoc2/libcrypto';
 
-const ITERATIONS = 100000;
+// OWASP's current floor for PBKDF2-HMAC-SHA256. This matters more than it
+// looks: the encrypted quiz ships inside the slide deck, so every participant
+// holds the ciphertext and can attack the password offline at their leisure --
+// and the password protects the "secret" that keeps the presenter token
+// underivable. Raising this is backwards compatible, because the iteration
+// count is stored in the encrypted blob and read back at decryption time.
+const ITERATIONS = 600000;
 
 async function main() {
   const args = process.argv.slice(2);

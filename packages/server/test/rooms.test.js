@@ -1,6 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { Room, RoomManager } from '../src/rooms.js';
+import {
+  Room,
+  RoomManager,
+  EMPTY_ROOM_TTL_MS,
+  ENDED_ROOM_TTL_MS,
+  ABSOLUTE_ROOM_TTL_MS,
+  MAX_ROOMS
+} from '../src/rooms.js';
 
 describe('Room', () => {
   it('addParticipant returns a participant with an ID', () => {
@@ -350,39 +357,99 @@ describe('Room', () => {
 });
 
 describe('RoomManager', () => {
-  it('createRoom generates a unique room ID', () => {
+  it('openRoom generates a unique room ID for different presenters', () => {
     const manager = new RoomManager();
-    const room1 = manager.createRoom('token1', { title: 'Q1', questions: [] });
-    const room2 = manager.createRoom('token1', { title: 'Q2', questions: [] });
+    const { room: room1 } = manager.openRoom('token1', { title: 'Q1', questions: [] });
+    const { room: room2 } = manager.openRoom('token2', { title: 'Q2', questions: [] });
     assert.notStrictEqual(room1.roomId, room2.roomId);
     assert.ok(room1.roomId);
     assert.ok(room2.roomId);
   });
 
+  it('openRoom resumes the same room for the same presenter', () => {
+    // This is what makes a dropped WebSocket survivable: the presenter page
+    // re-sends create_room on reconnect, and must not strand participants by
+    // minting a new room code.
+    const manager = new RoomManager();
+    const first = manager.openRoom('token1', { title: 'Q1', questions: [] });
+    const second = manager.openRoom('token1', { title: 'Q1', questions: [] });
+    assert.strictEqual(first.resumed, false);
+    assert.strictEqual(second.resumed, true);
+    assert.strictEqual(second.room, first.room);
+    assert.strictEqual(manager.rooms.size, 1);
+  });
+
+  it('a resumed room keeps its participants and scores', () => {
+    const manager = new RoomManager();
+    const { room } = manager.openRoom('token1', { title: 'Q1', questions: [] });
+    const p = room.addParticipant({ readyState: 1 }, 'Alice');
+    p.score = 250;
+    const { room: resumed } = manager.openRoom('token1', { title: 'Q1', questions: [] });
+    assert.strictEqual(resumed.roomId, room.roomId);
+    assert.strictEqual(resumed.getParticipantCount(), 1);
+    assert.strictEqual(resumed.getLeaderboard()[0].score, 250);
+  });
+
+  it('openRoom starts a fresh room once the previous one has ended', () => {
+    const manager = new RoomManager();
+    const first = manager.openRoom('token1', { title: 'Q1', questions: [] });
+    first.room.state = 'ended';
+    const second = manager.openRoom('token1', { title: 'Q1', questions: [] });
+    assert.strictEqual(second.resumed, false);
+    assert.notStrictEqual(second.room.roomId, first.room.roomId);
+  });
+
+  it('generateRoomId never returns an id that is in use', () => {
+    const manager = new RoomManager();
+    // Occupy a large slice of the space, then verify the next 200 ids are free.
+    for (let i = 0; i < 300; i++) {
+      manager.openRoom(`token${i}`, { title: 'Q', questions: [] });
+    }
+    const seen = new Set(manager.rooms.keys());
+    assert.strictEqual(seen.size, 300);
+    for (let i = 0; i < 200; i++) {
+      const id = manager.generateRoomId();
+      assert.ok(!manager.rooms.has(id));
+    }
+  });
+
+  it('room ids avoid characters that are misread on a projector', () => {
+    const manager = new RoomManager();
+    for (let i = 0; i < 200; i++) {
+      assert.match(manager.generateRoomId(), /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/);
+    }
+  });
+
+  it('openRoom refuses to exceed the global room cap', () => {
+    const manager = new RoomManager();
+    for (let i = 0; i < MAX_ROOMS; i++) {
+      manager.openRoom(`token${i}`, { title: 'Q', questions: [] });
+    }
+    assert.throws(() => manager.openRoom('one-too-many', { title: 'Q', questions: [] }));
+  });
+
   it('getRoom returns the correct room', () => {
     const manager = new RoomManager();
-    const room = manager.createRoom('token1', { title: 'Q1', questions: [] });
+    const { room } = manager.openRoom('token1', { title: 'Q1', questions: [] });
     assert.strictEqual(manager.getRoom(room.roomId), room);
     assert.strictEqual(manager.getRoom('nonexistent'), undefined);
   });
 
-  it('getPresenterRooms returns only that presenter rooms', () => {
+  it('removeRoom cleans up both maps and fires the hook', () => {
     const manager = new RoomManager();
-    manager.createRoom('token1', { title: 'Q1', questions: [] });
-    manager.createRoom('token1', { title: 'Q2', questions: [] });
-    manager.createRoom('token2', { title: 'Q3', questions: [] });
-    const rooms = manager.getPresenterRooms('token1');
-    assert.strictEqual(rooms.length, 2);
-    assert.strictEqual(rooms[0].title, 'Q1');
-    assert.strictEqual(rooms[1].title, 'Q2');
-  });
-
-  it('removeRoom cleans up both maps', () => {
-    const manager = new RoomManager();
-    const room = manager.createRoom('token1', { title: 'Q1', questions: [] });
+    const removedRooms = [];
+    manager.onRoomRemoved = (r) => removedRooms.push(r.roomId);
+    const { room } = manager.openRoom('token1', { title: 'Q1', questions: [] });
     manager.removeRoom(room.roomId);
     assert.strictEqual(manager.getRoom(room.roomId), undefined);
-    assert.strictEqual(manager.getPresenterRooms('token1').length, 0);
+    assert.deepStrictEqual(removedRooms, [room.roomId]);
+    // The presenter can now open a genuinely new room.
+    assert.strictEqual(manager.openRoom('token1', { title: 'Q1', questions: [] }).resumed, false);
+  });
+
+  it('there is no way to enumerate rooms by presenter token', () => {
+    const manager = new RoomManager();
+    assert.strictEqual(typeof manager.getPresenterRooms, 'undefined');
   });
 
   it('hashPassword is deterministic', () => {
@@ -393,5 +460,269 @@ describe('RoomManager', () => {
     assert.strictEqual(h1, h2);
     assert.notStrictEqual(h1, h3);
     assert.strictEqual(h1.length, 64); // SHA-256 hex
+  });
+});
+
+describe('Room expiry', () => {
+  function roomWith(state) {
+    const manager = new RoomManager();
+    const { room } = manager.openRoom('t', { title: 'Q', questions: [] });
+    room.state = state;
+    return { manager, room };
+  }
+
+  it('a room with connections never expires on the idle timers', () => {
+    const { room } = roomWith('lobby');
+    room.addParticipant({ readyState: 1 }, 'Alice');
+    assert.strictEqual(room.emptySince, null);
+    // Stay inside the absolute cap; that backstop is asserted separately.
+    assert.strictEqual(room.isExpired(Date.now() + EMPTY_ROOM_TTL_MS * 5), false);
+  });
+
+  it('the empty clock starts when the last connection leaves and stops when one returns', () => {
+    const { room } = roomWith('lobby');
+    const ws = { readyState: 1 };
+    room.addParticipant(ws, 'Alice');
+    assert.strictEqual(room.emptySince, null);
+    room.removeParticipant(ws);
+    assert.ok(room.emptySince !== null);
+    room.addPresenter({ readyState: 1 });
+    assert.strictEqual(room.emptySince, null);
+  });
+
+  it('a running but empty room expires after the empty TTL', () => {
+    const { room } = roomWith('lobby');
+    const now = Date.now();
+    room.emptySince = now;
+    assert.strictEqual(room.isExpired(now + EMPTY_ROOM_TTL_MS - 1000), false);
+    assert.strictEqual(room.isExpired(now + EMPTY_ROOM_TTL_MS), true);
+  });
+
+  it('an ended room uses the shorter ended TTL', () => {
+    const { room } = roomWith('ended');
+    const now = Date.now();
+    room.emptySince = now;
+    assert.strictEqual(room.isExpired(now + ENDED_ROOM_TTL_MS - 1000), false);
+    assert.strictEqual(room.isExpired(now + ENDED_ROOM_TTL_MS), true);
+  });
+
+  it('the absolute TTL applies even to a room that is still in use', () => {
+    const { room } = roomWith('question');
+    room.addParticipant({ readyState: 1 }, 'Alice');
+    assert.strictEqual(room.isExpired(room.createdAt + ABSOLUTE_ROOM_TTL_MS), true);
+  });
+
+  it('sweep removes exactly the expired rooms and frees the presenter token', () => {
+    const manager = new RoomManager();
+    const { room: stale } = manager.openRoom('stale', { title: 'Q', questions: [] });
+    const { room: live } = manager.openRoom('live', { title: 'Q', questions: [] });
+    live.addParticipant({ readyState: 1 }, 'Alice');
+
+    const later = Date.now() + EMPTY_ROOM_TTL_MS + 1000;
+    const removed = manager.sweep(later);
+    assert.deepStrictEqual(removed, [stale.roomId]);
+    assert.strictEqual(manager.getRoom(live.roomId), live);
+    assert.strictEqual(manager.openRoom('stale', { title: 'Q', questions: [] }).resumed, false);
+  });
+
+  it('sweep clears a swept room\'s question timer', () => {
+    const manager = new RoomManager();
+    const quiz = { title: 'Q', questions: [{ type: 'estimation', text: 'x', correctAnswer: 1, timeLimit: 3600 }] };
+    const { room } = manager.openRoom('t', quiz);
+    room.onAutoEnd = () => {};
+    room.startGame();
+    assert.ok(room.questionTimer);
+    manager.sweep(Date.now() + ABSOLUTE_ROOM_TTL_MS);
+    assert.strictEqual(room.questionTimer, null);
+  });
+});
+
+describe('Room.validateAnswer (untrusted participant input)', () => {
+  function estimationRoom() {
+    const quiz = { title: 'Test', questions: [{ type: 'estimation', text: 'Estimate', correctAnswer: 100 }] };
+    const room = new Room('ABC123', 'token', quiz);
+    room.addParticipant({ readyState: 1 }, 'Alice');
+    room.startGame();
+    return room;
+  }
+
+  function choiceRoom() {
+    const quiz = { title: 'Test', questions: [{ type: 'multiple-choice', text: 'Q1', options: ['A', 'B', 'C'], correctIndices: [0] }] };
+    const room = new Room('ABC123', 'token', quiz);
+    room.addParticipant({ readyState: 1 }, 'Alice');
+    room.startGame();
+    return room;
+  }
+
+  it('estimation rejects strings, including HTML payloads', () => {
+    const room = estimationRoom();
+    for (const payload of ['<img src=x onerror=alert(1)>', '42', '', 'NaN']) {
+      assert.strictEqual(room.validateAnswer(payload).valid, false);
+    }
+  });
+
+  it('estimation rejects non-finite and non-scalar values', () => {
+    const room = estimationRoom();
+    for (const payload of [NaN, Infinity, -Infinity, null, undefined, true, {}, [], { toString: () => '1' }]) {
+      assert.strictEqual(room.validateAnswer(payload).valid, false);
+    }
+  });
+
+  it('estimation accepts finite numbers, including negatives and floats', () => {
+    const room = estimationRoom();
+    for (const value of [0, -17, 3.5, 1e12]) {
+      const result = room.validateAnswer(value);
+      assert.strictEqual(result.valid, true);
+      assert.strictEqual(result.answer, value);
+    }
+  });
+
+  it('multiple-choice rejects string indices (which would otherwise concatenate)', () => {
+    const room = choiceRoom();
+    // `"<img>" + 1` is string concatenation, so a string index would carry a
+    // payload straight through a naive `Opt ${i + 1}` renderer.
+    assert.strictEqual(room.validateAnswer(['<img src=x onerror=alert(1)>']).valid, false);
+    assert.strictEqual(room.validateAnswer(['0']).valid, false);
+  });
+
+  it('multiple-choice rejects out-of-range and non-integer indices', () => {
+    const room = choiceRoom();
+    for (const payload of [[3], [-1], [1.5], [NaN], [null], [[0]], 0, 'abc', null, { 0: 0 }]) {
+      assert.strictEqual(room.validateAnswer(payload).valid, false);
+    }
+  });
+
+  it('multiple-choice accepts an empty selection and normalizes duplicates/order', () => {
+    const room = choiceRoom();
+    assert.deepStrictEqual(room.validateAnswer([]).answer, []);
+    assert.deepStrictEqual(room.validateAnswer([2, 0, 2]).answer, [0, 2]);
+  });
+
+  it('submitAnswer refuses invalid answers so they never reach the presenter', () => {
+    const room = estimationRoom();
+    const p = room.getLeaderboard()[0];
+    assert.strictEqual(room.submitAnswer(p.id, '<svg onload=alert(1)>'), false);
+    assert.strictEqual(room.currentAnswers.size, 0);
+    assert.strictEqual(room.submitAnswer(p.id, 42), true);
+    assert.strictEqual(room.currentAnswers.get(p.id).answer, 42);
+  });
+
+  it('a rejected answer does not consume the participant\'s single attempt', () => {
+    const room = choiceRoom();
+    const p = room.getLeaderboard()[0];
+    assert.strictEqual(room.submitAnswer(p.id, ['x']), false);
+    assert.strictEqual(room.submitAnswer(p.id, [0]), true);
+  });
+
+  it('estimation scoring survives a non-numeric correctAnswer in the quiz file', () => {
+    const quiz = { title: 'Test', questions: [{ type: 'estimation', text: 'Estimate', correctAnswer: 'one hundred' }] };
+    const room = new Room('ABC123', 'token', quiz);
+    const p1 = room.addParticipant({ readyState: 1 }, 'Alice');
+    const p2 = room.addParticipant({ readyState: 1 }, 'Bob');
+    room.startGame();
+    room.submitAnswer(p1.id, 100);
+    const results = room.endQuestion();
+    // Nobody is closer than anybody else, but scoring must stay well-defined.
+    assert.strictEqual(typeof results.scores.get(p1.id), 'number');
+    assert.strictEqual(results.leaderboard.length, 2);
+  });
+});
+
+describe('Question statistics (post-game export)', () => {
+  function playRoom() {
+    const quiz = { title: 'Stats', questions: [
+      { type: 'multiple-choice', text: '<p>Which are <b>prime</b>?</p>', options: ['2', '4', '7'], correctIndices: [0, 2] },
+      { type: 'estimation', text: 'How many?', correctAnswer: 100 }
+    ] };
+    const room = new Room('ABC123', 'token', quiz);
+    return room;
+  }
+
+  it('records the option distribution for multiple-choice questions', () => {
+    const room = playRoom();
+    const p1 = room.addParticipant({ readyState: 1 }, 'Alice');
+    const p2 = room.addParticipant({ readyState: 1 }, 'Bob');
+    const p3 = room.addParticipant({ readyState: 1 }, 'Carol');
+    room.startGame();
+    room.submitAnswer(p1.id, [0, 2]); // correct
+    room.submitAnswer(p2.id, [0, 2]); // correct
+    room.submitAnswer(p3.id, [1]);    // wrong
+    room.endQuestion();
+
+    const stat = room.getStatistics().questions[0];
+    assert.strictEqual(stat.type, 'multiple-choice');
+    assert.strictEqual(stat.responseCount, 3);
+    assert.strictEqual(stat.correctCount, 2);
+    assert.deepStrictEqual(stat.options.map(o => o.count), [2, 1, 2]);
+    assert.deepStrictEqual(stat.options.map(o => o.isCorrect), [true, false, true]);
+  });
+
+  it('records spread and accuracy for estimation questions', () => {
+    const room = playRoom();
+    const p1 = room.addParticipant({ readyState: 1 }, 'Alice');
+    const p2 = room.addParticipant({ readyState: 1 }, 'Bob');
+    const p3 = room.addParticipant({ readyState: 1 }, 'Carol');
+    room.startGame();
+    room.endQuestion();
+    room.nextQuestion();
+    room.submitAnswer(p1.id, 95);
+    room.submitAnswer(p2.id, 100);
+    room.submitAnswer(p3.id, 500);
+    room.endQuestion();
+
+    const stat = room.getStatistics().questions[1];
+    assert.strictEqual(stat.type, 'estimation');
+    assert.strictEqual(stat.correctAnswer, 100);
+    assert.strictEqual(stat.min, 95);
+    assert.strictEqual(stat.max, 500);
+    assert.strictEqual(stat.median, 100);
+    assert.strictEqual(stat.withinTenPercent, 2); // 95 and 100
+  });
+
+  it('keeps the answers of participants who left before the end', () => {
+    // Participants are removed from the room when their socket drops. Deriving
+    // statistics at the end would silently omit them and bias the numbers.
+    const room = playRoom();
+    const ws = { readyState: 1 };
+    const leaver = room.addParticipant(ws, 'Alice');
+    const stayer = room.addParticipant({ readyState: 1 }, 'Bob');
+    room.startGame();
+    room.submitAnswer(leaver.id, [1]);
+    room.submitAnswer(stayer.id, [0, 2]);
+    room.endQuestion();
+    room.removeParticipant(ws);
+
+    const stat = room.getStatistics().questions[0];
+    assert.strictEqual(stat.responseCount, 2);
+    assert.deepStrictEqual(stat.options.map(o => o.count), [1, 1, 1]);
+  });
+
+  it('records each question exactly once even if endQuestion is repeated', () => {
+    const room = playRoom();
+    const p = room.addParticipant({ readyState: 1 }, 'Alice');
+    room.startGame();
+    room.submitAnswer(p.id, [0, 2]);
+    room.endQuestion();
+    room.endQuestion();
+    assert.strictEqual(room.getStatistics().questions.length, 1);
+  });
+
+  it('statistics contain no participant names', () => {
+    const room = playRoom();
+    const p = room.addParticipant({ readyState: 1 }, 'Alice');
+    room.startGame();
+    room.submitAnswer(p.id, [0]);
+    room.endQuestion();
+    assert.ok(!JSON.stringify(room.getStatistics()).includes('Alice'));
+  });
+
+  it('reports only the questions actually played', () => {
+    const room = playRoom();
+    room.addParticipant({ readyState: 1 }, 'Alice');
+    room.startGame();
+    room.endQuestion();
+    const stats = room.getStatistics();
+    assert.strictEqual(stats.totalQuestions, 2);
+    assert.strictEqual(stats.questions.length, 1);
   });
 });

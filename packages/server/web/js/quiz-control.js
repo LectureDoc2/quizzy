@@ -1,4 +1,24 @@
 
+/**
+ * Create an element. `text` is always assigned via textContent, so callers
+ * cannot inject markup by accident.
+ *
+ * @param {string} tag
+ * @param {string|null} className
+ * @param {string|number|null} text
+ */
+function el(tag, className = null, text = null) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== null && text !== undefined) node.textContent = String(text);
+  return node;
+}
+
+/** Replace all children of `parent` with `nodes`. */
+function replaceChildren(parent, ...nodes) {
+  parent.replaceChildren(...nodes);
+}
+
 class QuizControl {
   constructor() {
     this.ws = null;
@@ -7,6 +27,7 @@ class QuizControl {
     this.state = "login"; // login, sessions, control
     this.roomState = null;
     this.currentQuestion = null;
+    this.statistics = null;
   }
 
   async init() {
@@ -14,7 +35,10 @@ class QuizControl {
     this.roomId = urlParams.get("room");
     const providedToken = urlParams.get("token");
 
-    if (providedToken) {
+    // Both are required: there is no session listing to fall back on, by
+    // design -- this application has no administrator and no way to enumerate
+    // rooms. Without a room id there is nothing this page can do.
+    if (providedToken && this.roomId) {
       this.presenterToken = providedToken;
       this.connectControl();
     } else {
@@ -22,33 +46,28 @@ class QuizControl {
     }
   }
 
+  /**
+   * There is nothing useful this page can do without a room id and a token.
+   *
+   * The old password form hashed the password and offered it as a presenter
+   * token, which could never match: tokens are derived from the presenter name
+   * plus the quiz, not from a password. Rather than leave a login that cannot
+   * succeed, say plainly where the control window comes from.
+   */
   renderLogin() {
     const content = document.getElementById("content");
-    content.innerHTML = `
-      <div class="card login__container">
-        <h2>Presenter Login</h2>
-        <form id="login-form">
-          <input type="password" id="password" class="input" placeholder="Enter your password" required>
-          <button type="submit" class="btn btn--primary btn--full">Login</button>
-        </form>
-        <div id="error" class="error" style="display:none"></div>
-      </div>
-    `;
-
-    document.getElementById("login-form").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const password = document.getElementById("password").value;
-      this.presenterToken = await this.hashPassword(password);
-      this.connectControl();
-    });
-  }
-
-  async hashPassword(password) {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(password);
-    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+    const card = el("div", "card login__container");
+    card.append(el("h2", null, "Open this window from your slides"));
+    card.append(
+      el(
+        "p",
+        null,
+        "The control view is opened by the quiz on your slide deck, which passes " +
+          "the session details along. Open it from there; if you closed this " +
+          "window, use the same presenter name to reattach.",
+      ),
+    );
+    replaceChildren(content, card);
   }
 
   connectControl() {
@@ -86,11 +105,11 @@ class QuizControl {
         this.currentQuestion = msg.question || null;
         this.state = "control";
         this.renderControl();
-        break;
-
-      case "sessions_list":
-        this.state = "sessions";
-        this.renderSessions(msg.sessions);
+        // Reopening the control view after the quiz finished should still
+        // offer the export.
+        if (msg.state === "ended") {
+          this.ws.send(JSON.stringify({ type: "export_results" }));
+        }
         break;
 
       case "game_started":
@@ -126,59 +145,38 @@ class QuizControl {
         this.updateParticipantCount(msg.count);
         break;
 
+      case "game_ended":
+        this.roomState.state = "ended";
+        this.roomState.leaderboard = msg.leaderboard;
+        this.statistics = msg.statistics || this.statistics;
+        this.updateControlUI();
+        this.renderLeaderboard(msg.leaderboard);
+        this.renderExportPanel();
+        break;
+
+      case "results_export":
+        this.statistics = msg.statistics;
+        this.renderExportPanel();
+        break;
+
       case "error":
         this.showError(msg.message);
         break;
     }
   }
 
-  renderSessions(sessions) {
-    const content = document.getElementById("content");
-    if (sessions.length === 0) {
-      content.innerHTML = `
-        <div class="card login__container">
-          <h2>No Active Sessions</h2>
-          <p>No active quiz sessions found for this account.</p>
-          <button class="btn btn--secondary" onclick="location.reload()">Refresh</button>
-        </div>
-      `;
-      return;
-    }
-
-    const listHtml = sessions
-      .map(
-        (s) => `
-      <div class="card session-card">
-        <div class="session-info">
-          <h3>${this.escapeHtml(s.title)}</h3>
-          <p>Room: ${s.roomId} | Participants: ${s.participantCount}</p>
-          <p>State: ${s.state} | Question: ${s.currentQuestionIndex + 1}/${s.totalQuestions}</p>
-        </div>
-        <button class="btn btn--primary" onclick="location.href='?token=${this.presenterToken}&room=${s.roomId}'">
-          Control
-        </button>
-      </div>
-    `,
-      )
-      .join("");
-
-    content.innerHTML = `
-      <div class="sessions-container">
-        <h2>Your Sessions</h2>
-        <div class="sessions-list">${listHtml}</div>
-      </div>
-    `;
-  }
-
   renderControl() {
     const content = document.getElementById("content");
+    // This template is a fixed skeleton: it interpolates nothing. Every dynamic
+    // value is written afterwards via textContent, so no data -- neither the
+    // lecturer's nor a participant's -- is ever parsed as markup here.
     content.innerHTML = `
       <div class="card control__container">
         <div class="control__header">
-          <h2>${this.escapeHtml(this.roomState.quizTitle)}</h2>
+          <h2 id="quiz-title"></h2>
           <div class="room-info">
-            <span>Room: ${this.roomState.roomId}</span>
-            <span class="participant-count">Participants: <span id="participants">${this.roomState.participantCount}</span></span>
+            <span id="room-label"></span>
+            <span class="participant-count">Participants: <span id="participants"></span></span>
           </div>
         </div>
 
@@ -186,11 +184,11 @@ class QuizControl {
           <div class="panel status-panel">
             <div class="status-item">
               <span class="status-label">State:</span>
-              <span class="status-value" id="state">${this.roomState.state}</span>
+              <span class="status-value" id="state"></span>
             </div>
             <div class="status-item">
               <span class="status-label">Question:</span>
-              <span class="status-value" id="question">${this.roomState.currentQuestionIndex + 1} / ${this.roomState.totalQuestions}</span>
+              <span class="status-value" id="question"></span>
             </div>
             <div class="status-item" id="answer-count-panel" style="display:none">
               <span class="status-label">Answers:</span>
@@ -215,6 +213,17 @@ class QuizControl {
         <div class="card question-panel" id="question-panel" style="display:none">
           <h3>Current Question</h3>
           <div class="question__text" id="question-text"></div>
+          <div class="question__options-container" id="question-options"></div>
+        </div>
+
+        <div class="panel export-panel" id="export-panel" style="display:none">
+          <h3>Results summary</h3>
+          <p class="export-hint" id="export-hint"></p>
+          <div class="export-actions">
+            <button class="btn btn--primary" id="btn-copy">Copy to clipboard</button>
+            <button class="btn btn--secondary" id="btn-download">Download CSV</button>
+          </div>
+          <div id="export-status" class="export-status"></div>
         </div>
 
         <div class="panel results-panel" id="results-panel" style="display:none">
@@ -228,6 +237,10 @@ class QuizControl {
         </div>
       </div>
     `;
+
+    document.getElementById("quiz-title").textContent = this.roomState.quizTitle || "Quiz";
+    document.getElementById("room-label").textContent = `Room: ${this.roomState.roomId}`;
+    document.getElementById("participants").textContent = this.roomState.participantCount;
 
     this.updateControlUI();
     this.renderLeaderboard();
@@ -312,15 +325,66 @@ class QuizControl {
   renderCurrentQuestion() {
     const panel = document.getElementById("question-panel");
     const content = document.getElementById("question-text");
-    if (!panel || !content) return;
+    const optionsEl = document.getElementById("question-options");
+    if (!panel || !content || !optionsEl) return;
 
-    if (this.currentQuestion && this.currentQuestion.text) {
-      content.innerHTML = this.currentQuestion.text;
-      panel.style.display = "block";
-    } else {
-      content.innerHTML = "";
+    if (!this.currentQuestion || !this.currentQuestion.text) {
+      content.replaceChildren();
+      optionsEl.replaceChildren();
       panel.style.display = "none";
+      return;
     }
+
+    // These two innerHTML assignments are the deliberate exceptions in this
+    // view. Question text and options are authored by the lecturer and may
+    // contain HTML, inline SVG and KaTeX output, so they cannot be escaped.
+    // They are scrubbed server-side (see quiz-sanitizer.js) and never contain
+    // participant input.
+    content.innerHTML = this.currentQuestion.text;
+
+    optionsEl.replaceChildren();
+    const q = this.currentQuestion;
+
+    if (q.type === "multiple-choice" && Array.isArray(q.options)) {
+      // The presenter's copy of the question retains correctIndices, so the
+      // correct options can be marked here -- this view is never sent to
+      // participants.
+      const correct = new Set(q.correctIndices || []);
+      const list = el("ol", "question__options");
+      q.options.forEach((option, index) => {
+        const item = el("li", correct.has(index) ? "question__option question__option--correct" : "question__option");
+        const marker = el("span", "question__option-marker", correct.has(index) ? "correct" : "");
+        item.append(marker);
+        const body = el("span", "question__option-text");
+        body.innerHTML = option;
+        item.append(body);
+        list.append(item);
+      });
+      optionsEl.append(list);
+    } else if (q.type === "estimation" && q.correctAnswer !== undefined) {
+      optionsEl.append(el("div", "question__correct-answer", `Correct answer: ${q.correctAnswer}`));
+    }
+
+    panel.style.display = "block";
+  }
+
+  /**
+   * Format a participant's answer for display.
+   *
+   * Answers originate from participants, who are untrusted. The server rejects
+   * malformed answers (see Room.validateAnswer), but this view does not depend
+   * on that: the result is plain text and is inserted via textContent.
+   */
+  formatAnswer(answer) {
+    if (Array.isArray(answer)) {
+      // Number() matters: with a string index, `index + 1` would concatenate
+      // rather than add, carrying the participant's payload through unchanged.
+      return answer
+        .map((index) => (Number.isInteger(index) ? `Opt ${index + 1}` : "?"))
+        .join(", ");
+    }
+    if (typeof answer === "number" && Number.isFinite(answer)) return String(answer);
+    return "(invalid answer)";
   }
 
   renderResults(msg) {
@@ -328,26 +392,23 @@ class QuizControl {
     const content = document.getElementById("results-content");
     if (!panel || !content) return;
 
-    const answersHtml = msg.answers
-      .map(
-        (a) => {
-          const answerValue = Array.isArray(a.answer)
-            ? a.answer.map(i => `Opt ${i + 1}`).join(", ")
-            : a.answer;
-          return `
-      <div class="answer-item">
-        <span class="answer-name">${this.escapeHtml(a.name)}</span>
-        <span class="answer-value">${answerValue}</span>
-        <span class="answer-points ${a.points > 0 ? "answer-points--positive" : ""}">${a.points} pts</span>
-      </div>
-    `;
-        },
-      )
-      .join("");
+    const list = el("div", "answers-list");
+    for (const a of msg.answers) {
+      const item = el("div", "answer-item");
+      item.append(el("span", "answer-name", a.name));
+      item.append(el("span", "answer-value", this.formatAnswer(a.answer)));
+      const points = Number(a.points) || 0;
+      item.append(
+        el(
+          "span",
+          `answer-points${points > 0 ? " answer-points--positive" : ""}`,
+          `${points} pts`,
+        ),
+      );
+      list.append(item);
+    }
 
-    content.innerHTML = `
-      <div class="answers-list">${answersHtml}</div>
-    `;
+    replaceChildren(content, list);
     panel.style.display = "block";
 
     this.renderLeaderboard(msg.leaderboard);
@@ -359,34 +420,173 @@ class QuizControl {
 
     const list = leaderboard || this.roomState.leaderboard || [];
     if (list.length === 0) {
-      content.innerHTML = '<p class="empty">No participants yet</p>';
+      replaceChildren(content, el("p", "empty", "No participants yet"));
       return;
     }
 
-    const listHtml = list
-      .map(
-        (entry, i) => `
-      <div class="leaderboard__item">
-        <span class="leaderboard__rank">${i + 1}</span>
-        <span class="leaderboard__name">${this.escapeHtml(entry.name)}</span>
-        <span class="leaderboard__score">${entry.score}</span>
-      </div>
-    `,
-      )
-      .join("");
+    const board = el("div", "leaderboard");
+    list.forEach((entry, i) => {
+      const item = el("div", "leaderboard__item");
+      item.append(el("span", "leaderboard__rank", i + 1));
+      item.append(el("span", "leaderboard__name", entry.name));
+      item.append(el("span", "leaderboard__score", Number(entry.score) || 0));
+      board.append(item);
+    });
 
-    content.innerHTML = `<div class="leaderboard">${listHtml}</div>`;
+    replaceChildren(content, board);
+  }
+
+  /**
+   * Show the export controls once the quiz has finished.
+   *
+   * The statistics arrive with `game_ended`, so they are already in hand when
+   * the lecturer needs them -- reopening the control view later re-requests
+   * them, but only for as long as the room lives on the server.
+   */
+  renderExportPanel() {
+    const panel = document.getElementById("export-panel");
+    const hint = document.getElementById("export-hint");
+    if (!panel || !this.statistics) return;
+
+    const answered = this.statistics.questions.length;
+    hint.textContent =
+      `${answered} of ${this.statistics.totalQuestions} question(s) played. ` +
+      "The summary shows how each question was answered, so you can see which " +
+      "topics need revisiting. It contains no participant names.";
+
+    panel.style.display = "block";
+
+    const status = document.getElementById("export-status");
+    const btnCopy = document.getElementById("btn-copy");
+    const btnDownload = document.getElementById("btn-download");
+
+    btnCopy.onclick = async () => {
+      const csv = this.buildCsv();
+      try {
+        await navigator.clipboard.writeText(csv);
+        status.textContent = "Copied to clipboard.";
+      } catch {
+        // Clipboard access can be refused (permissions, insecure context).
+        // Fall back to a selectable textarea rather than losing the data.
+        status.textContent = "Clipboard unavailable - select and copy manually:";
+        const area = document.createElement("textarea");
+        area.className = "export-fallback";
+        area.value = csv;
+        area.rows = 12;
+        area.readOnly = true;
+        status.after(area);
+        area.select();
+      }
+    };
+
+    btnDownload.onclick = () => {
+      const csv = this.buildCsv();
+      const blob = new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `quiz-results-${this.statistics.roomId}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+      status.textContent = `Downloaded quiz-results-${this.statistics.roomId}.csv`;
+    };
+  }
+
+  /**
+   * Reduce lecturer-authored HTML to readable plain text for the CSV.
+   * Uses a detached element, so nothing is parsed into the live document.
+   */
+  static toPlainText(html) {
+    const holder = document.createElement("div");
+    holder.innerHTML = String(html == null ? "" : html);
+    return holder.textContent.replace(/\s+/g, " ").trim();
+  }
+
+  /** Quote a CSV field per RFC 4180. */
+  static csvField(value) {
+    if (value === null || value === undefined) return "";
+    const text = String(value);
+    return /[",\n\r;]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  }
+
+  static csvRow(fields) {
+    return fields.map(QuizControl.csvField).join(",");
+  }
+
+  /**
+   * Build the results summary.
+   *
+   * One row per answer option for multiple-choice questions and one row per
+   * estimation question, so the whole thing opens as a flat table in a
+   * spreadsheet and sorts by "percent correct" to surface the weak topics.
+   */
+  buildCsv() {
+    const stats = this.statistics;
+    const rows = [];
+
+    rows.push(QuizControl.csvRow(["Quiz", stats.quizTitle]));
+    rows.push(QuizControl.csvRow(["Room", stats.roomId]));
+    rows.push(QuizControl.csvRow(["Questions played", `${stats.questions.length} of ${stats.totalQuestions}`]));
+    rows.push("");
+
+    rows.push(
+      QuizControl.csvRow([
+        "Question #", "Type", "Question", "Responses", "Option", "Correct option?",
+        "Times chosen", "Share of responses", "Fully correct", "Percent correct",
+      ]),
+    );
+
+    for (const q of stats.questions) {
+      const number = q.questionIndex + 1;
+      const text = QuizControl.toPlainText(q.text);
+      const share = (n) => (q.responseCount ? `${((n / q.responseCount) * 100).toFixed(1)}%` : "");
+
+      if (q.type === "multiple-choice") {
+        const percentCorrect = q.responseCount
+          ? `${((q.correctCount / q.responseCount) * 100).toFixed(1)}%`
+          : "";
+        (q.options || []).forEach((option, i) => {
+          rows.push(
+            QuizControl.csvRow([
+              number,
+              "multiple-choice",
+              i === 0 ? text : "",
+              i === 0 ? q.responseCount : "",
+              `${i + 1}. ${QuizControl.toPlainText(option.text)}`,
+              option.isCorrect ? "yes" : "no",
+              option.count,
+              share(option.count),
+              i === 0 ? q.correctCount : "",
+              i === 0 ? percentCorrect : "",
+            ]),
+          );
+        });
+      } else {
+        const withinShare = q.withinTenPercent === null ? "" : share(q.withinTenPercent);
+        rows.push(
+          QuizControl.csvRow([
+            number, "estimation", text, q.responseCount,
+            `correct: ${q.correctAnswer}`, "", "", "",
+            q.withinTenPercent === null ? "" : `${q.withinTenPercent} within 10%`,
+            withinShare,
+          ]),
+        );
+        rows.push(
+          QuizControl.csvRow([
+            "", "", "", "",
+            `min ${q.min} / median ${q.median} / mean ${q.mean === null ? "" : q.mean.toFixed(2)} / max ${q.max}`,
+            "", "", "", "", "",
+          ]),
+        );
+      }
+    }
+
+    return rows.join("\r\n");
   }
 
   showError(message) {
     const content = document.getElementById("content");
-    content.innerHTML = `<div class="error">${this.escapeHtml(message)}</div>`;
-  }
-
-  escapeHtml(text) {
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
+    replaceChildren(content, el("div", "error", message));
   }
 }
 

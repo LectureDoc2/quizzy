@@ -129,6 +129,11 @@
     }
 
     .answer-points {
+        flex: none;
+        margin-left: auto;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        min-width: 4.5rem;
         font-weight: 600;
         color: var(--quiz-danger);
 
@@ -174,26 +179,88 @@
         }
     }
 
-    .sessions-list {
-        display: flex;
-        flex-direction: column;
-        gap: var(--quiz-space-md);
+    /* --- Answer options in the presenter's question panel --------------------- */
+
+    .question__options-container {
+        margin-top: var(--quiz-space-md);
     }
 
-    .session-card {
+    .question__options {
+        list-style: decimal;
+        margin: 0;
+        padding-left: var(--quiz-space-lg);
         display: flex;
-        justify-content: space-between;
-        align-items: center;
+        flex-direction: column;
+        gap: var(--quiz-space-xs);
+    }
 
-        h3 {
-            margin: 0 0 var(--quiz-space-xs) 0;
-            color: var(--quiz-text);
-        }
+    .question__option {
+        color: var(--quiz-text-secondary);
+        padding: var(--quiz-space-xs) var(--quiz-space-sm);
+        border-radius: var(--quiz-radius-sm);
+    }
 
-        p {
-            margin: 0.25rem 0;
-            color: var(--quiz-text-secondary);
-            font-size: 0.875rem;
-        }
+    /* The correct option is marked for the presenter only; participants never
+       receive correctIndices. */
+    .question__option--correct {
+        color: var(--quiz-text);
+        font-weight: 600;
+        background: color-mix(in srgb, var(--quiz-success) 12%, transparent);
+    }
+
+    .question__option-marker:not(:empty) {
+        display: inline-block;
+        margin-right: var(--quiz-space-sm);
+        padding: 0 var(--quiz-space-xs);
+        border-radius: var(--quiz-radius-sm);
+        background: var(--quiz-success);
+        color: var(--quiz-surface);
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        vertical-align: middle;
+    }
+
+    .question__correct-answer {
+        font-weight: 600;
+        color: var(--quiz-text);
+    }
+
+    /* --- Post-game results export --------------------------------------------- */
+
+    .export-panel {
+        border: 1px solid var(--quiz-border);
+        border-radius: var(--quiz-radius-sm);
+        padding: var(--quiz-space-md);
+    }
+
+    .export-hint {
+        color: var(--quiz-text-secondary);
+        font-size: 0.875rem;
+        margin: 0 0 var(--quiz-space-md) 0;
+    }
+
+    .export-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--quiz-space-sm);
+    }
+
+    .export-status {
+        margin-top: var(--quiz-space-sm);
+        color: var(--quiz-text-secondary);
+        font-size: 0.875rem;
+    }
+
+    .export-fallback {
+        width: 100%;
+        margin-top: var(--quiz-space-sm);
+        font-family: ui-monospace, monospace;
+        font-size: 0.8125rem;
+        border: 1px solid var(--quiz-border);
+        border-radius: var(--quiz-radius-sm);
+        padding: var(--quiz-space-sm);
+        background: var(--quiz-surface);
+        color: var(--quiz-text);
     }
 }

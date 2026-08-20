@@ -37,6 +37,35 @@
 	# Run `pnpm build` to (re-)generate `dist/`.
 	handle {
 		header Access-Control-Allow-Origin "*"
+
+		# The control page holds the presenter token, so it gets a strict CSP.
+		# This is the authoritative copy; control.html carries the same policy in
+		# a <meta> tag so that development and non-Caddy deployments are covered.
+		#
+		#   script-src 'self'   blocks inline event handlers (onerror=, onload=),
+		#                       which are the only route from injected markup to
+		#                       code execution -- innerHTML never runs <script>.
+		#   connect-src 'self'  matches ws:/wss: on this origin, so the control
+		#                       WebSocket keeps working while exfiltration to any
+		#                       other host is refused.
+		#   img-src             stays narrow on purpose: an <img> pointing at a
+		#                       foreign host is the cheapest way to leak a token.
+		#                       Add explicit hosts here if a quiz needs them.
+		#   style-src-attr      allows the inline style="..." attributes that
+		#                       lecturer-authored quiz HTML and SVG rely on.
+		#
+		# frame-ancestors is set here rather than in the <meta> tag, where it is
+		# ignored by browsers.
+		#
+		# Deliberately NOT applied to index.html / demo.html: those embed the
+		# ld-quiz web component, which injects a <style> element into its shadow
+		# root and would need style-src 'unsafe-inline'.
+		header /control.html {
+			Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'none'"
+			Referrer-Policy "no-referrer"
+			X-Content-Type-Options "nosniff"
+		}
+
 		root * dist
 		file_server
 	}

@@ -228,38 +228,57 @@
         font-weight: 500;
     }
 
+    /*
+     * The inner rules need a descendant combinator, not `&.`.
+     *
+     * `&.leaderboard__item` compiles to `.leaderboard.leaderboard__item` -- one
+     * element carrying both classes -- but the item is a *child* of the board,
+     * so these four rules matched nothing at all. The row therefore never
+     * became a flex container and the score sat flush against the name.
+     */
     .leaderboard {
         margin-top: var(--quiz-space-md);
         display: flex;
         flex-direction: column;
         gap: var(--quiz-space-xs);
 
-        &.leaderboard__item {
+        .leaderboard__item {
             display: flex;
             justify-content: space-between;
-            align-items: center;
+            align-items: baseline;
+            gap: var(--quiz-space-md);
             padding: var(--quiz-space-sm) var(--quiz-space-md);
             border-bottom: 1px solid var(--quiz-border);
 
+            /* Correct as `&.`: the modifier does sit on the item itself. */
             &.leaderboard__item--highlight {
                 background: var(--quiz-primary-alpha-5);
                 font-weight: 600;
             }
         }
 
-        &.leaderboard__rank {
+        .leaderboard__rank {
+            flex: none;
             width: 2rem;
             text-align: center;
             font-weight: 600;
         }
 
-        &.leaderboard__name {
+        .leaderboard__name {
             flex: 1;
-            margin-left: var(--quiz-space-md);
             text-align: left;
+            /* Let a long name wrap instead of pushing the score out of line. */
+            min-width: 0;
+            overflow-wrap: anywhere;
         }
 
-        &.leaderboard__score {
+        .leaderboard__score {
+            flex: none;
+            margin-left: auto;
+            text-align: right;
+            /* Equal-width digits, so scores line up as a column. */
+            font-variant-numeric: tabular-nums;
+            min-width: 3.5rem;
             font-weight: 600;
             color: var(--quiz-primary);
         }

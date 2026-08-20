@@ -1,246 +1,485 @@
-import { describe, it, before, after } from 'node:test';
+/**
+ * Integration tests for the real server.
+ *
+ * These import `createQuizServer` from src/server.js and drive the actual
+ * message handlers over real WebSockets. That distinction matters: the previous
+ * version of this file reimplemented a cut-down server inline and asserted
+ * against *that*, so it exercised express and ws rather than any of our code --
+ * and when the room-listing feature was removed it did not fail, it hung.
+ */
+import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert';
-import { createServer } from 'http';
-import express from 'express';
-import { WebSocketServer } from 'ws';
 import { WebSocket } from 'ws';
-import { RoomManager } from '../src/rooms.js';
+import { createHash } from 'crypto';
+import { createQuizServer, GENERIC_REJECTION, QUIZ_FINISHED } from '../src/server.js';
 
-describe('Server Integration', () => {
-  let server;
+const QUIZ = {
+  title: 'Integration Quiz',
+  secret: 'high-entropy-secret',
+  questions: [
+    {
+      type: 'multiple-choice',
+      text: 'Which are <b>connection-oriented</b>?',
+      options: ['TCP', 'UDP', 'SCTP'],
+      correctIndices: [0, 2]
+    },
+    { type: 'estimation', text: 'Bits in an IPv6 address?', correctAnswer: 128 }
+  ]
+};
+
+/** Mirrors ld-quiz.js hashQuiz(quiz, presenterName). */
+function tokenFor(name, quiz = QUIZ) {
+  return createHash('sha256').update(`${name}\u0000${JSON.stringify(quiz)}`).digest('hex');
+}
+
+describe('Server integration', () => {
+  let quizServer;
   let port;
-  let wss;
-  let roomManager;
+  const sockets = [];
 
   before(async () => {
-    const app = express();
-    const MAX_QUIZ_SIZE = 1024 * 1024; // 1MB
-    roomManager = new RoomManager();
-    
-    // CORS middleware
-    app.use((req, res, next) => {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-      if (req.method === 'OPTIONS') {
-        res.sendStatus(204);
-        return;
-      }
-      next();
+    quizServer = createQuizServer({
+      // Tightened so the limiter can be observed without sending 60 messages.
+      limits: { maxMessagesPerWindow: 12, maxFailedAttemptsPerWindow: 3, maxRoomsPerIp: 2 },
+      heartbeatIntervalMs: 60_000
     });
-    
-    // API endpoint
-    app.get('/api/sessions', (req, res) => {
-      const token = req.query.token;
-      if (!token) {
-        return res.status(400).json({ error: 'Missing token' });
-      }
-      const sessions = roomManager.getPresenterRooms(token);
-      res.json({ sessions });
-    });
-    
-    server = createServer(app);
-    wss = new WebSocketServer({ server, path: '/ws', maxPayload: MAX_QUIZ_SIZE });
-    
-    // Simple echo handler for testing
-    wss.on('connection', (ws) => {
-      ws.on('error', () => {});
-      ws.on('message', (data) => {
-        try {
-          const dataSize = Buffer.byteLength(data);
-          if (dataSize > MAX_QUIZ_SIZE) {
-            ws.send(JSON.stringify({ type: 'error', message: 'Quiz data exceeds maximum size of 1MB' }));
-            return;
-          }
-          const msg = JSON.parse(data);
-          if (msg.type === 'create_room') {
-            const room = roomManager.createRoom(msg.presenterToken, msg.quiz);
-            ws.send(JSON.stringify({
-              type: 'room_created',
-              roomId: room.roomId,
-              quizTitle: room.quiz.title,
-              totalQuestions: room.quiz.questions.length
-            }));
-          } else if (msg.type === 'join_room') {
-            const room = roomManager.getRoom(msg.roomId);
-            if (room) {
-              const p = room.addParticipant(ws, msg.name);
-              ws.send(JSON.stringify({
-                type: 'joined',
-                participantId: p.id,
-                roomId: msg.roomId,
-                quizTitle: room.quiz.title
-              }));
-            } else {
-              ws.send(JSON.stringify({ type: 'error', message: 'Room not found' }));
-            }
-          }
-        } catch (err) {
-          ws.send(JSON.stringify({ type: 'error', message: 'Invalid message' }));
-        }
-      });
-    });
-    
-    await new Promise((resolve) => {
-      server.listen(0, '127.0.0.1', () => {
-        port = server.address().port;
-        resolve();
-      });
-    });
+    port = await quizServer.listen(0, '127.0.0.1');
   });
 
   after(async () => {
-    await new Promise((resolve) => {
-      server.close(resolve);
-    });
-    await new Promise((resolve) => {
-      wss.close(resolve);
-    });
-  });
-
-  it('handles OPTIONS preflight', async () => {
-    const res = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
-      method: 'OPTIONS',
-      headers: { 'Origin': 'http://other-origin.com' }
-    });
-    assert.strictEqual(res.status, 204);
-    assert.ok(res.headers.get('access-control-allow-origin'));
-    assert.ok(res.headers.get('access-control-allow-methods'));
-  });
-
-  it('/api/sessions returns 400 for missing token', async () => {
-    const res = await fetch(`http://127.0.0.1:${port}/api/sessions`);
-    assert.strictEqual(res.status, 400);
-    const body = await res.json();
-    assert.strictEqual(body.error, 'Missing token');
-  });
-
-  it('/api/sessions returns empty array for unknown token', async () => {
-    const res = await fetch(`http://127.0.0.1:${port}/api/sessions?token=abc123`);
-    assert.strictEqual(res.status, 200);
-    const body = await res.json();
-    assert.deepStrictEqual(body.sessions, []);
-  });
-
-  it('/api/sessions returns sessions for known token', async () => {
-    const token = 'test-token-123';
-    const quiz = { title: 'Test Quiz', questions: [{ type: 'multiple-choice', text: 'Q1', options: ['A', 'B'], correctIndices: [0] }] };
-    roomManager.createRoom(token, quiz);
-    
-    const res = await fetch(`http://127.0.0.1:${port}/api/sessions?token=${token}`);
-    assert.strictEqual(res.status, 200);
-    const body = await res.json();
-    assert.strictEqual(body.sessions.length, 1);
-    assert.strictEqual(body.sessions[0].title, 'Test Quiz');
-  });
-
-  it('WebSocket create_room returns room_created', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
-    await new Promise((resolve, reject) => {
-      ws.on('open', resolve);
-      ws.on('error', reject);
-    });
-    
-    const quiz = { title: 'WS Quiz', questions: [{ type: 'multiple-choice', text: 'Q1', options: ['A', 'B'], correctIndices: [0] }] };
-    ws.send(JSON.stringify({ type: 'create_room', presenterToken: 'ws-token', quiz }));
-    
-    const msg = await new Promise((resolve, reject) => {
-      ws.on('message', (data) => resolve(JSON.parse(data)));
-      setTimeout(() => reject(new Error('Timeout')), 5000);
-    });
-    
-    assert.strictEqual(msg.type, 'room_created');
-    assert.ok(msg.roomId);
-    assert.strictEqual(msg.quizTitle, 'WS Quiz');
-    assert.strictEqual(msg.totalQuestions, 1);
-    
-    ws.close();
-  });
-
-  it('WebSocket rejects oversized create_room payload', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
-    await new Promise((resolve, reject) => {
-      ws.on('open', resolve);
-      ws.on('error', reject);
-    });
-    
-    const bigQuestion = { type: 'multiple-choice', text: 'x'.repeat(2 * 1024 * 1024), options: ['A', 'B'], correctIndices: [0] };
-    const quiz = { title: 'Oversized', questions: [bigQuestion] };
-    ws.send(JSON.stringify({ type: 'create_room', presenterToken: 'oversized-token', quiz }));
-    
-    const result = await new Promise((resolve) => {
-      ws.on('message', (data) => resolve({ kind: 'message', msg: JSON.parse(data) }));
-      ws.on('close', () => resolve({ kind: 'close' }));
-      setTimeout(() => resolve({ kind: 'timeout' }), 2000);
-    });
-    
-    ws.close();
-    ws.terminate();
-    
-    if (result.kind === 'message') {
-      assert.strictEqual(result.msg.type, 'error');
-      assert.ok(result.msg.message.includes('1MB'));
+    for (const ws of sockets) {
+      try { ws.terminate(); } catch { /* already gone */ }
     }
-    assert.notStrictEqual(result.kind, 'timeout', 'Oversized payload should be rejected');
+    await quizServer.close();
   });
 
-  it('WebSocket join_room returns error for nonexistent room', async () => {
+  beforeEach(() => {
+    // Each test starts from a clean room table.
+    for (const roomId of [...quizServer.roomManager.rooms.keys()]) {
+      quizServer.roomManager.removeRoom(roomId);
+    }
+  });
+
+  /**
+   * Open a socket and buffer everything it receives.
+   *
+   * The buffer matters: a WebSocket reply frequently lands before the test gets
+   * around to attaching a listener, so a naive `ws.once('message')` misses it
+   * and times out. Every message is captured from the moment the socket opens
+   * and consumed from the buffer instead.
+   */
+  async function connect() {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    sockets.push(ws);
+    ws.inbox = [];
+    ws.waiters = [];
+    ws.on('message', (data) => {
+      ws.inbox.push(JSON.parse(data));
+      for (const waiter of [...ws.waiters]) waiter();
+    });
     await new Promise((resolve, reject) => {
-      ws.on('open', resolve);
-      ws.on('error', reject);
+      ws.once('open', resolve);
+      ws.once('error', reject);
     });
-    
-    ws.send(JSON.stringify({ type: 'join_room', roomId: 'FAKE99', name: 'Alice' }));
-    
-    const msg = await new Promise((resolve, reject) => {
-      ws.on('message', (data) => resolve(JSON.parse(data)));
-      setTimeout(() => reject(new Error('Timeout')), 5000);
+    return ws;
+  }
+
+  /**
+   * Resolve with the first buffered message matching `predicate`, removing it.
+   * Rejects on timeout so a missing message fails loudly rather than hanging.
+   */
+  function take(ws, predicate, label, timeoutMs = 3000) {
+    const grab = () => {
+      const index = ws.inbox.findIndex(predicate);
+      return index === -1 ? undefined : ws.inbox.splice(index, 1)[0];
+    };
+
+    const immediate = grab();
+    if (immediate) return Promise.resolve(immediate);
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        ws.waiters = ws.waiters.filter((w) => w !== check);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`timed out waiting for ${label}; buffered: ` +
+          JSON.stringify(ws.inbox.map((m) => m.type))));
+      }, timeoutMs);
+      const check = () => {
+        const msg = grab();
+        if (!msg) return;
+        cleanup();
+        resolve(msg);
+      };
+      ws.waiters.push(check);
     });
-    
-    assert.strictEqual(msg.type, 'error');
-    assert.strictEqual(msg.message, 'Room not found');
-    
-    ws.close();
+  }
+
+  const next = (ws, timeoutMs) => take(ws, () => true, 'any message', timeoutMs);
+  const waitFor = (ws, type, timeoutMs) => take(ws, (m) => m.type === type, type, timeoutMs);
+
+  const send = (ws, msg) => ws.send(JSON.stringify(msg));
+
+  async function openRoom(token = tokenFor('michael'), quiz = QUIZ) {
+    const ws = await connect();
+    send(ws, { type: 'create_room', presenterToken: token, quiz });
+    return { ws, created: await next(ws) };
+  }
+
+  async function joinRoom(roomId, name) {
+    const ws = await connect();
+    send(ws, { type: 'join_room', roomId, name });
+    return { ws, reply: await next(ws) };
+  }
+
+  describe('opening a session', () => {
+    it('creates a room and reports it as new', async () => {
+      const { created } = await openRoom();
+      assert.strictEqual(created.type, 'room_created');
+      assert.match(created.roomId, /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/);
+      assert.strictEqual(created.quizTitle, 'Integration Quiz');
+      assert.strictEqual(created.totalQuestions, 2);
+      assert.strictEqual(created.resumed, false);
+    });
+
+    it('rejects a token too short to be a SHA-256 digest', async () => {
+      const ws = await connect();
+      send(ws, { type: 'create_room', presenterToken: 'short', quiz: QUIZ });
+      assert.strictEqual((await next(ws)).type, 'error');
+    });
+
+    it('resumes rather than stranding participants when the presenter reconnects', async () => {
+      const token = tokenFor('michael');
+      const first = await openRoom(token);
+      await joinRoom(first.created.roomId, 'Alice Adams');
+
+      first.ws.terminate(); // the lecture-hall WiFi glitch
+      await new Promise((r) => setTimeout(r, 100));
+
+      const second = await openRoom(token);
+      assert.strictEqual(second.created.roomId, first.created.roomId);
+      assert.strictEqual(second.created.resumed, true);
+      assert.strictEqual(second.created.participantCount, 1);
+    });
+
+    it('isolates two presenters who share the same quiz file', async () => {
+      const mine = await openRoom(tokenFor('michael'));
+      const theirs = await openRoom(tokenFor('anna'));
+      assert.notStrictEqual(mine.created.roomId, theirs.created.roomId);
+
+      // ...and neither can drive the other's session.
+      const intruder = await connect();
+      send(intruder, {
+        type: 'control_connect',
+        presenterToken: tokenFor('anna'),
+        roomId: mine.created.roomId
+      });
+      assert.strictEqual((await next(intruder)).type, 'error');
+    });
+
+    it('strips unsafe markup from the quiz and tells the presenter', async () => {
+      const quiz = {
+        title: 'Sanitized',
+        questions: [{
+          type: 'estimation',
+          text: 'Count them <p onclick="boom()">hint</p><script>boom()</script>',
+          correctAnswer: 3
+        }]
+      };
+      const { ws, created } = await openRoom(tokenFor('sanitize-me', quiz), quiz);
+      assert.ok(created.warnings.some(w => w.includes('script')));
+      assert.ok(created.warnings.some(w => w.includes('onclick')));
+
+      send(ws, { type: 'start_game' });
+      const started = await waitFor(ws, 'game_started');
+      assert.ok(!started.question.text.includes('<script'));
+      assert.ok(!started.question.text.includes('onclick'));
+    });
   });
 
-  it('WebSocket join_room succeeds for existing room', async () => {
-    // Create room first
-    const presenterWs = new WebSocket(`ws://127.0.0.1:${port}/ws`);
-    await new Promise((resolve, reject) => {
-      presenterWs.on('open', resolve);
-      presenterWs.on('error', reject);
+  describe('probing gives nothing away', () => {
+    it('uses one opaque message for an unknown room', async () => {
+      const { reply } = await joinRoom('ZZZZZZ', 'Prober One');
+      assert.strictEqual(reply.type, 'error');
+      assert.strictEqual(reply.message, GENERIC_REJECTION);
+      assert.ok(!/not found|denied|exist/i.test(reply.message));
     });
-    
-    const quiz = { title: 'Join Test', questions: [{ type: 'multiple-choice', text: 'Q1', options: ['A', 'B'], correctIndices: [0] }] };
-    presenterWs.send(JSON.stringify({ type: 'create_room', presenterToken: 'join-test-token', quiz }));
-    
-    const roomMsg = await new Promise((resolve, reject) => {
-      presenterWs.on('message', (data) => resolve(JSON.parse(data)));
-      setTimeout(() => reject(new Error('Timeout')), 5000);
+
+    it('cannot distinguish a wrong token from a missing room', async () => {
+      const { created } = await openRoom();
+      const badToken = await connect();
+      send(badToken, { type: 'control_connect', presenterToken: 'x'.repeat(64), roomId: created.roomId });
+      const noRoom = await connect();
+      send(noRoom, { type: 'control_connect', presenterToken: 'x'.repeat(64), roomId: 'QQQQQQ' });
+      assert.strictEqual((await next(badToken)).message, (await next(noRoom)).message);
     });
-    const roomId = roomMsg.roomId;
-    
-    // Now join as participant
-    const participantWs = new WebSocket(`ws://127.0.0.1:${port}/ws`);
-    await new Promise((resolve, reject) => {
-      participantWs.on('open', resolve);
-      participantWs.on('error', reject);
+
+    it('has no endpoint that lists rooms', async () => {
+      await openRoom();
+      const res = await fetch(`http://127.0.0.1:${port}/api/sessions?token=${tokenFor('michael')}`);
+      assert.strictEqual(res.status, 404);
     });
-    
-    participantWs.send(JSON.stringify({ type: 'join_room', roomId, name: 'Alice' }));
-    
-    const joinMsg = await new Promise((resolve, reject) => {
-      participantWs.on('message', (data) => resolve(JSON.parse(data)));
-      setTimeout(() => reject(new Error('Timeout')), 5000);
+
+    it('returns no session list when the room id is omitted', async () => {
+      await openRoom();
+      const ws = await connect();
+      send(ws, { type: 'control_connect', presenterToken: tokenFor('michael') });
+      const reply = await next(ws);
+      assert.strictEqual(reply.type, 'error');
+      assert.strictEqual(reply.sessions, undefined);
     });
-    
-    assert.strictEqual(joinMsg.type, 'joined');
-    assert.ok(joinMsg.participantId);
-    assert.strictEqual(joinMsg.roomId, roomId);
-    assert.strictEqual(joinMsg.quizTitle, 'Join Test');
-    
-    presenterWs.close();
-    participantWs.close();
+  });
+
+  describe('room status before joining', () => {
+    it('reports the lobby state so the join page can label itself', async () => {
+      const { created } = await openRoom();
+      const ws = await connect();
+      send(ws, { type: 'room_status', roomId: created.roomId });
+      const status = await next(ws);
+
+      assert.strictEqual(status.type, 'room_status');
+      assert.strictEqual(status.state, 'lobby');
+      assert.strictEqual(status.currentQuestionIndex, -1);
+      assert.strictEqual(status.totalQuestions, 2);
+      assert.strictEqual(status.quizTitle, 'Integration Quiz');
+    });
+
+    it('reports a running quiz and which question it is on', async () => {
+      const presenter = await openRoom();
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(presenter.ws, 'game_started');
+
+      const ws = await connect();
+      send(ws, { type: 'room_status', roomId: presenter.created.roomId });
+      const status = await next(ws);
+
+      assert.strictEqual(status.state, 'question');
+      assert.strictEqual(status.currentQuestionIndex, 0);
+    });
+
+    it('never leaks the quiz secret or the questions', async () => {
+      const { created } = await openRoom();
+      const ws = await connect();
+      send(ws, { type: 'room_status', roomId: created.roomId });
+      const status = await next(ws);
+      const serialized = JSON.stringify(status);
+      assert.ok(!serialized.includes('high-entropy-secret'));
+      assert.ok(!serialized.includes('TCP'));
+    });
+
+    it('is opaque for an unknown room', async () => {
+      const ws = await connect();
+      send(ws, { type: 'room_status', roomId: 'ZZZZZZ' });
+      const reply = await next(ws);
+      assert.strictEqual(reply.type, 'error');
+      assert.strictEqual(reply.message, GENERIC_REJECTION);
+    });
+
+    it('is equally opaque for a finished room, so codes stay unenumerable', async () => {
+      const presenter = await openRoom();
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(presenter.ws, 'game_started');
+      send(presenter.ws, { type: 'next_question' });
+      await waitFor(presenter.ws, 'question_started');
+      const ended = waitFor(presenter.ws, 'game_ended');
+      send(presenter.ws, { type: 'next_question' });
+      await ended;
+
+      const ws = await connect();
+      send(ws, { type: 'room_status', roomId: presenter.created.roomId });
+      const reply = await next(ws);
+      assert.strictEqual(reply.message, GENERIC_REJECTION, 'status must not distinguish finished from unknown');
+    });
+
+    it('only says a quiz has finished once a real name has been supplied', async () => {
+      const presenter = await openRoom();
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(presenter.ws, 'game_started');
+      send(presenter.ws, { type: 'next_question' });
+      await waitFor(presenter.ws, 'question_started');
+      const ended = waitFor(presenter.ws, 'game_ended');
+      send(presenter.ws, { type: 'next_question' });
+      await ended;
+
+      const { reply } = await joinRoom(presenter.created.roomId, 'Late Arrival');
+      assert.strictEqual(reply.message, QUIZ_FINISHED);
+
+      // A room that never existed stays opaque even after a valid name.
+      const { reply: unknown } = await joinRoom('ZZZZZZ', 'Late Arrival');
+      assert.strictEqual(unknown.message, GENERIC_REJECTION);
+    });
+
+    it('still admits a latecomer and sends them the question in progress', async () => {
+      const presenter = await openRoom();
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(presenter.ws, 'game_started');
+
+      const late = await joinRoom(presenter.created.roomId, 'Late Arrival');
+      assert.strictEqual(late.reply.type, 'joined');
+      const question = await waitFor(late.ws, 'question');
+      assert.strictEqual(question.questionIndex, 0);
+      assert.ok(question.question.options, 'the latecomer needs the options to answer');
+      assert.strictEqual(question.question.correctIndices, undefined, 'answers must stay hidden');
+    });
+
+    it('counts a status probe against the failure budget', async () => {
+      const ws = await connect();
+      const closed = new Promise((resolve) => ws.once('close', resolve));
+      for (let i = 0; i < 6; i++) {
+        send(ws, { type: 'room_status', roomId: `BBBB${String(i).padStart(2, '0')}` });
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      await closed;
+    });
+  });
+
+  describe('abuse limits', () => {
+    it('disconnects a client that keeps guessing room ids', async () => {
+      const ws = await connect();
+      const closed = new Promise((resolve) => ws.once('close', resolve));
+      for (let i = 0; i < 6; i++) {
+        send(ws, { type: 'join_room', roomId: `AAAA${String(i).padStart(2, '0')}`, name: 'Flood Bot' });
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      await closed; // fails the test by timeout if the limiter never fires
+    });
+
+    it('disconnects a client that floods messages', async () => {
+      const ws = await connect();
+      const closed = new Promise((resolve) => ws.once('close', resolve));
+      for (let i = 0; i < 25; i++) send(ws, { type: 'get_participants' });
+      await closed;
+    });
+  });
+
+  describe('answers from untrusted participants', () => {
+    async function startedGame() {
+      const presenter = await openRoom();
+      const roomId = presenter.created.roomId;
+      const player = await joinRoom(roomId, 'Alice Adams');
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(presenter.ws, 'game_started');
+      await waitFor(player.ws, 'question');
+      return { presenter, player, roomId };
+    }
+
+    it('refuses markup where a number is expected', async () => {
+      const { presenter, player } = await startedGame();
+      send(presenter.ws, { type: 'next_question' }); // on to the estimation question
+      await waitFor(player.ws, 'question');
+
+      send(player.ws, { type: 'submit_answer', answer: '<img src=x onerror=alert(1)>' });
+      assert.strictEqual((await next(player.ws)).type, 'error');
+    });
+
+    it('refuses option indices that are strings', async () => {
+      const { player } = await startedGame();
+      // `"<img>" + 1` concatenates rather than adds, so a string index would
+      // otherwise carry a payload through the presenter's results renderer.
+      send(player.ws, { type: 'submit_answer', answer: ['<img src=x onerror=alert(1)>'] });
+      assert.strictEqual((await next(player.ws)).type, 'error');
+    });
+
+    it('refuses out-of-range option indices', async () => {
+      const { player } = await startedGame();
+      send(player.ws, { type: 'submit_answer', answer: [99] });
+      assert.strictEqual((await next(player.ws)).type, 'error');
+    });
+
+    it('accepts a well-formed answer and forwards it to the presenter', async () => {
+      const { presenter, player } = await startedGame();
+      const results = waitFor(presenter.ws, 'question_results');
+      send(player.ws, { type: 'submit_answer', answer: [0, 2] });
+
+      const msg = await results; // the room auto-ends once everyone has answered
+      assert.strictEqual(msg.answers.length, 1);
+      assert.deepStrictEqual(msg.answers[0].answer, [0, 2]);
+      assert.strictEqual(msg.answers[0].points, 100);
+    });
+  });
+
+  describe('post-game export', () => {
+    it('delivers aggregate statistics when the quiz ends', async () => {
+      const presenter = await openRoom();
+      const roomId = presenter.created.roomId;
+      const a = await joinRoom(roomId, 'Alice Adams');
+      const b = await joinRoom(roomId, 'Bob Brown');
+
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(presenter.ws, 'game_started');
+      send(a.ws, { type: 'submit_answer', answer: [0, 2] }); // correct
+      send(b.ws, { type: 'submit_answer', answer: [1] });    // wrong
+      await waitFor(presenter.ws, 'question_results');
+
+      send(presenter.ws, { type: 'next_question' });
+      await waitFor(presenter.ws, 'question_started');
+      send(a.ws, { type: 'submit_answer', answer: 128 });
+      send(b.ws, { type: 'submit_answer', answer: 64 });
+      await waitFor(presenter.ws, 'question_results');
+
+      const ended = waitFor(presenter.ws, 'game_ended');
+      send(presenter.ws, { type: 'next_question' }); // ends the quiz
+      const stats = (await ended).statistics;
+
+      assert.strictEqual(stats.questions.length, 2);
+      assert.strictEqual(stats.questions[0].correctCount, 1);
+      assert.deepStrictEqual(stats.questions[0].options.map(o => o.count), [1, 1, 1]);
+      assert.strictEqual(stats.questions[1].correctAnswer, 128);
+      assert.strictEqual(stats.questions[1].withinTenPercent, 1);
+      // The export must stay free of personal data.
+      assert.ok(!JSON.stringify(stats).includes('Alice'));
+    });
+
+    it('re-sends statistics when the control view is reopened on a finished room', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(presenter.ws, 'game_started');
+      send(presenter.ws, { type: 'next_question' });
+      await waitFor(presenter.ws, 'question_started');
+      const ended = waitFor(presenter.ws, 'game_ended');
+      send(presenter.ws, { type: 'next_question' }); // ends the quiz
+      await ended;
+
+      const reopened = await connect();
+      send(reopened, { type: 'control_connect', presenterToken: tokenFor('michael'), roomId });
+      const connected = await next(reopened);
+      assert.strictEqual(connected.state, 'ended');
+
+      send(reopened, { type: 'export_results' });
+      const exported = await next(reopened);
+      assert.strictEqual(exported.type, 'results_export');
+      assert.ok(Array.isArray(exported.statistics.questions));
+    });
+  });
+
+  describe('transport limits', () => {
+    it('rejects a quiz larger than the payload cap', async () => {
+      const ws = await connect();
+      const quiz = {
+        title: 'Oversized',
+        questions: [{ type: 'estimation', text: 'x'.repeat(2 * 1024 * 1024), correctAnswer: 1 }]
+      };
+      send(ws, { type: 'create_room', presenterToken: tokenFor('big'), quiz });
+
+      const outcome = await new Promise((resolve) => {
+        ws.once('message', (data) => resolve({ kind: 'message', msg: JSON.parse(data) }));
+        ws.once('close', () => resolve({ kind: 'close' }));
+        setTimeout(() => resolve({ kind: 'timeout' }), 2000);
+      });
+      assert.notStrictEqual(outcome.kind, 'timeout', 'oversized payload should be rejected');
+    });
+
+    it('answers a CORS preflight', async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/anything`, {
+        method: 'OPTIONS',
+        headers: { Origin: 'http://other-origin.example' }
+      });
+      assert.strictEqual(res.status, 204);
+      assert.ok(res.headers.get('access-control-allow-origin'));
+      assert.ok(res.headers.get('access-control-allow-methods'));
+    });
   });
 });

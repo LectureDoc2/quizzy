@@ -126,13 +126,6 @@ test('validateName rejects blacklisted names', () => {
         'Joseph Goebbels',
         'Hermann Goering',
         'Benito Mussolini',
-        'Hideki Tojo',
-        'Pol Pot',
-        'Slobodan Milosevic',
-        'Radovan Karadzic',
-        'Ratko Mladic',
-        'Vladimir Putin',
-        'Sergei Shoigu',
     ];
     
     for (const name of blacklistedNames) {

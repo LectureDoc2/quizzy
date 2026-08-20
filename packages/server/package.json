@@ -10,11 +10,16 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node --test test/*.test.js",
-    "test:watch": "node --test --watch test/*.test.js"
+    "test:watch": "node --test --watch test/*.test.js",
+    "test:browser": "node --test test/browser/*.test.js",
+    "test:all": "npm run test && npm run test:browser"
   },
   "dependencies": {
     "express": "^5.2.1",
     "katex": "^0.17.0",
     "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.0"
   }
 }

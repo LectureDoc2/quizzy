@@ -41,4 +41,29 @@
     color: var(--quiz-text-secondary);
     margin-top: var(--quiz-space-md);
   }
+
+  .room-state {
+    text-align: center;
+    margin-bottom: var(--quiz-space-lg);
+  }
+
+  .room-state__title {
+    font-weight: 600;
+    color: var(--quiz-text);
+    margin-bottom: var(--quiz-space-xs);
+  }
+
+  .room-state__detail {
+    font-size: 0.875rem;
+    color: var(--quiz-text-secondary);
+  }
+
+  /* A late arrival needs to notice that the quiz is already running. */
+  .room-state__detail--live {
+    color: var(--quiz-text);
+    background: var(--quiz-primary-alpha-5);
+    border: 1px solid var(--quiz-primary);
+    border-radius: var(--quiz-radius-sm);
+    padding: var(--quiz-space-sm);
+  }
 }

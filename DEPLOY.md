@@ -10,15 +10,27 @@ Replace the example values (host name, IP, DNS server, TSIG key) with your own.
 
 ## 0. Prerequisites
 
-- A host on the **DHBW network** with a fixed **internal IP** (example: `141.72.12.141`).
-  The IP is only routable inside the DHBW network — clients must be on campus or on
-  the DHBW VPN to reach the service.
+- A host on the **DHBW network** with a fixed **internal address** — IPv4
+  (example: `141.72.12.141`), IPv6 (example: `2001:db8:1:2::10`), or both. The
+  address is only routable inside the DHBW network, so clients must be on campus
+  or on the DHBW VPN to reach the service.
 - A subdomain allocated to you, e.g. `quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site`.
-- A **TSIG key** (RFC2136) from the platform team to set your DNS `A` record,
-  plus the DNS server address (example: `141.72.5.244`).
+- A **TSIG key** (RFC2136) from the platform team to set your DNS record, plus the
+  DNS server address (example: `141.72.5.244`). You need an `A` record on IPv4, an
+  `AAAA` record on IPv6, or both on a dual-stack host — see step 10.
 - `sudo`/root access on the host.
 - Ports **80 and 443** reachable on the host from within the DHBW network
-  (required for the ACME HTTP-01 challenge and for serving the site).
+  (required for the ACME HTTP-01 challenge and for serving the site), **on every
+  address family the host actually uses**.
+- On a cloud platform (OpenStack and the like) there are **two** firewalls: the
+  provider's security group and the host's own `ufw`. Both must allow 80/443, and
+  a rule that exists only for IPv4 leaves an IPv6-only host unreachable. Step 2
+  covers both.
+
+> **Working on IPv6?** The application itself needs no changes — the backend binds
+> dual-stack by default and Caddy follows DNS. What does need attention is the
+> surrounding infrastructure: the `AAAA` record, both firewalls, and ICMPv6. Every
+> IPv6-specific step below is marked **IPv6**.
 
 > Throughout this document the placeholder `<HOST>` means, e.g., 
 > `quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site`.
@@ -34,7 +46,35 @@ sudo apt install -y git curl ufw
 
 ---
 
-## 2. Firewall (do this before enabling it!)
+## 2. Firewalls (do this before enabling anything!)
+
+### 2a. Provider security group (cloud hosts only)
+
+If the host runs on OpenStack or a similar platform, its security group is a second
+firewall in front of `ufw`, and it is **per address family**: the built-in `SSH`,
+`HTTP` and `HTTPS` presets in the web UI create IPv4-only rules. On an IPv6-only
+host those presets leave the machine completely unreachable, SSH included.
+
+**IPv6** — add ingress rules for TCP 22, 80 and 443 with remote `::/0`, plus one
+for ICMPv6:
+
+```bash
+SG=<your-security-group>
+openstack security group rule create --ingress --ethertype IPv6 --protocol tcp --dst-port 22  --remote-ip ::/0 $SG
+openstack security group rule create --ingress --ethertype IPv6 --protocol tcp --dst-port 80  --remote-ip ::/0 $SG
+openstack security group rule create --ingress --ethertype IPv6 --protocol tcp --dst-port 443 --remote-ip ::/0 $SG
+openstack security group rule create --ingress --ethertype IPv6 --protocol ipv6-icmp --remote-ip ::/0 $SG
+```
+
+The ICMPv6 rule is **not** optional the way IPv4 ICMP is. IPv6 routers never
+fragment, so endpoints discover the path MTU from ICMPv6 type 2 ("Packet Too Big").
+Block it and connections still establish — then hang once packets grow, which here
+means the 1 MB quiz upload and TLS handshakes with a full certificate chain. It
+looks like a working deployment until a real lecture hits it.
+
+Restrict SSH to the campus prefix rather than `::/0` if you can.
+
+### 2b. Host firewall (`ufw`)
 
 Enabling `ufw` without allowing SSH first will lock you out of the host.
 
@@ -44,6 +84,22 @@ sudo ufw allow 80,443/tcp       # HTTP (ACME challenge + redirect) and HTTPS
 sudo ufw enable
 sudo ufw status verbose
 ```
+
+**IPv6** — `ufw` writes both families from those same commands, but only when IPv6
+support is switched on, which is the default and worth confirming rather than
+assuming:
+
+```bash
+grep '^IPV6=' /etc/default/ufw        # expect IPV6=yes
+sudo ufw status verbose | grep '(v6)' # expect (v6) entries for 22/80/443
+```
+
+If it read `IPV6=no`, set it to `yes` and run `sudo ufw disable && sudo ufw enable`
+to rebuild the rules.
+
+Unlike a cloud security group, `ufw` already permits the essential ICMPv6 types in
+`/etc/ufw/before6.rules`, so PMTUD works without extra configuration here — the
+ICMPv6 rule in 2a is needed because the provider's firewall has no such default.
 
 ---
 
@@ -197,6 +253,14 @@ sudo chmod 640 /etc/caddy/quizzy.env
 
 ---
 
+> **IPv6:** leave `BACKEND_HOST=localhost` — it resolves to whichever families the
+> host has, so it is correct on IPv4, IPv6 and dual-stack alike. If you ever replace
+> it with a literal address, an IPv6 one must be **bracketed** (`BACKEND_HOST=[::1]`):
+> the Caddyfile appends `:port`, so an unbracketed `::1` becomes the invalid
+> `::1:3000`.
+
+---
+
 ## 9. systemd units
 
 ### 9a. Backend service
@@ -245,13 +309,20 @@ EOF
 
 ---
 
-## 10. Set the DNS A record
+## 10. Set the DNS record (`A` and/or `AAAA`)
 
-The host has an internal-only IP, and the `users.dhbw.site` zone is managed centrally;
-you set your own `A` record via authenticated dynamic update (RFC2136 + TSIG). Only
-needed if your subdomain does not already point at this host.
+The host has an internal-only address, and the `users.dhbw.site` zone is managed
+centrally; you set your own record via authenticated dynamic update (RFC2136 +
+TSIG). Only needed if your subdomain does not already point at this host.
+
+Set the record type that matches the host: `A` for IPv4, **`AAAA` for IPv6**, both
+on a dual-stack host. Getting this wrong is the most common IPv6 deployment
+failure — without an `AAAA` record the name simply does not resolve for clients,
+and the ACME validator cannot reach the host either, so certificate issuance fails
+with a connection error rather than anything that names DNS.
 
 ```bash
+# IPv4 host
 nsupdate -y "hmac-sha512:<KEY_NAME>:<TSIG_SECRET>" <<EOF
 server 141.72.5.244 53
 zone michael-eichberg-at-dhbw-de.users.dhbw.site
@@ -260,9 +331,23 @@ update add    quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site. 60 IN A 141.72
 send
 EOF
 
-# Verify
-dig @141.72.5.244 -p 53 quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site A +short
+# IPv6 host (use the host's real global address, not a link-local fe80:: one)
+nsupdate -y "hmac-sha512:<KEY_NAME>:<TSIG_SECRET>" <<EOF
+server 141.72.5.244 53
+zone michael-eichberg-at-dhbw-de.users.dhbw.site
+update delete quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site. IN AAAA
+update add    quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site. 60 IN AAAA 2001:db8:1:2::10
+send
+EOF
+
+# Verify whichever you set (both on a dual-stack host)
+dig @141.72.5.244 -p 53 quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site A    +short
+dig @141.72.5.244 -p 53 quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site AAAA +short
 ```
+
+> The address to publish is the host's **global** IPv6 address — `ip -6 addr show
+> scope global`. A link-local `fe80::` address is not reachable off-link and must
+> never go into DNS.
 
 > **Security:** the TSIG secret grants write access to your DNS zone — treat it like a
 > password. Never commit it to the repo or paste it into logs/chat. If it has been
@@ -301,10 +386,29 @@ systemctl status quizzy-backend --no-pager
 curl -I https://quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site/
 
 # 4. The served certificate is from HARICA, not Caddy's local CA
+#    (on an IPv6-only host use [::1]:443 -- 127.0.0.1 does not exist there)
 echo | openssl s_client -connect 127.0.0.1:443 \
   -servername quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site 2>/dev/null \
   | openssl x509 -noout -issuer -dates
 ```
+
+**IPv6** — two extra checks worth doing before you trust the deployment:
+
+```bash
+# 5. The site answers over IPv6 specifically (-6 forces the family, -g allows
+#    a bracketed literal). Also confirm the loopback path on an IPv6-only host.
+curl -6 -I https://quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site/
+curl -g -I https://[::1]:443/ --resolve '*:443:[::1]' -k
+
+# 6. PMTUD is not being silently blackholed: a large response must complete,
+#    not stall. A hang here points at a missing ICMPv6 rule in step 2a.
+curl -6 -o /dev/null -w 'transferred %{size_download} bytes in %{time_total}s\n' \
+  https://quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site/client/quiz-control.js
+```
+
+Also run the test suite on the host once (`pnpm --filter ld-quiz-server test`); it
+binds to whichever loopback family the host provides, so a failure there means the
+host's networking is not what you think it is.
 
 Finally, open `https://<HOST>/` in a browser **while on the DHBW network or VPN**
 (the IP is not routable from the public internet).
@@ -320,8 +424,13 @@ rather than a restart.
 |---|---|---|
 | Local `curl https://<HOST>/` → `tlsv1 alert internal error` | `CADDY_HOST` not loaded → site fell back to `localhost`, no matching cert | `sudo journalctl -u caddy -b \| grep CADDY_HOST`; ensure the drop-in `EnvironmentFile` and `/etc/caddy/quizzy.env` exist |
 | Caddy log: `finalize … HTTP 500 serverInternal / enrollment failed` | HARICA/RA backend side, **not** your config | Escalate to the platform team with the ACME **order ID**, account ID, and timestamp from the log |
-| ACME log: `Connection error` / challenge never validates | HARICA validator cannot reach port 80 | Confirm `ufw` allows 80/443 and the host is reachable on 80 from another DHBW machine |
-| `dig … +short` returns nothing (NXDOMAIN) | `A` record not set for this exact name | Re-run step 10; note `quiz` ≠ `quizzy` |
+| ACME log: `Connection error` / challenge never validates | HARICA validator cannot reach port 80 | Confirm **both** firewalls allow 80/443 for the host's address family (steps 2a and 2b) and that the host is reachable on 80 from another DHBW machine |
+| `dig … +short` returns nothing (NXDOMAIN) | `A`/`AAAA` record not set for this exact name | Re-run step 10; note `quiz` ≠ `quizzy` |
+| **IPv6:** site unreachable, SSH included, right after provisioning | Security-group rules are IPv4-only — the UI's `SSH`/`HTTP`/`HTTPS` presets do not create IPv6 rules | Add the `::/0` rules from step 2a |
+| **IPv6:** page loads but large transfers hang (quiz upload, TLS handshake) | ICMPv6 "Packet Too Big" blocked, so PMTUD fails | Add the `ipv6-icmp` rule from step 2a; verify with check 6 in step 11 |
+| **IPv6:** browser cannot resolve `<HOST>`, ACME reports a connection error | `AAAA` record missing (an `A` record alone is useless on an IPv6-only host) | `dig … AAAA +short`; re-run step 10 |
+| **IPv6:** `ufw status` shows no `(v6)` rules | `IPV6=no` in `/etc/default/ufw` | Set `IPV6=yes`, then `sudo ufw disable && sudo ufw enable` |
+| **IPv6:** something fails to bind with `EADDRNOTAVAIL` on `127.0.0.1` | A tool or script hardcodes the IPv4 loopback, which does not exist on an IPv6-only host | Use `[::1]`, or a name that resolves to whichever family is present |
 | `quizzy-backend` fails with `status=1`, ~150 ms | Script crashed on startup | `journalctl -u quizzy-backend -n 60`; usually wrong `WorkingDirectory`, missing deps, or `EADDRINUSE` |
 | `EADDRINUSE :::3000` | A stray hand-started `node` still holds the port | `sudo ss -ltnp \| grep :3000`; stop the old process / any pm2 daemon |
 | `Start request repeated too quickly` | Restart limiter tripped after repeated failures | `sudo systemctl reset-failed quizzy-backend` before restarting |

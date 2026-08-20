@@ -7,6 +7,7 @@ import { renderQuiz } from './math-renderer.js';
 import { sanitizeQuiz } from './quiz-sanitizer.js';
 import { validateName } from './name-validator.js';
 import { getServerAddresses } from './network-addresses.js';
+import { clientKey, parseForwardedFor, DEFAULT_IPV6_PREFIX_BITS } from './client-address.js';
 
 const MAX_QUIZ_SIZE = 1024 * 1024; // 1MB
 
@@ -75,6 +76,7 @@ function createQuizServer(options = {}) {
     allowedOrigins = (process.env.ALLOWED_ORIGINS || '*').split(',').map(o => o.trim()),
     trustProxy = process.env.TRUST_PROXY === 'true',
     sweepIntervalMs = ROOM_SWEEP_INTERVAL_MS,
+    ipv6PrefixBits = Number(process.env.IPV6_PREFIX_BITS) || DEFAULT_IPV6_PREFIX_BITS,
     heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS
   } = options;
 
@@ -84,7 +86,7 @@ function createQuizServer(options = {}) {
   const server = createServer(app);
   const wss = new WebSocketServer({ server, path: '/ws', maxPayload: MAX_QUIZ_SIZE });
 
-  /** ip -> { failures, failureWindowStart, rooms, sockets } */
+  /** client key (see client-address.js) -> { failures, ... , rooms, sockets } */
   const ipState = new Map();
 
   function corsMiddleware(req, res, next) {
@@ -107,28 +109,38 @@ function createQuizServer(options = {}) {
 
   app.use(corsMiddleware);
 
-  function stateForIp(ip) {
-    let state = ipState.get(ip);
+  function stateForKey(key) {
+    let state = ipState.get(key);
     if (!state) {
       state = { failures: 0, failureWindowStart: Date.now(), rooms: 0, sockets: 0 };
-      ipState.set(ip, state);
+      ipState.set(key, state);
     }
     return state;
   }
 
-  function releaseIpState(ip) {
-    const state = ipState.get(ip);
-    if (state && state.sockets <= 0 && state.rooms <= 0) ipState.delete(ip);
+  function releaseKeyState(key) {
+    const state = ipState.get(key);
+    if (state && state.sockets <= 0 && state.rooms <= 0) ipState.delete(key);
   }
 
-  function clientIp(req) {
+  /**
+   * The key this connection is counted under by the abuse limits.
+   *
+   * Not simply the address. On IPv6 a client normally holds a whole /64 and can
+   * use a fresh source address per connection at no cost, so counting addresses
+   * would leave every limit below evadable by an ordinary client on an ordinary
+   * connection. See client-address.js.
+   *
+   * Caddy terminates TLS and proxies, so the socket address is the proxy's;
+   * X-Forwarded-For is believed only when explicitly configured, otherwise a
+   * client could spoof the header and choose its own bucket.
+   */
+  function clientKeyFor(req) {
     if (trustProxy) {
-      const forwarded = req.headers['x-forwarded-for'];
-      if (typeof forwarded === 'string' && forwarded.length > 0) {
-        return forwarded.split(',')[0].trim();
-      }
+      const forwarded = parseForwardedFor(req.headers['x-forwarded-for']);
+      if (forwarded !== '') return clientKey(forwarded, { ipv6PrefixBits });
     }
-    return req.socket.remoteAddress || 'unknown';
+    return clientKey(req.socket.remoteAddress, { ipv6PrefixBits });
   }
 
   function withinMessageRate(ws) {
@@ -142,7 +154,7 @@ function createQuizServer(options = {}) {
   }
 
   function recordFailure(ws) {
-    const state = stateForIp(ws.clientIp);
+    const state = stateForKey(ws.clientKey);
     const now = Date.now();
     if (now - state.failureWindowStart >= limits.failedAttemptWindowMs) {
       state.failureWindowStart = now;
@@ -162,12 +174,12 @@ function createQuizServer(options = {}) {
 
   wss.on('connection', (ws, req) => {
     ws.isAlive = true;
-    ws.clientIp = clientIp(req);
+    ws.clientKey = clientKeyFor(req);
     ws.messageWindowStart = Date.now();
     ws.messageCount = 0;
     ws.createdRooms = 0;
 
-    const state = stateForIp(ws.clientIp);
+    const state = stateForKey(ws.clientKey);
     if (state.sockets >= limits.maxSocketsPerIp) {
       ws.send(JSON.stringify({ type: 'error', message: 'Too many connections. Please try again later.' }));
       ws.close();
@@ -225,7 +237,7 @@ function createQuizServer(options = {}) {
             room = existing;
             resumed = true;
           } else {
-            const ipLimits = stateForIp(ws.clientIp);
+            const ipLimits = stateForKey(ws.clientKey);
             if (ipLimits.rooms >= limits.maxRoomsPerIp) {
               rejectAndMaybeClose(ws, 'Too many open sessions from this address.');
               return;
@@ -250,7 +262,7 @@ function createQuizServer(options = {}) {
             }
             resumed = false;
             ipLimits.rooms++;
-            room.creatorIp = ws.clientIp;
+            room.creatorKey = ws.clientKey;
           }
 
           room.addPresenter(ws);
@@ -643,21 +655,21 @@ function createQuizServer(options = {}) {
       }
     }
 
-    if (ws.clientIp) {
-      const state = ipState.get(ws.clientIp);
+    if (ws.clientKey) {
+      const state = ipState.get(ws.clientKey);
       if (state) {
         state.sockets = Math.max(0, state.sockets - 1);
-        releaseIpState(ws.clientIp);
+        releaseKeyState(ws.clientKey);
       }
     }
   }
 
   roomManager.onRoomRemoved = (room) => {
-    if (!room.creatorIp) return;
-    const state = ipState.get(room.creatorIp);
+    if (!room.creatorKey) return;
+    const state = ipState.get(room.creatorKey);
     if (state) {
       state.rooms = Math.max(0, state.rooms - 1);
-      releaseIpState(room.creatorIp);
+      releaseKeyState(room.creatorKey);
     }
   };
   // Keep connections alive. unref() so that an imported server never by itself

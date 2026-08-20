@@ -12,6 +12,7 @@ import assert from 'node:assert';
 import { WebSocket } from 'ws';
 import { createHash } from 'crypto';
 import { createQuizServer, GENERIC_REJECTION, QUIZ_FINISHED } from '../src/server.js';
+import { loopbackHost, originFor } from './loopback.js';
 
 const QUIZ = {
   title: 'Integration Quiz',
@@ -35,6 +36,9 @@ function tokenFor(name, quiz = QUIZ) {
 describe('Server integration', () => {
   let quizServer;
   let port;
+  // Bind and connect using the same loopback literal, whichever family this
+  // host provides; see loopback.js.
+  const host = loopbackHost();
   const sockets = [];
 
   before(async () => {
@@ -43,7 +47,7 @@ describe('Server integration', () => {
       limits: { maxMessagesPerWindow: 12, maxFailedAttemptsPerWindow: 3, maxRoomsPerIp: 2 },
       heartbeatIntervalMs: 60_000
     });
-    port = await quizServer.listen(0, '127.0.0.1');
+    port = await quizServer.listen(0, host);
   });
 
   after(async () => {
@@ -69,7 +73,7 @@ describe('Server integration', () => {
    * and consumed from the buffer instead.
    */
   async function connect() {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    const ws = new WebSocket(`${originFor('ws', host, port)}/ws`);
     sockets.push(ws);
     ws.inbox = [];
     ws.waiters = [];
@@ -218,7 +222,7 @@ describe('Server integration', () => {
 
     it('has no endpoint that lists rooms', async () => {
       await openRoom();
-      const res = await fetch(`http://127.0.0.1:${port}/api/sessions?token=${tokenFor('michael')}`);
+      const res = await fetch(`${originFor('http', host, port)}/api/sessions?token=${tokenFor('michael')}`);
       assert.strictEqual(res.status, 404);
     });
 
@@ -473,7 +477,7 @@ describe('Server integration', () => {
     });
 
     it('answers a CORS preflight', async () => {
-      const res = await fetch(`http://127.0.0.1:${port}/api/anything`, {
+      const res = await fetch(`${originFor('http', host, port)}/api/anything`, {
         method: 'OPTIONS',
         headers: { Origin: 'http://other-origin.example' }
       });
@@ -481,5 +485,92 @@ describe('Server integration', () => {
       assert.ok(res.headers.get('access-control-allow-origin'));
       assert.ok(res.headers.get('access-control-allow-methods'));
     });
+  });
+});
+
+/**
+ * The abuse limits on IPv6.
+ *
+ * This container has no IPv6 stack, so the addresses are fed in through
+ * X-Forwarded-For with trustProxy enabled -- which exercises exactly the code
+ * path that turns an address into a limit bucket, over whatever transport
+ * happens to be available.
+ */
+describe('Abuse limits on IPv6', () => {
+  let quizServer;
+  let port;
+  const host = loopbackHost();
+  const sockets = [];
+
+  before(async () => {
+    quizServer = createQuizServer({
+      trustProxy: true,
+      limits: { maxRoomsPerIp: 1 },
+      heartbeatIntervalMs: 60_000
+    });
+    port = await quizServer.listen(0, host);
+  });
+
+  after(async () => {
+    for (const ws of sockets) {
+      try { ws.terminate(); } catch { /* already gone */ }
+    }
+    await quizServer.close();
+  });
+
+  async function openRoomFrom(address, presenterName) {
+    const ws = new WebSocket(`${originFor('ws', host, port)}/ws`, {
+      headers: { 'X-Forwarded-For': address }
+    });
+    sockets.push(ws);
+    ws.on('error', () => {});
+    await new Promise((resolve, reject) => {
+      ws.once('open', resolve);
+      ws.once('error', reject);
+    });
+    ws.send(JSON.stringify({
+      type: 'create_room',
+      presenterToken: tokenFor(presenterName),
+      quiz: QUIZ
+    }));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timed out')), 3000);
+      ws.once('message', (data) => { clearTimeout(timer); resolve(JSON.parse(data)); });
+    });
+  }
+
+  it('treats a whole IPv6 /64 as one client', async () => {
+    // Anyone with a /64 -- which is the normal home or campus allocation --
+    // can pick a fresh source address per connection. If the limits counted
+    // addresses, this second request would sail through and every quota in the
+    // server would be decorative on IPv6.
+    const first = await openRoomFrom('2001:db8:1:2:aaaa::1', 'presenter-one');
+    assert.strictEqual(first.type, 'room_created');
+
+    const second = await openRoomFrom('2001:db8:1:2:ffff::9', 'presenter-two');
+    assert.strictEqual(second.type, 'error', 'a new address in the same /64 evaded the room cap');
+    assert.match(second.message, /too many/i);
+  });
+
+  it('still lets a genuinely different prefix through', async () => {
+    const other = await openRoomFrom('2001:db8:9:9::1', 'presenter-three');
+    assert.strictEqual(other.type, 'room_created');
+  });
+
+  it('does not count an IPv4 client against an IPv6 bucket', async () => {
+    const ipv4 = await openRoomFrom('203.0.113.7', 'presenter-four');
+    assert.strictEqual(ipv4.type, 'room_created');
+  });
+
+  it('treats an IPv4-mapped address as the IPv4 client it is', async () => {
+    // ::ffff:203.0.113.7 is the same client as 203.0.113.7, which already has
+    // its one room, so this must be refused rather than given a fresh bucket.
+    const mapped = await openRoomFrom('::ffff:203.0.113.7', 'presenter-five');
+    assert.strictEqual(mapped.type, 'error', 'an IPv4-mapped address opened a second bucket');
+  });
+
+  it('accepts the bracketed forwarded form', async () => {
+    const bracketed = await openRoomFrom('[2001:db8:1:2:5555::5]:41234', 'presenter-six');
+    assert.strictEqual(bracketed.type, 'error', 'bracketed form was not matched to its /64');
   });
 });

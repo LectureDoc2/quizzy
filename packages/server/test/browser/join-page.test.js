@@ -9,6 +9,7 @@ import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert';
 import { createQuizServer } from '../../src/server.js';
 import { startStaticServer, launchBrowser, tokenFor, connectSocket } from './harness.js';
+import { loopbackHost, originFor } from '../loopback.js';
 
 const QUIZ = {
   title: 'Networking Basics',
@@ -32,7 +33,7 @@ describe('Join page (browser, full stack)', () => {
 
   before(async () => {
     quizServer = createQuizServer({ heartbeatIntervalMs: 60_000 });
-    backendPort = await quizServer.listen(0, '127.0.0.1');
+    backendPort = await quizServer.listen(0, loopbackHost());
     statics = await startStaticServer(backendPort);
     browser = await launchBrowser();
   });
@@ -51,7 +52,7 @@ describe('Join page (browser, full stack)', () => {
     for (const id of [...quizServer.roomManager.rooms.keys()]) {
       quizServer.roomManager.removeRoom(id);
     }
-    presenter = connectSocket(`ws://127.0.0.1:${backendPort}/ws`);
+    presenter = connectSocket(`${originFor('ws', loopbackHost(), backendPort)}/ws`);
     sockets.push(presenter);
     await presenter.opened;
     presenter.sendJson({

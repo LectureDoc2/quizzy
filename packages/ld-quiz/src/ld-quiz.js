@@ -72,7 +72,7 @@ class QuizHost extends HTMLElement {
     this.contentEl = this.shadowRoot.getElementById("content");
 
     if (!window.isSecureContext) {
-      this.showError("Quizzy requires a secure context (https or localhost/127.0.0.1).");
+      this.showError("Quizzy requires a secure context (https, or localhost / 127.0.0.1 / [::1]).");
       return;
     }
 

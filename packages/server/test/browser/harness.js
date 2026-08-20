@@ -13,6 +13,7 @@ import { extname, join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket } from 'ws';
 import { createHash } from 'crypto';
+import { loopbackHost, hostForUrl, originFor } from '../loopback.js';
 
 export const WEB_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'web');
 
@@ -57,7 +58,7 @@ export async function startStaticServer(backendPort = null) {
       // ends. Without a listener that becomes an uncaughtException and fails
       // the run even though every assertion passed.
       socket.on('error', () => {});
-      const upstream = new WebSocket(`ws://127.0.0.1:${backendPort}/ws`);
+      const upstream = new WebSocket(`${originFor('ws', loopbackHost(), backendPort)}/ws`);
       upgraded.add(upstream);
       upstream.on('open', () => {
         const accept = createHash('sha1')
@@ -76,10 +77,11 @@ export async function startStaticServer(backendPort = null) {
     });
   }
 
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const host = loopbackHost();
+  await new Promise((resolve) => server.listen(0, host, resolve));
   return {
     server,
-    origin: `http://127.0.0.1:${server.address().port}`,
+    origin: `http://${hostForUrl(host)}:${server.address().port}`,
     async close() {
       for (const item of upgraded) {
         try {

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { getServerAddresses } from '../network-addresses.js';
+import { getServerAddresses } from '../src/network-addresses.js';
 
 describe('getServerAddresses', () => {
   it('returns loopback fallbacks when no interfaces are present', () => {

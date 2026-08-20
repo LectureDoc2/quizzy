@@ -1,5 +1,6 @@
 {
   "title": "TOR - The Onion Router Quiz",
+  "secret": "A Secret ist only needed if the quiz is used in a context where it is important that no one can precisely reconstruct the quiz and may potentially guess the presenter token and therefore take over control of the process. Generate a high entropy token using: openssl rand -base64 32",
   "questions": [
     {
       "type": "multiple-choice",

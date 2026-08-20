@@ -1,4 +1,3 @@
-import { decryptAESGCMPBKDF } from "../shared/ld-crypto.js";
 
 class QuizControl {
   constructor() {

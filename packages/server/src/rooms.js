@@ -214,7 +214,7 @@ class Room {
     const q = this.getCurrentQuestion();
     if (!q) return null;
     // Return question without correct answer
-    const { correctIndices: _, correctIndex: __, correctAnswer: ___, ...publicQ } = q;
+    const { correctIndices: _, correctAnswer: ___, ...publicQ } = q;
     return {
       ...publicQ,
       type: q.type,

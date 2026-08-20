@@ -1,0 +1,23 @@
+{
+  "name": "quizzy",
+  "version": "1.0.0",
+  "description": "Real-time, embeddable quiz application for HTML-based presentation systems (e.g. LectureDoc2)",
+  "type": "module",
+  "private": true,
+  "license": "BSD-3-Clause",
+  "scripts": {
+    "build": "node build.js",
+    "watch": "node build.js --watch",
+    "start": "pnpm --filter ld-quiz-server start",
+    "dev": "pnpm build && pnpm --filter ld-quiz-server start",
+    "test": "pnpm --filter ld-quiz-server test",
+    "encrypt": "node tools/encrypt-quiz.js",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@lecturedoc2/libcrypto": "^1.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

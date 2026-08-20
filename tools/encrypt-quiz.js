@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from 'fs';
 import { createInterface } from 'readline';
-import { encryptASEGCMPBKDF } from '../shared/ld-crypto.js';
+import { encryptAESGCMPBKDF } from '@lecturedoc2/libcrypto';
 
 const ITERATIONS = 100000;
 
@@ -22,7 +22,7 @@ async function main() {
     await promptPassword() : 
     (await readStdin()).trim();
 
-  const encrypted = await encryptASEGCMPBKDF(quizData, password, ITERATIONS);
+  const encrypted = await encryptAESGCMPBKDF(quizData, password, ITERATIONS);
   writeFileSync(outputFile, encrypted);
   console.log(`Encrypted quiz written to ${outputFile}`);
 }

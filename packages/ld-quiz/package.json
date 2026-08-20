@@ -1,0 +1,23 @@
+{
+  "name": "@lecturedoc2/ld-quiz",
+  "version": "1.0.0",
+  "description": "Embeddable <ld-quiz> web component for real-time quizzes in HTML presentations",
+  "type": "module",
+  "license": "BSD-3-Clause",
+  "author": "Michael Eichberg (http://www.michael-eichberg.de/)",
+  "sideEffects": [
+    "./src/ld-quiz.js"
+  ],
+  "exports": {
+    ".": "./src/ld-quiz.js",
+    "./quiz-styles.css": "./src/quiz-styles.css",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "dependencies": {
+    "@lecturedoc2/libcrypto": "^1.1.0"
+  }
+}

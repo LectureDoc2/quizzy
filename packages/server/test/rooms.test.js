@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { Room, RoomManager } from '../rooms.js';
+import { Room, RoomManager } from '../src/rooms.js';
 
 describe('Room', () => {
   it('addParticipant returns a participant with an ID', () => {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { validateName, isBlacklisted, NAME_PATTERN, NAME_MIN_LENGTH, NAME_MAX_LENGTH } from '../name-validator.js';
+import { validateName, isBlacklisted, NAME_PATTERN, NAME_MIN_LENGTH, NAME_MAX_LENGTH } from '../src/name-validator.js';
 
 test('validateName accepts valid names', () => {
     const validNames = [

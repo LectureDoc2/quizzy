@@ -1,6 +1,6 @@
 # Quizzy — Production Deployment on a Fresh Ubuntu 26.04 Host
 
-End-to-end runbook to deploy the `quiz` project (https://github.com/Delors/quiz.git)
+End-to-end runbook to deploy the `quizzy` project (https://github.com/Delors/quiz.git)
 behind Caddy with HTTPS, using the DHBW HARICA ACME endpoint, the Node backend
 running under a dedicated service user, both managed by systemd.
 
@@ -110,31 +110,37 @@ Directory layout after checkout:
 ├── caddy/
 │   ├── tls-auto.txt          # empty  -> automatic HTTPS (production)
 │   └── tls-mkcert.txt        # local dev only
-└── ld-quiz/
-    ├── client/  shared/  public/   # static assets served by Caddy
-    └── server/                     # Node backend
-        ├── server.js               # entry point  (listens on PORT || 3000)
-        ├── package.json            # deps: express, ws, katex
-        └── pnpm-lock.yaml          # lockfile (pnpm, NOT npm)
+├── package.json              # workspace root: build scripts
+├── pnpm-workspace.yaml
+├── build.js                  # esbuild -> dist/
+├── packages/
+│   ├── ld-quiz/              # embeddable <ld-quiz> web component (browser)
+│   └── server/               # Node backend
+│       ├── src/server.js     # entry point  (listens on PORT || 3000)
+│       ├── web/              # HTML/CSS/page scripts (build input)
+│       └── package.json      # deps: express, ws, katex
+└── dist/                     # BUILD OUTPUT, served by Caddy (not in git)
 ```
+
+> **`dist/` is not committed.** It must be regenerated with `pnpm build` after every
+> checkout and after every `git pull`. Caddy serves nothing until it exists.
 
 ---
 
-## 7. Install backend dependencies
+## 7. Install dependencies and build
 
-Dependencies live in `ld-quiz/server`. The repo ships a **pnpm** lockfile, so there is
-**no `package-lock.json`** — `npm ci` would fail. Use one of:
+The repo is a **pnpm workspace**; install from the repository root, not from a
+subdirectory. `@lecturedoc2/libcrypto` is fetched from npm.
 
 ```bash
-cd /srv/quizzy/ld-quiz/server
-
-# Simple and robust (resolves from package.json):
-sudo npm install --omit=dev
-
-# OR, to honour the existing pnpm lockfile exactly:
+cd /srv/quizzy
 sudo corepack enable
-sudo pnpm install --prod --frozen-lockfile
+sudo pnpm install --frozen-lockfile
+sudo pnpm build            # writes dist/
 ```
+
+`esbuild` is a dev dependency and is required for the build, so do **not** install with
+`--prod` unless you build elsewhere and copy `dist/` over.
 
 Then hand the whole tree to the service user (default read permissions let the
 `caddy` user serve the static files):
@@ -169,7 +175,7 @@ global options block at the top of `/etc/caddy/Caddyfile` so it reads:
 ```
 
 Leave the rest of the file as-is. The site block uses relative paths
-(`import {$TLS_CONFIG:caddy/tls-auto.txt}`, `root * ld-quiz/client`, …); they resolve
+(`import {$TLS_CONFIG:caddy/tls-auto.txt}`, `root * dist`, …); they resolve
 against the `WorkingDirectory` set in step 9b. `caddy/tls-auto.txt` is intentionally
 empty, which enables automatic HTTPS via the issuer above.
 
@@ -204,7 +210,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/srv/quizzy
-ExecStart=/usr/bin/node ld-quiz/server/server.js
+ExecStart=/usr/bin/node packages/server/src/server.js
 Environment=NODE_ENV=production
 Environment=PORT=3000
 User=quizzy
@@ -329,6 +335,7 @@ rather than a restart.
   restarting" behaviour.
 - **Secrets** (TSIG key, any future API tokens) belong in root-owned `0640` env files
   referenced from the units, never in the Caddyfile or the git repo.
-- **Updating the app:** `cd /srv/quizzy && sudo git pull`, reinstall deps if
-  `package.json` changed (step 7), `sudo chown -R quizzy:quizzy /srv/quizzy`, then
+- **Updating the app:** `cd /srv/quizzy && sudo git pull`, then
+  `sudo pnpm install --frozen-lockfile && sudo pnpm build` (always — `dist/` is not in
+  git), `sudo chown -R quizzy:quizzy /srv/quizzy`, then
   `sudo systemctl restart quizzy-backend` and `sudo systemctl reload caddy`.

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { renderMath, renderQuestion, renderQuiz } from '../math-renderer.js';
+import { renderMath, renderQuestion, renderQuiz } from '../src/math-renderer.js';
 
 describe('Math Renderer', () => {
   it('renderMath renders inline math with \\( \\)', () => {

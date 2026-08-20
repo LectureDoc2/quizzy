@@ -4,7 +4,7 @@ import { createServer } from 'http';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import { WebSocket } from 'ws';
-import { RoomManager } from '../rooms.js';
+import { RoomManager } from '../src/rooms.js';
 
 describe('Server Integration', () => {
   let server;

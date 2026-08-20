@@ -10,7 +10,7 @@ function loadBlacklist() {
     if (blacklist !== null) return blacklist;
     
     try {
-        const blacklistPath = path.join(__dirname, '..', 'lib', 'name-blacklist.json');
+        const blacklistPath = path.join(__dirname, 'name-blacklist.json');
         const data = JSON.parse(fs.readFileSync(blacklistPath, 'utf8'));
         blacklist = new Set(data.blacklist.map(name => name.toLowerCase()));
     } catch (err) {

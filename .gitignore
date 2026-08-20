@@ -1,4 +1,5 @@
 node_modules/
+dist/
 *.log
 server.log
 .DS_Store
@@ -6,3 +7,6 @@ server.log
 # Development TLS certificates
 *.pem
 *.key
+
+# This project uses pnpm; an npm lockfile would diverge from pnpm-lock.yaml
+package-lock.json

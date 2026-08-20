@@ -1,4 +1,4 @@
-import { decryptAESGCMPBKDF } from "../shared/ld-crypto.js";
+import { decryptAESGCMPBKDF } from "@lecturedoc2/libcrypto";
 import QRCode from "./qrcode.min.js"; // TODO load from Quiz-Server!
 
 const MAX_QUIZ_SIZE = 1024 * 1024; // 1MB
@@ -279,9 +279,6 @@ class QuizHost extends HTMLElement {
         this.updateParticipantCount(msg.count);
         break;
 
-      case "error":
-        this.showError(msg.message);
-        break;
     }
   }
 

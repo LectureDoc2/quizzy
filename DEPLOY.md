@@ -264,7 +264,12 @@ sudo chown -R quizzy:quizzy /srv/quizzy
 
 ```bash
 sudo cp /srv/quizzy/Caddyfile /etc/caddy/Caddyfile
+sudo cp -r /srv/quizzy/caddy /etc/caddy/
 ```
+
+Both lines are required. The Caddyfile imports a TLS snippet from `caddy/`, and that
+path is resolved **relative to the Caddyfile itself** (see 8b), so the snippets have
+to sit next to the installed copy at `/etc/caddy/caddy/`.
 
 ### 8b. Add the HARICA ACME settings to the global block
 
@@ -281,10 +286,19 @@ global options block at the top of `/etc/caddy/Caddyfile` so it reads:
 }
 ```
 
-Leave the rest of the file as-is. The site block uses relative paths
-(`import {$TLS_CONFIG:caddy/tls-auto.txt}`, `root * dist`, …); they resolve
-against the `WorkingDirectory` set in step 9b. `caddy/tls-auto.txt` is intentionally
-empty, which enables automatic HTTPS via the issuer above.
+Leave the rest of the file as-is. It contains two kinds of relative path, and they
+resolve differently — which is easy to get wrong:
+
+- **`import {$TLS_CONFIG:caddy/tls-auto.txt}`** is resolved when the config is
+  *adapted*, relative to **the Caddyfile that contains the import** — not to the
+  working directory. Since the file is installed at `/etc/caddy/Caddyfile`, Caddy
+  looks for `/etc/caddy/caddy/tls-auto.txt`, which is why 8a copies the `caddy/`
+  directory too. Running `caddy validate` from `/srv/quizzy` does **not** help.
+- **`root * dist`** and other runtime paths resolve against the process working
+  directory, i.e. the `WorkingDirectory` set in step 9b.
+
+`caddy/tls-auto.txt` is intentionally empty, which enables automatic HTTPS via the
+issuer above.
 
 ### 8c. Create the environment file
 
@@ -298,9 +312,102 @@ sudo chown root:caddy /etc/caddy/quizzy.env
 sudo chmod 640 /etc/caddy/quizzy.env
 ```
 
-> Do **not** set `TLS_CONFIG` here. Omitting it lets the Caddyfile default to the empty
-> `caddy/tls-auto.txt`, i.e. automatic HTTPS. Pointing it at `tls-mkcert.txt` would serve
-> a self-signed certificate instead.
+> `TLS_CONFIG` selects how the certificate is obtained:
+>
+> | value | meaning |
+> |---|---|
+> | *(unset)* | `caddy/tls-auto.txt` — empty, i.e. automatic HTTPS via HTTP-01/TLS-ALPN-01 |
+> | `caddy/tls-dns01.txt` | DNS-01 via RFC2136 — **required on an IPv6-only host**, see 8d |
+> | `caddy/tls-mkcert.txt` | a local self-signed certificate, for development only |
+
+### 8d. DNS-01 issuance (required on an IPv6-only host)
+
+The DHBW CA reaches out to the host to validate HTTP-01 and TLS-ALPN-01 challenges,
+and it has no IPv6 connectivity. On an IPv6-only VM both fail even when everything
+on this side is correct — the symptom is:
+
+```
+challenge_type: http-01     "Could not fetch URL: http://<host>/.well-known/acme-challenge/... - Connection error."
+challenge_type: tls-alpn-01 "Unable to retrieve server certificate for <host>"
+```
+
+Confirm it really is the CA and not your firewall before doing this work: from any
+other machine with IPv6, `curl -6 http://<host>/` must return something (a `308`
+redirect is the expected answer). If it does, inbound IPv6 is fine and the CA is the
+one that cannot reach you.
+
+DNS-01 inverts the direction — Caddy writes a TXT record, the CA only reads DNS — so
+inbound reachability stops mattering.
+
+**1. Build Caddy with the RFC2136 provider.** The packaged binary does not include
+it. Install it as `/usr/local/bin/caddy` so an `apt upgrade` of the `caddy` package
+cannot silently replace it with one lacking the module:
+
+```bash
+sudo apt install -y golang-go
+go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+~/go/bin/xcaddy build --with github.com/caddy-dns/rfc2136
+sudo install -o root -g root -m 0755 caddy /usr/local/bin/caddy
+/usr/local/bin/caddy list-modules | grep rfc2136     # expect dns.providers.rfc2136
+```
+
+**2. Point the service at it** by extending the drop-in from step 9b:
+
+```bash
+sudo tee /etc/systemd/system/caddy.service.d/override.conf >/dev/null <<'EOF'
+[Service]
+WorkingDirectory=/srv/quizzy
+EnvironmentFile=/etc/caddy/quizzy.env
+ExecStart=
+ExecStart=/usr/local/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --force
+EOF
+sudo systemctl daemon-reload
+```
+
+The empty `ExecStart=` is required: without it systemd appends to the vendor unit's
+value rather than replacing it, and the service fails to start.
+
+**3. Add the TSIG credentials** to `/etc/caddy/quizzy.env`. The platform provides
+these; they grant dynamic-update rights over your zone, so treat the secret like a
+password — it belongs only in this file (`root:caddy`, mode `640`) and never in the
+repository:
+
+```bash
+sudo tee -a /etc/caddy/quizzy.env >/dev/null <<'EOF'
+TLS_CONFIG=caddy/tls-dns01.txt
+TSIG_KEY_NAME=user-key-...
+TSIG_SECRET=...
+TSIG_ALGORITHM=hmac-sha512
+TSIG_NAMESERVER=ns.cloud-ns.dhbw-mannheim.de:53
+EOF
+```
+
+**4. Reinstall the Caddyfile directory** so the new snippet is present, then restart:
+
+```bash
+sudo cp -r /srv/quizzy/caddy /etc/caddy/
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl restart caddy
+sudo journalctl -u caddy -f
+```
+
+Expect `trying to solve challenge … challenge_type: dns-01` followed by
+`certificate obtained successfully`. Issuance takes longer than HTTP-01 because Caddy
+waits for the TXT record to propagate.
+
+> If Caddy rejects `key_alg`, try the value lower-cased (`hmac-sha512`) — the
+> platform documents it as `HMAC-SHA512`, but the module expects the lower-case form.
+> If it cannot reach the nameserver, drop the trailing dot from the hostname or use
+> its IP address in `TSIG_NAMESERVER`.
+
+**Alternative: certbot.** The platform documents `certbot-dns-rfc2136` instead, which
+avoids building Caddy. It also issues wildcards. The cost is that Caddy no longer
+manages its own certificates: point the site block at the resulting files with
+`tls /etc/letsencrypt/live/<host>/fullchain.pem /etc/letsencrypt/live/<host>/privkey.pem`,
+grant the `caddy` user read access to them, and add a renewal deploy-hook that runs
+`systemctl reload caddy`. Prefer the Caddy module unless you need wildcards.
 
 ---
 
@@ -387,7 +494,7 @@ nsupdate -y "hmac-sha512:<KEY_NAME>:<TSIG_SECRET>" <<EOF
 server 141.72.5.244 53
 zone michael-eichberg-at-dhbw-de.users.dhbw.site
 update delete quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site. IN AAAA
-update add    quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site. 60 IN AAAA 2001:db8:1:2::10
+update add    quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site. 60 IN AAAA <HOST_IP_V6>
 send
 EOF
 
@@ -485,10 +592,12 @@ rather than a restart.
 | `quizzy-backend` fails with `status=1`, ~150 ms | Script crashed on startup | `journalctl -u quizzy-backend -n 60`; usually wrong `WorkingDirectory`, missing deps, or `EADDRINUSE` |
 | `EADDRINUSE :::3000` | A stray hand-started `node` still holds the port | `sudo ss -ltnp \| grep :3000`; stop the old process / any pm2 daemon |
 | `Start request repeated too quickly` | Restart limiter tripped after repeated failures | `sudo systemctl reset-failed quizzy-backend` before restarting |
+| ACME `http-01` "Connection error" **and** `tls-alpn-01` "Unable to retrieve server certificate" | The CA validates by connecting *to* this host and has no IPv6; on an IPv6-only VM neither challenge can succeed | Switch to DNS-01 (step 8d). First confirm with `curl -6 http://<host>/` from elsewhere — a `308` means your firewall is fine and the CA is the problem |
 | `git pull` → `detected dubious ownership in repository` | The tree is owned by `quizzy`, but you are pulling as root | `sudo git config --global --add safe.directory /srv/quizzy` (step 6) |
 | `git pull` → `cannot open '.git/FETCH_HEAD': Permission denied` | `safe.directory` was set for your login user instead of root, so the pull is running unprivileged against a `quizzy`-owned tree | Re-run both with `sudo`: `sudo git config --global --add safe.directory /srv/quizzy`, then `sudo git pull` |
 | Backend fails to start right after an update | `sudo git pull` / `sudo pnpm build` left root-owned files behind | `sudo chown -R quizzy:quizzy /srv/quizzy` |
 | `pnpm install` → `ERR_PNPM_OUTDATED_LOCKFILE` | `pnpm-lock.yaml` in the checkout predates a `package.json` change | Regenerate and commit the lockfile on the development machine, push, pull here. Do not paper over it with `--no-frozen-lockfile` |
+| `caddy validate` → `File to import not found: caddy/tls-auto.txt` | `import` resolves relative to the Caddyfile's own location, so the snippets must sit beside the installed copy | `sudo cp -r /srv/quizzy/caddy /etc/caddy/` (step 8a) |
 | `pnpm build` → `ERR_PNPM_IGNORED_BUILDS: esbuild`, then a `runDepsStatusCheck` stack trace | pnpm 10+ exits 1 for any dependency whose build script has no recorded decision, and `pnpm build` checks dependency status before running | `pnpm-workspace.yaml` must contain `allowBuilds:` / `  esbuild: true` (it is committed). If pnpm wrote a `set this to true or false` placeholder here, `sudo git checkout pnpm-workspace.yaml` |
 
 ---

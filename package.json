@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Real-time, embeddable quiz application for HTML-based presentation systems (e.g. LectureDoc2)",
   "type": "module",
+  "author": "Michael Eichberg",
   "private": true,
   "license": "BSD-3-Clause",
   "scripts": {

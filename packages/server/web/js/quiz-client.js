@@ -1,3 +1,5 @@
+import { PROTOCOL_VERSION } from '../../../ld-quiz/src/protocol.js';
+
 class QuizClient {
   constructor() {
     this.ws = null;
@@ -78,7 +80,11 @@ class QuizClient {
     this.ws = new WebSocket(`${wsUrl}/ws`);
 
     this.ws.onopen = () => {
-      this.ws.send(JSON.stringify({ type: 'room_status', roomId: this.roomId }));
+      this.ws.send(JSON.stringify({
+        type: 'room_status',
+        protocolVersion: PROTOCOL_VERSION,
+        roomId: this.roomId
+      }));
     };
 
     this.ws.onmessage = (event) => {
@@ -174,6 +180,7 @@ class QuizClient {
     }
     this.ws.send(JSON.stringify({
       type: 'join_room',
+      protocolVersion: PROTOCOL_VERSION,
       roomId: this.roomId,
       name: name
     }));

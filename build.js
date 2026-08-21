@@ -3,23 +3,36 @@
  * Assembles the static site served by Caddy into `dist/`.
  *
  * The output mirrors the public URL layout one-to-one, so the URLs used by
- * embedding pages (e.g. `<script src="https://quiz.example.com/client/ld-quiz.js">`)
- * are unchanged:
+ * embedding pages are unchanged:
  *
  *   dist/
  *   ├── index.html, demo.html, join.html, control.html
- *   ├── client/   bundled ES modules + the web component's stylesheet
- *   ├── styles/   stylesheets of the join/control pages
- *   └── katex/    vendored KaTeX distribution
+ *   ├── client/         bundled ES modules (moving "latest" alias)
+ *   ├── client/<ver>/   the same bundles, immutable and safe to pin
+ *   ├── styles/         stylesheets of the join/control pages
+ *   └── katex/          vendored KaTeX distribution
  *
  * Bundling is required because the browser cannot resolve the bare specifier
  * `@lecturedoc2/libcrypto`; esbuild inlines it into each entry point.
+ *
+ * ## Why the output is published twice
+ *
+ * `/client/ld-quiz.js` cannot be cached and cannot be pinned with Subresource
+ * Integrity: its contents change under a stable URL, so a correct SRI hash today
+ * is a broken page tomorrow. That is fine for the demo pages, which are served
+ * from the same deployment, and wrong for an external embedder -- a LectureDoc2
+ * deck or a Moodle course -- that wants a URL which will still mean the same
+ * thing next term.
+ *
+ * So both exist: `/client/<version>/ld-quiz.js` never changes and may be cached
+ * forever and hashed; `/client/ld-quiz.js` always tracks the deployment. Which
+ * one an integrator picks is a decision about coupling, and it should be theirs.
  *
  * Usage: node build.js [--watch] [--minify]
  */
 
 import * as esbuild from "esbuild";
-import { cp, mkdir, rm } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,6 +43,23 @@ const WATCH = process.argv.includes("--watch");
 const MINIFY =
     process.argv.includes("--minify") || process.env.NODE_ENV === "production";
 
+/** The component's version is what embedders pin, so it names the directory. */
+const { version: CLIENT_VERSION } = JSON.parse(
+    await readFile(join(ROOT, "packages/ld-quiz/package.json"), "utf8"),
+);
+
+const CLIENT_DIR = join(DIST, "client");
+const VERSIONED_DIR = join(CLIENT_DIR, CLIENT_VERSION);
+
+/**
+ * Watch mode publishes only the moving alias.
+ *
+ * The versioned directory is meant to be immutable; rewriting it on every
+ * keystroke would teach exactly the wrong lesson about what that URL promises,
+ * and the pages used during development track the alias anyway.
+ */
+const OUTPUT_DIR = WATCH ? CLIENT_DIR : VERSIONED_DIR;
+
 /** ES module entry points, all served from `/client/`. */
 const ENTRY_POINTS = [
     ["packages/ld-quiz/src/ld-quiz.js", "ld-quiz"],
@@ -39,7 +69,6 @@ const ENTRY_POINTS = [
 
 /** Files and directories copied verbatim: [source, destination]. */
 const COPIES = [
-    ["packages/ld-quiz/src/quiz-styles.css", "client/quiz-styles.css"],
     ["packages/server/web/index.html", "index.html"],
     ["packages/server/web/demo.html", "demo.html"],
     ["packages/server/web/join.html", "join.html"],
@@ -54,9 +83,33 @@ async function copyStaticFiles() {
     }
 }
 
+/**
+ * Mirror the versioned build up to the moving `/client/` alias.
+ *
+ * Built once and copied, rather than bundled twice: the two URLs are supposed to
+ * serve identical bytes, and a second esbuild pass would only create
+ * opportunities for them to drift. Entries are copied one at a time because
+ * `fs.cp` refuses a directory copy that would descend into itself, which a
+ * straight `client/<version>` -> `client` copy otherwise looks like.
+ *
+ * Source maps are referenced by bare filename, so they resolve at either depth.
+ */
+async function publishMovingAlias() {
+    for (const entry of await readdir(VERSIONED_DIR)) {
+        await cp(join(VERSIONED_DIR, entry), join(CLIENT_DIR, entry), {
+            recursive: true,
+        });
+    }
+    await writeFile(
+        join(CLIENT_DIR, "version.json"),
+        JSON.stringify({ version: CLIENT_VERSION }, null, 2) + "\n",
+        "utf8",
+    );
+}
+
 const buildOptions = {
     entryPoints: ENTRY_POINTS,
-    outdir: join(DIST, "client"),
+    outdir: OUTPUT_DIR,
     bundle: true,
     format: "esm",
     platform: "browser",
@@ -76,8 +129,12 @@ if (WATCH) {
     await copyStaticFiles();
     console.log("Watching for changes in the client sources ...");
     console.log("(HTML, CSS and KaTeX are copied once; re-run to refresh them.)");
+    console.log("(The versioned /client/<version>/ copy is not written in watch mode.)");
 } else {
     await esbuild.build(buildOptions);
     await copyStaticFiles();
+    await publishMovingAlias();
     console.log(`Build complete: ${DIST}`);
+    console.log(`  moving:    /client/ld-quiz.js`);
+    console.log(`  immutable: /client/${CLIENT_VERSION}/ld-quiz.js`);
 }

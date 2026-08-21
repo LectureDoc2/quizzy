@@ -12,7 +12,23 @@ import assert from 'node:assert';
 import { WebSocket } from 'ws';
 import { createHash } from 'crypto';
 import { createQuizServer, GENERIC_REJECTION, QUIZ_FINISHED } from '../src/server.js';
+import { PROTOCOL_VERSION } from '../../ld-quiz/src/protocol.js';
 import { loopbackHost, originFor } from './loopback.js';
+
+/**
+ * Message types the server version-checks, and the version to stamp on them.
+ *
+ * Stamped centrally rather than at every call site: `protocolVersion` is part of
+ * how a real client speaks, not part of what any individual test is about, and a
+ * test that forgets it would fail for a reason unrelated to its subject.
+ */
+const HANDSHAKE_TYPES = new Set(['create_room', 'join_room', 'control_connect', 'room_status']);
+
+function withProtocolVersion(msg) {
+  return HANDSHAKE_TYPES.has(msg.type) && msg.protocolVersion === undefined
+    ? { protocolVersion: PROTOCOL_VERSION, ...msg }
+    : msg;
+}
 
 const QUIZ = {
   title: 'Integration Quiz',
@@ -124,7 +140,7 @@ describe('Server integration', () => {
   const next = (ws, timeoutMs) => take(ws, () => true, 'any message', timeoutMs);
   const waitFor = (ws, type, timeoutMs) => take(ws, (m) => m.type === type, type, timeoutMs);
 
-  const send = (ws, msg) => ws.send(JSON.stringify(msg));
+  const send = (ws, msg) => ws.send(JSON.stringify(withProtocolVersion(msg)));
 
   async function openRoom(token = tokenFor('michael'), quiz = QUIZ) {
     const ws = await connect();
@@ -528,11 +544,11 @@ describe('Abuse limits on IPv6', () => {
       ws.once('open', resolve);
       ws.once('error', reject);
     });
-    ws.send(JSON.stringify({
+    ws.send(JSON.stringify(withProtocolVersion({
       type: 'create_room',
       presenterToken: tokenFor(presenterName),
       quiz: QUIZ
-    }));
+    })));
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('timed out')), 3000);
       ws.once('message', (data) => { clearTimeout(timer); resolve(JSON.parse(data)); });

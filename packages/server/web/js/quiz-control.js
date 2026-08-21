@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from "../../../ld-quiz/src/protocol.js";
 
 /**
  * Create an element. `text` is always assigned via textContent, so callers
@@ -78,6 +79,7 @@ class QuizControl {
       this.ws.send(
         JSON.stringify({
           type: "control_connect",
+          protocolVersion: PROTOCOL_VERSION,
           presenterToken: this.presenterToken,
           roomId: this.roomId,
         }),

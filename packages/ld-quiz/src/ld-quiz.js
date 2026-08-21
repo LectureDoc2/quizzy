@@ -1,33 +1,150 @@
 import { decryptAESGCMPBKDF } from "@lecturedoc2/libcrypto";
-import QRCode from "./qrcode.min.js"; // TODO load from Quiz-Server!
+import QRCode from "./qrcode.min.js";
+import { quizStyles } from "./quiz-styles.js";
+import {
+  PROTOCOL_VERSION,
+  PROTOCOL_MISMATCH,
+  isCompatibleProtocol,
+  protocolMismatchMessage,
+} from "./protocol.js";
 
-const MAX_QUIZ_SIZE = 1024 * 1024; // 1MB
+/**
+ * One config fetch per server, shared by every <ld-quiz> on the page.
+ *
+ * A slide deck can easily carry a dozen quizzes; without this, each one would
+ * repeat the same request at the same moment. Promises are cached rather than
+ * results, so concurrent callers coalesce instead of racing.
+ *
+ * @type {Map<string, Promise<object>>}
+ */
+const configCache = new Map();
 
-function randomToken() {
-  if (crypto.randomUUID) return crypto.randomUUID();
-  const b = crypto.getRandomValues(new Uint8Array(16));
-  return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+/** http(s) -> ws(s); an already-absolute ws:// URL is left alone. */
+function toWebSocketUrl(url) {
+  return url.replace(/^http/, "ws");
 }
 
-// TODO add method origin and pass the origin to loadStyles and loadKatexCSS
-
-async function loadStyles(serverUrl) {
-  // Load CSS from the quiz server if specified, otherwise from the script's base URL
-  const cssUrl = serverUrl
-    ? new URL("/client/quiz-styles.css", serverUrl)
-    : new URL("./quiz-styles.css", import.meta.url); // window.location.origin
-  const response = await fetch(cssUrl);
-  const css = await response.text();
-  return css;
+function withQuery(url, params) {
+  const resolved = new URL(url);
+  for (const [key, value] of Object.entries(params)) {
+    resolved.searchParams.set(key, String(value));
+  }
+  return resolved.href;
 }
 
-async function loadKatexCSS(serverUrl) {
-  const cssUrl = serverUrl
-    ? new URL("/katex/katex.min.css", serverUrl)
-    : new URL("/katex/katex.min.css", window.location.origin);
-  const response = await fetch(cssUrl);
-  const css = await response.text();
-  return css;
+/**
+ * Ask the quiz server where its own endpoints are.
+ *
+ * Every URL the component needs used to be hardcoded to a domain root, which
+ * quietly ruled out any deployment behind a path prefix -- the common case when
+ * a quiz server is mounted inside an existing site. One request now answers all
+ * of them, and answers them for the *running* server rather than for whatever
+ * layout the component happened to be built against.
+ *
+ * There is deliberately no fallback to a hardcoded layout. A server that cannot
+ * answer this is a server this component cannot talk to, and saying so here is
+ * better than guessing an endpoint and failing later with a broken WebSocket.
+ *
+ * @throws {Error} if the server does not answer, or answers unusably.
+ */
+async function fetchConfig(base) {
+  const endpoint = new URL("/api/config", base);
+
+  let response;
+  try {
+    response = await fetch(endpoint, { credentials: "omit" });
+  } catch (cause) {
+    throw new Error(`Cannot reach the quiz server at ${base}.`, { cause });
+  }
+  if (!response.ok) {
+    throw new Error(
+      `The quiz server at ${base} did not answer ${endpoint.pathname} ` +
+        `(HTTP ${response.status}). Is server-url pointing at a quiz server?`,
+    );
+  }
+
+  const raw = await response.json();
+  if (!raw || typeof raw !== "object") {
+    throw new Error(`The quiz server at ${base} returned an unusable configuration.`);
+  }
+
+  const required = ["ws", "join", "control", "katexCss"];
+  const missing = required.filter((key) => typeof raw[key] !== "string" || raw[key] === "");
+  if (missing.length > 0) {
+    throw new Error(
+      `The quiz server at ${base} did not publish: ${missing.join(", ")}.`,
+    );
+  }
+
+  return {
+    protocolVersion: raw.protocolVersion,
+    serverVersion: raw.serverVersion,
+    wsUrl: toWebSocketUrl(new URL(raw.ws, base).href),
+    joinUrl: new URL(raw.join, base).href,
+    controlUrl: new URL(raw.control, base).href,
+    katexCssUrl: new URL(raw.katexCss, base).href,
+    maxQuizSize: raw.maxQuizSize,
+  };
+}
+
+function loadConfig(base) {
+  let pending = configCache.get(base);
+  if (!pending) {
+    pending = fetchConfig(base);
+    // A failed lookup must not be cached: the server may simply have been
+    // restarting, and every later <ld-quiz> on the page would inherit the
+    // failure for the lifetime of the document.
+    pending.catch(() => configCache.delete(base));
+    configCache.set(base, pending);
+  }
+  return pending;
+}
+
+/**
+ * Apply the component's stylesheet to a shadow root.
+ *
+ * A constructed stylesheet is a JavaScript object rather than markup, so it is
+ * not covered by the CSP `style-src` directive. Injecting the same CSS as a
+ * <style> element requires 'unsafe-inline' on the embedding page, a concession
+ * no sensibly configured host (a Moodle site, say) should have to make in order
+ * to show a quiz.
+ */
+function applyStyles(shadowRoot, cssText) {
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync(cssText);
+  shadowRoot.adoptedStyleSheets = [...shadowRoot.adoptedStyleSheets, sheet];
+}
+
+/**
+ * Link an external stylesheet into a shadow root.
+ *
+ * Used for KaTeX, which is linked rather than inlined on purpose: its @font-face
+ * rules carry relative URLs, and a copy of the text would resolve those against
+ * the embedding page instead of the quiz server -- silently replacing every
+ * formula with a fallback font in precisely the cross-origin setup this
+ * component exists to support. A <link> keeps the stylesheet's own URL as the
+ * base, and asks the host page for `style-src <quiz-host>` instead of
+ * 'unsafe-inline'.
+ *
+ * Resolves either way: missing math CSS makes formulas ugly, which is no reason
+ * to refuse to run the quiz.
+ */
+function linkStylesheet(shadowRoot, href) {
+  return new Promise((resolve) => {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = href;
+    link.addEventListener("load", () => resolve(true), { once: true });
+    link.addEventListener(
+      "error",
+      () => {
+        console.warn(`loading the math stylesheet failed: ${href}`);
+        resolve(false);
+      },
+      { once: true },
+    );
+    shadowRoot.appendChild(link);
+  });
 }
 
 class QuizHost extends HTMLElement {
@@ -52,28 +169,53 @@ class QuizHost extends HTMLElement {
     this.reconnectDelay = 1000;
     this.currentState = "login";
     this.serverUrl = "";
+    /** Endpoint layout of the quiz server; filled in by connectedCallback(). */
+    this.config = null;
+    /** Presenter name supplied by the slide set; see prefillPresenterName(). */
+    this.presenterNameHint = "";
   }
 
   async connectedCallback() {
     this.quiz = this.getAttribute("quiz");
     this.isEncrypted = this.hasAttribute("encrypted");
     this.serverUrl = this.getAttribute("server-url") || window.location.origin;
+    this.presenterNameHint = (this.getAttribute("presenter-name") || "").trim();
 
-    const [css, katexCss] = await Promise.all([
-      loadStyles(this.serverUrl),
-      loadKatexCSS(this.serverUrl),
-    ]);
-    const template = document.createElement("template");
-    template.innerHTML = `
-      <style>${css}</style>
-      <style>${katexCss}</style>
-      <div class="quiz-container"><div id="content"></div></div>`;
-    this.shadowRoot.appendChild(template.content);
-    this.contentEl = this.shadowRoot.getElementById("content");
+    // The styles travel with the code rather than being fetched from the
+    // server, so a bundled copy of the component can never be painted with a
+    // different release's CSS. See quiz-styles.js.
+    applyStyles(this.shadowRoot, quizStyles);
+
+    const container = document.createElement("div");
+    container.className = "quiz-container";
+    this.contentEl = document.createElement("div");
+    this.contentEl.id = "content";
+    container.appendChild(this.contentEl);
+    this.shadowRoot.appendChild(container);
 
     if (!window.isSecureContext) {
       this.showError("Quizzy requires a secure context (https, or localhost / 127.0.0.1 / [::1]).");
       return;
+    }
+
+    try {
+      this.config = await loadConfig(this.serverUrl);
+    } catch (e) {
+      console.error("loading the quiz server configuration failed", e);
+      this.showError(e.message);
+      return;
+    }
+
+    // Refuse early and legibly. Without this the mismatch would surface as
+    // whichever field the two sides first disagree about, in a lecture hall,
+    // with an audience watching.
+    if (!isCompatibleProtocol(this.config.protocolVersion)) {
+      this.showError(protocolMismatchMessage(this.config.protocolVersion));
+      return;
+    }
+
+    if (this.config.katexCssUrl) {
+      linkStylesheet(this.shadowRoot, this.config.katexCssUrl);
     }
 
     if (this.isEncrypted) {
@@ -127,8 +269,7 @@ class QuizHost extends HTMLElement {
     const passwordInput = this.shadowRoot.getElementById("password");
     const errorEl = this.shadowRoot.getElementById("error");
 
-    const savedName = QuizHost.loadPresenterName();
-    if (savedName) nameInput.value = savedName;
+    this.prefillPresenterName(nameInput);
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -259,10 +400,28 @@ class QuizHost extends HTMLElement {
   }
 
   bindPresenterNameField() {
-    const input = this.shadowRoot.getElementById("presenter-name");
+    this.prefillPresenterName(this.shadowRoot.getElementById("presenter-name"));
+  }
+
+  /**
+   * Fill in the presenter name, preferring the `presenter-name` attribute over
+   * whatever this browser last remembered.
+   *
+   * The name is an isolation key, not a secret: it is what separates two
+   * lecturers running the same quiz file, and reproducing it exactly is what
+   * lets a presenter reattach to their own running session after a crash.
+   * Typing it slightly differently is therefore the failure this attribute
+   * exists to prevent -- and since a slide set is nearly always presented by
+   * the person who wrote it, the slide set is the right place to state it.
+   *
+   * The attribute wins over the remembered value because it is a deliberate
+   * statement about this deck, whereas localStorage holds whatever the last
+   * person at this lectern happened to type.
+   */
+  prefillPresenterName(input) {
     if (!input) return;
-    const saved = QuizHost.loadPresenterName();
-    if (saved) input.value = saved;
+    const name = this.presenterNameHint || QuizHost.loadPresenterName();
+    if (name) input.value = name;
   }
 
   /**
@@ -352,19 +511,21 @@ class QuizHost extends HTMLElement {
       this.presenterToken = await this.hashQuiz(this.quiz, this.presenterName);
     }
 
-    const wsUrl = this.serverUrl.replace(/^http/, "ws");
-    this.ws = new WebSocket(`${wsUrl}/ws`);
+    const config = this.config;
+    this.ws = new WebSocket(config.wsUrl);
 
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;
       const payload = JSON.stringify({
         type: "create_room",
+        protocolVersion: PROTOCOL_VERSION,
         presenterToken: this.presenterToken,
         quiz: this.quiz,
       });
       const payloadSize = new TextEncoder().encode(payload).length;
-      if (payloadSize > MAX_QUIZ_SIZE) {
-        this.showError("Quiz data exceeds maximum size of 1MB");
+      if (payloadSize > config.maxQuizSize) {
+        const limitMb = (config.maxQuizSize / (1024 * 1024)).toFixed(1);
+        this.showError(`Quiz data exceeds the server's maximum size of ${limitMb}MB`);
         this.ws.close();
         return;
       }
@@ -401,6 +562,11 @@ class QuizHost extends HTMLElement {
   handleMessage(msg) {
     switch (msg.type) {
       case "error":
+        // A rejected handshake is permanent: retrying it four more times only
+        // delays the message the presenter needs to read.
+        if (msg.code === PROTOCOL_MISMATCH) {
+          this.currentState = "ended";
+        }
         this.showError(msg.message || "An error occurred");
         break;
 
@@ -437,7 +603,7 @@ class QuizHost extends HTMLElement {
 
   renderLobby() {
     this.currentState = "lobby";
-    const joinUrl = `${this.serverUrl}/join.html?room=${this.roomId}`;
+    const joinUrl = withQuery(this.config.joinUrl, { room: this.roomId });
 
     this.contentEl.innerHTML = `
       <div class="quiz-lobby">
@@ -473,7 +639,10 @@ class QuizHost extends HTMLElement {
   }
 
   openControlWindow() {
-    const controlUrl = `${this.serverUrl}/control.html?token=${this.presenterToken}&room=${this.roomId}`;
+    const controlUrl = withQuery(this.config.controlUrl, {
+      token: this.presenterToken,
+      room: this.roomId,
+    });
     console.log(`opening control window`, controlUrl);
     const popup = window.open(
       controlUrl,
@@ -505,4 +674,43 @@ class QuizHost extends HTMLElement {
   }
 }
 
-customElements.define("ld-quiz", QuizHost);
+/**
+ * Register the custom element, at most once per tag name.
+ *
+ * `customElements.define` throws on a name that is already taken, and the throw
+ * aborts whatever module is executing. That is not a hypothetical here: the
+ * intended deployments are a slide framework that bundles this component and a
+ * host page that loads the hosted script, and a page combining the two -- a
+ * LectureDoc2 deck embedded in a Moodle course, say -- would load both copies.
+ * The second one must yield quietly rather than take the page down with it.
+ *
+ * The tag name is a parameter because the element is now published for other
+ * projects to embed, and a name registered globally is a name they cannot have
+ * back if it collides with one of their own.
+ *
+ * @param {string} [tagName]
+ * @returns {CustomElementConstructor} Whatever now owns the name.
+ */
+export function defineLdQuiz(tagName = "ld-quiz") {
+  const registered = customElements.get(tagName);
+  if (registered) {
+    if (registered !== QuizHost) {
+      console.warn(
+        `<${tagName}> is already registered by a different implementation; ` +
+          "this copy of ld-quiz will not replace it. " +
+          "Pass another tag name to defineLdQuiz() if both are needed.",
+      );
+    }
+    return registered;
+  }
+  customElements.define(tagName, QuizHost);
+  return QuizHost;
+}
+
+export { QuizHost, PROTOCOL_VERSION };
+
+// Importing this module registers <ld-quiz>; the package declares it as having
+// side effects for exactly this reason. Consumers that want a different tag name
+// import { defineLdQuiz } and call it themselves -- the default registration
+// below is idempotent, so doing both is harmless.
+defineLdQuiz();

@@ -14,8 +14,23 @@ import { fileURLToPath } from 'url';
 import { WebSocket } from 'ws';
 import { createHash } from 'crypto';
 import { loopbackHost, hostForUrl, originFor } from '../loopback.js';
+import { PROTOCOL_VERSION } from '../../../ld-quiz/src/protocol.js';
+
+/** Handshake messages carry a version; see packages/ld-quiz/src/protocol.js. */
+const HANDSHAKE_TYPES = new Set(['create_room', 'join_room', 'control_connect', 'room_status']);
 
 export const WEB_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'web');
+
+/**
+ * The component package, which the page scripts share the wire protocol with.
+ *
+ * Production bundles the two together, so the import is resolved at build time
+ * and never becomes a request. This harness serves the sources unbundled, so it
+ * has to answer for the specifier the browser actually asks for.
+ */
+export const LD_QUIZ_ROOT = join(
+  dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'ld-quiz', 'src'
+);
 
 const CONTENT_TYPES = {
   '.html': 'text/html',
@@ -35,9 +50,17 @@ const CONTENT_TYPES = {
 export async function startStaticServer(backendPort = null) {
   const server = createServer((req, res) => {
     let path = req.url.split('?')[0];
-    if (path.startsWith('/client/')) path = '/js/' + path.slice('/client/'.length);
+    let root = WEB_ROOT;
+    if (path.startsWith('/client/')) {
+      path = '/js/' + path.slice('/client/'.length);
+    } else if (path.startsWith('/ld-quiz/src/')) {
+      // Shared sources (protocol.js) resolve to here once the browser has
+      // walked the relative specifier up out of /client/.
+      root = LD_QUIZ_ROOT;
+      path = path.slice('/ld-quiz/src'.length);
+    }
     try {
-      const body = readFileSync(join(WEB_ROOT, path));
+      const body = readFileSync(join(root, path));
       res.writeHead(200, { 'Content-Type': CONTENT_TYPES[extname(path)] || 'text/plain' });
       res.end(body);
     } catch {
@@ -101,9 +124,26 @@ export async function startStaticServer(backendPort = null) {
  * PLAYWRIGHT_CHROMIUM_PATH lets a sandbox or CI image point at a preinstalled
  * browser instead of one downloaded by `playwright install`.
  */
-export function launchBrowser() {
+export async function launchBrowser() {
   const executablePath = process.env.PLAYWRIGHT_CHROMIUM_PATH;
-  return chromium.launch(executablePath ? { executablePath } : {});
+  try {
+    return await chromium.launch(executablePath ? { executablePath } : {});
+  } catch (cause) {
+    // A missing browser is the expected state of a fresh checkout, because
+    // pnpm-workspace.yaml blocks Playwright's postinstall on purpose. Left
+    // alone, it surfaces as a failed `before` hook -- which the test runner
+    // reports by cancelling every test beneath it, so the output is a column of
+    // crosses against test names that are all perfectly fine. Say what actually
+    // happened instead.
+    throw new Error(
+      'Chromium is not available, so the browser tests cannot run.\n' +
+      '  Install it once:   pnpm --filter ld-quiz-server exec playwright install chromium\n' +
+      '  Or use an existing build:\n' +
+      '                     PLAYWRIGHT_CHROMIUM_PATH=/path/to/chrome pnpm test:browser\n' +
+      `  (Playwright said: ${cause.message.split('\n')[0]})`,
+      { cause }
+    );
+  }
 }
 
 /** Mirrors ld-quiz.js hashQuiz(quiz, presenterName). */
@@ -148,6 +188,10 @@ export function connectSocket(url) {
       };
       ws.waiters.push(check);
     });
-  ws.sendJson = (msg) => ws.send(JSON.stringify(msg));
+  ws.sendJson = (msg) => ws.send(JSON.stringify(
+    HANDSHAKE_TYPES.has(msg.type) && msg.protocolVersion === undefined
+      ? { protocolVersion: PROTOCOL_VERSION, ...msg }
+      : msg
+  ));
   return ws;
 }

@@ -10,7 +10,8 @@
   ],
   "exports": {
     ".": "./src/ld-quiz.js",
-    "./quiz-styles.css": "./src/quiz-styles.css",
+    "./protocol": "./src/protocol.js",
+    "./styles": "./src/quiz-styles.js",
     "./package.json": "./package.json"
   },
   "files": [

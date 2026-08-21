@@ -40,10 +40,29 @@
 		reverse_proxy {$BACKEND_HOST:localhost}:{$BACKEND_PORT:3000}
 	}
 
+	# Client bundles come in two flavours; see build.js for why.
+	#
+	#   /client/<version>/...  never changes, so it may be cached forever and
+	#                          pinned with Subresource Integrity. This is the URL
+	#                          an external embedder -- a LectureDoc2 deck, a
+	#                          Moodle course -- should reference.
+	#   /client/...            tracks the deployment, so it must not be cached,
+	#                          or the pages served alongside it would keep using
+	#                          the previous release.
+	#
+	# path_regexp rather than the `path` matcher on purpose: Caddy's `path`
+	# wildcards match across slashes, so `/client/*.js` would also catch the
+	# versioned copies and cache-bust exactly what is meant to be immutable.
+	@client_versioned path_regexp ^/client/v?[0-9][^/]*/
+	@client_moving path_regexp ^/client/[^/]+$
+
 	# Static files served directly by Caddy from the build output.
 	# Run `pnpm build` to (re-)generate `dist/`.
 	handle {
 		header Access-Control-Allow-Origin "*"
+
+		header @client_versioned Cache-Control "public, max-age=31536000, immutable"
+		header @client_moving Cache-Control "no-cache"
 
 		# The control page holds the presenter token, so it gets a strict CSP.
 		# This is the authoritative copy; control.html carries the same policy in

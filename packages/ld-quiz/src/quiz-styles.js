@@ -1,3 +1,33 @@
+/**
+ * The component's stylesheet, applied to its shadow root.
+ *
+ * ## Why the CSS lives in a JavaScript module
+ *
+ * It has to be available as a *string*, because the component adopts it as a
+ * constructed stylesheet rather than pointing a <link> at it. That buys two
+ * things: the styles travel with the code that depends on them, so a bundled
+ * copy of the component can never be painted with another release's CSS; and a
+ * constructed stylesheet is a JavaScript object rather than markup, so it falls
+ * outside the CSP `style-src` directive and needs no 'unsafe-inline' concession
+ * from the embedding page.
+ *
+ * Getting a string out of a `.css` file instead would mean asking every consumer
+ * to configure a bundler loader (esbuild's `text`, or the Vite/webpack/Rollup
+ * equivalent), and the failure mode when they forget is a silent `undefined`.
+ * For a package whose entire purpose is being easy to embed, that is the wrong
+ * trade -- so this module is the single source, authored directly.
+ *
+ * The `css` tag below is an identity function; it exists so that editors
+ * highlight and format the contents as CSS.
+ */
+
+/**
+ * Identity template tag. Purely a marker for editor tooling -- it does not
+ * escape, minify or otherwise transform anything.
+ */
+const css = (strings, ...values) => String.raw({ raw: strings }, ...values);
+
+export const quizStyles = css`
 :host {
     display: block;
     font-family:
@@ -343,3 +373,6 @@
         padding: var(--quiz-space-md);
     }
 }
+`;
+
+export default quizStyles;

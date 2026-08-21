@@ -8,8 +8,32 @@ import { sanitizeQuiz } from './quiz-sanitizer.js';
 import { validateName } from './name-validator.js';
 import { getServerAddresses } from './network-addresses.js';
 import { clientKey, parseForwardedFor, DEFAULT_IPV6_PREFIX_BITS } from './client-address.js';
+// Imported by path rather than as a dependency: the wire format has to be one
+// file, and that file has to live inside the package that is published to npm,
+// so that the component's tarball is self-contained. The server is private and
+// always ships with the whole workspace, so it is the side that reaches across.
+import {
+  PROTOCOL_VERSION,
+  PROTOCOL_MISMATCH,
+  isCompatibleProtocol,
+  protocolMismatchMessage
+} from '../../ld-quiz/src/protocol.js';
+import { readFileSync } from 'fs';
 
 const MAX_QUIZ_SIZE = 1024 * 1024; // 1MB
+
+const SERVER_VERSION = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8')
+).version;
+
+/**
+ * Messages that open a conversation, and therefore have to agree on a version.
+ *
+ * Only these are checked. Re-verifying every `submit_answer` would cost a
+ * comparison per answer to re-establish something that cannot have changed since
+ * the socket was accepted.
+ */
+const HANDSHAKE_TYPES = new Set(['create_room', 'join_room', 'control_connect', 'room_status']);
 
 // There is deliberately no endpoint that lists rooms. This application has no
 // administrator role and no way to enumerate sessions: a room can only be
@@ -108,6 +132,43 @@ function createQuizServer(options = {}) {
   }
 
   app.use(corsMiddleware);
+
+  /**
+   * Where the browser code should look for everything else.
+   *
+   * The component used to hardcode `/ws`, `/join.html`, `/control.html` and
+   * `/katex/`, which silently required the quiz server to own a domain root --
+   * the one thing an institutional deployment usually cannot promise. Publishing
+   * the layout means the server can move without every embedded copy of the
+   * component having to be rebuilt and re-published to follow it.
+   *
+   * Paths are relative on purpose: the client resolves them against the URL it
+   * already used to reach this endpoint, so nothing here has to know the public
+   * origin -- which, behind a reverse proxy, it generally does not. Absolute URLs
+   * are accepted for the split-host case (static files on a CDN, say).
+   */
+  const publicPaths = {
+    ws: process.env.PUBLIC_WS_PATH || '/ws',
+    join: process.env.PUBLIC_JOIN_PATH || '/join.html',
+    control: process.env.PUBLIC_CONTROL_PATH || '/control.html',
+    katexCss: process.env.PUBLIC_KATEX_CSS_PATH || '/katex/katex.min.css',
+    ...(options.publicPaths || {})
+  };
+
+  /**
+   * Service discovery for embedders. Deliberately free of anything session- or
+   * room-specific: it is world-readable, cacheable, and says only what any page
+   * that is allowed to embed a quiz would learn by trying.
+   */
+  app.get('/api/config', (_req, res) => {
+    res.set('Cache-Control', 'public, max-age=60');
+    res.json({
+      protocolVersion: PROTOCOL_VERSION,
+      serverVersion: SERVER_VERSION,
+      maxQuizSize: MAX_QUIZ_SIZE,
+      ...publicPaths
+    });
+  });
 
   function stateForKey(key) {
     let state = ipState.get(key);
@@ -214,7 +275,22 @@ function createQuizServer(options = {}) {
 
     try {
       const msg = JSON.parse(data);
-    
+
+      // Refuse a version we cannot speak -- including none at all -- and say so
+      // in terms the lecturer can act on. See protocol.js for why absence is
+      // treated as a mismatch rather than defaulted away.
+      if (HANDSHAKE_TYPES.has(msg.type) && !isCompatibleProtocol(msg.protocolVersion)) {
+        ws.send(JSON.stringify({
+          type: 'error',
+          code: PROTOCOL_MISMATCH,
+          message: protocolMismatchMessage(msg.protocolVersion)
+        }));
+        // Not counted against the failure budget: this is a stale deployment,
+        // not a probe, and the socket is closed anyway.
+        ws.close();
+        return;
+      }
+
       switch (msg.type) {
         // Create-or-resume. The presenter page re-sends this on every reconnect,
         // so it must be idempotent: see RoomManager.openRoom().
@@ -727,7 +803,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const PORT = Number(process.env.PORT) || 3000;
   const quizServer = createQuizServer();
   quizServer.listen(PORT).then(() => {
-    console.log(`Quiz backend listening on port ${PORT}`);
+    console.log(`Quizzy backend listening on port ${PORT}`);
     console.log('Caddy (or another reverse proxy) should be the public entry point.');
     for (const { url } of getServerAddresses(PORT)) {
       console.log(`  backend: ${url}`);
@@ -735,4 +811,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   });
 }
 
-export { createQuizServer, GENERIC_REJECTION, QUIZ_FINISHED, DEFAULT_LIMITS, MAX_QUIZ_SIZE };
+export {
+  createQuizServer,
+  GENERIC_REJECTION,
+  QUIZ_FINISHED,
+  DEFAULT_LIMITS,
+  MAX_QUIZ_SIZE,
+  SERVER_VERSION,
+  PROTOCOL_VERSION
+};

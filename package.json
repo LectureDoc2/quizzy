@@ -12,6 +12,8 @@
     "start": "pnpm --filter ld-quiz-server start",
     "dev": "pnpm build && pnpm --filter ld-quiz-server start",
     "test": "pnpm --filter ld-quiz-server test",
+    "test:browser": "pnpm --filter ld-quiz-server test:browser",
+    "test:all": "pnpm --filter ld-quiz-server test:all",
     "encrypt": "node tools/encrypt-quiz.js",
     "clean": "rm -rf dist"
   },

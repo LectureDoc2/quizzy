@@ -36,8 +36,9 @@ backend that hosts a quiz session.
 ├── packages/
 │   ├── ld-quiz/                    # the embeddable component (publishable to npm)
 │   │   ├── src/ld-quiz.js          #   the <ld-quiz> custom element
+│   │   ├── src/protocol.js         #   the wire contract; shared with the server
 │   │   ├── src/qrcode.min.js       #   minimal QR code generator (zero deps)
-│   │   ├── src/quiz-styles.css     #   Shadow DOM styles
+│   │   ├── src/quiz-styles.js      #   Shadow DOM styles
 │   │   └── package.json            #   dep: @lecturedoc2/libcrypto
 │   │
 │   └── server/                     # the backend and the pages it serves
@@ -64,8 +65,7 @@ and assembles `dist/` so that its layout matches the public URLs one-to-one:
 
 | Source | URL |
 |--------|-----|
-| `packages/ld-quiz/src/ld-quiz.js` | `/client/ld-quiz.js` |
-| `packages/ld-quiz/src/quiz-styles.css` | `/client/quiz-styles.css` |
+| `packages/ld-quiz/src/ld-quiz.js` | `/client/ld-quiz.js` and `/client/<version>/ld-quiz.js` |
 | `packages/server/web/js/quiz-client.js` | `/client/quiz-client.js` |
 | `packages/server/web/js/quiz-control.js` | `/client/quiz-control.js` |
 | `packages/server/web/*.html` | `/*.html` |
@@ -167,7 +167,7 @@ Add the `encrypted` attribute and provide the encrypted quiz data:
 
 ```html
 <ld-quiz encrypted quiz="MTAwMDAw:abc123...encrypted-data..." server-url="https://quiz.example.com"></ld-quiz>
-<script type="module" src="https://quiz.example.com/client/ld-quiz.js"></script>
+<script type="module" src="https://quiz.example.com/client/1.0.0/ld-quiz.js"></script>
 ```
 
 The presenter will be prompted for a password to decrypt the quiz.
@@ -275,8 +275,167 @@ TLS is required because the Web Crypto API (used for hashing and decryption) onl
 | Attribute | Required | Description |
 |-----------|----------|-------------|
 | `encrypted` | No | Presence attribute. If set, the `quiz` value is treated as encrypted ciphertext |
-| `quiz` | Yes | The quiz data: encrypted ciphertext (when `encrypted` is present) or inline JSON string |
+| `quiz` | No | The quiz data: encrypted ciphertext (when `encrypted` is present) or inline JSON string. **Omit it** to get a file picker instead — see [Unencrypted Quiz — File Upload](#unencrypted-quiz--file-upload). Required when `encrypted` is present, since there is nothing to decrypt otherwise |
+| `presenter-name` | No | Prefills the presenter name field. See below |
 | `server-url` | No | The quiz server URL. Defaults to `window.location.origin` |
+
+### `presenter-name`
+
+The presenter name is an isolation key, not a secret: it is what separates two
+lecturers running the same quiz file, and reproducing it exactly is what lets a
+presenter reattach to their own running session after a crash or a reload.
+Typing it slightly differently — `Michael` one week, `michael ` the next — is
+therefore the failure this attribute exists to prevent. Since a slide set is
+nearly always presented by the person who wrote it, the slide set is the right
+place to state the name:
+
+```html
+<ld-quiz encrypted quiz="..." presenter-name="Michael Eichberg"></ld-quiz>
+```
+
+It only prefills the field; the presenter can still change it before starting.
+The attribute takes precedence over the name remembered in `localStorage`,
+because it is a deliberate statement about this deck whereas the remembered
+value is whatever the last person at this lectern happened to type.
+
+## Integrating Quizzy into Another Project
+
+There are two ways to consume the component, and they exist because the two kinds
+of consumer are opposites.
+
+### 1. As an npm package (for projects that already have a build)
+
+Use this when the embedding project runs a bundler of its own — LectureDoc2, or
+anything else that can resolve a bare specifier.
+
+```bash
+pnpm add @lecturedoc2/ld-quiz
+```
+
+```js
+import "@lecturedoc2/ld-quiz";                 // registers <ld-quiz>
+// or, to control the tag name:
+import { defineLdQuiz } from "@lecturedoc2/ld-quiz";
+defineLdQuiz("my-quiz");
+```
+
+No loader configuration is required. The component's stylesheet is authored as a
+plain JavaScript module (`src/quiz-styles.js`), so no CSS import plugin, import
+attribute, or asset pipeline has to be set up by the consumer — and no silent
+`undefined` when one is forgotten.
+
+### 2. As a hosted script tag (for projects that do not build)
+
+Use this when the embedding page is produced by something that cannot run a
+bundler — a Moodle plugin, a CMS, a hand-written HTML page.
+
+```html
+<ld-quiz quiz='{"title":"Demo","questions":[]}'
+         server-url="https://quiz.example.com"></ld-quiz>
+<script type="module"
+        src="https://quiz.example.com/client/1.0.0/ld-quiz.js"></script>
+```
+
+Prefer the **versioned** URL. `/client/<version>/ld-quiz.js` is immutable: it is
+served with a one-year `immutable` cache header and its bytes never change, so it
+can be pinned with Subresource Integrity and will still mean the same thing next
+term. `/client/ld-quiz.js` tracks whatever the quiz server was last deployed
+with, which is convenient for the pages served alongside it and a poor promise to
+make to anyone else.
+
+`/client/version.json` reports the version currently deployed.
+
+### Both at once on one page
+
+`<ld-quiz>` is registered globally, and `customElements.define` throws on a name
+that is already taken — a throw that aborts the module doing the defining. A page
+that combines both integration styles (a LectureDoc2 deck, itself bundling the
+component, embedded in a Moodle course that loads the hosted script) would do
+exactly that. Registration is therefore guarded: the second copy yields with a
+console warning instead of taking the page down. Call `defineLdQuiz("other-tag")`
+if both copies genuinely need to be live.
+
+### What the component asks of the host page
+
+| Requirement | Why |
+|-------------|-----|
+| A secure context (`https`, or `localhost`) | Web Crypto is used for hashing and decryption |
+| `script-src` allowing the quiz host | the module is loaded from there |
+| `style-src` allowing the quiz host | the KaTeX stylesheet is linked into the shadow root |
+| `connect-src` allowing `wss://<quiz-host>` | the game runs over a WebSocket |
+| `img-src data:` | the join QR code is drawn to a canvas |
+
+Note what is **not** on that list: `style-src 'unsafe-inline'`. The component's
+own styles are applied as a constructed stylesheet (`adoptedStyleSheets`), which
+is a JavaScript object rather than markup and therefore outside the reach of
+`style-src`. A host with a strict policy — which a Moodle site usually has —
+needs no concession for it. Browsers without constructed stylesheets fall back to
+a `<style>` element, and there the old requirement returns.
+
+KaTeX is linked rather than inlined for a related reason: its `@font-face` rules
+use relative URLs, so a copy of the text would resolve the fonts against the
+embedding page instead of the quiz server, silently replacing every formula with
+a fallback font in precisely the cross-origin setup this component is for.
+
+### Service discovery
+
+The component asks the server where its own endpoints are, once per origin:
+
+```
+GET /api/config
+```
+
+```json
+{
+  "protocolVersion": 1,
+  "serverVersion": "1.0.0",
+  "maxQuizSize": 1048576,
+  "ws": "/ws",
+  "join": "/join.html",
+  "control": "/control.html",
+  "katexCss": "/katex/katex.min.css"
+}
+```
+
+Paths are relative to the URL used to reach the endpoint, so nothing has to know
+the public origin — which, behind a reverse proxy, it generally does not. Each
+can be overridden with an environment variable (`PUBLIC_WS_PATH`,
+`PUBLIC_JOIN_PATH`, `PUBLIC_CONTROL_PATH`, `PUBLIC_KATEX_CSS_PATH`) or with
+absolute URLs, which is what lets the quiz server live under a path prefix rather
+than owning a domain root.
+
+There is deliberately no fallback to a hardcoded layout: a server that cannot
+answer this is a server the component cannot talk to, and saying so immediately
+beats guessing an endpoint and failing later with a broken WebSocket.
+
+### Protocol versioning
+
+The component and the server ship on different schedules: a slide deck pins a
+bundled copy and is re-published when its author feels like it, and an
+institutional quiz server is updated when its administrator feels like it.
+`PROTOCOL_VERSION` (see `packages/ld-quiz/src/protocol.js`) is what keeps a stale
+pairing from failing obscurely.
+
+- Clients send `protocolVersion` on `create_room`, `join_room`,
+  `control_connect` and `room_status`.
+- A server that does not speak the announced version replies with
+  `{ "type": "error", "code": "protocol_mismatch", "message": ... }` naming both
+  versions, and closes the socket. It does not count against the abuse limits: a
+  stale deployment is not a prober.
+- A **missing** `protocolVersion` is a mismatch like any other. Defaulting it
+  away would only mean that the first real incompatibility surfaces as a
+  confusing runtime failure instead of as this error.
+
+The version describes the wire format, not the release, and is deliberately
+decoupled from the package version so that a UI-only release does not invalidate
+every embedded copy in the wild.
+
+### Moodle
+
+Nothing Moodle-specific is required: a filter or editor plugin that emits the
+`<ld-quiz>` element and the hosted `<script type="module">` above is enough, plus
+the CSP directives listed earlier. Results stay in the quiz session — there is no
+LTI integration and no grade passback, and the server persists nothing.
 
 ## Security Model
 
@@ -289,12 +448,26 @@ TLS is required because the Web Crypto API (used for hashing and decryption) onl
 
 ## Server API
 
+### HTTP API
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/config` | Endpoint discovery and protocol version. See [Service discovery](#service-discovery). |
+
+There is deliberately no endpoint that lists rooms or sessions: the application
+has no administrator role, and a room can only be reached by knowing its id.
+
 ### WebSocket Messages
 
 All messages are JSON objects with a `type` field.
 
+Messages that open a conversation (`create_room`, `join_room`, `control_connect`,
+`room_status`) also carry `protocolVersion`; see
+[Protocol versioning](#protocol-versioning).
+
 **Presenter → Server:**
 - `create_room`: Create a new quiz room
+  - `protocolVersion`: The wire-format version the client speaks
   - `presenterToken`: SHA-256 hash of the quiz data or password
   - `quiz`: The quiz object (rendered server-side)
 - `start_game`: Begin the quiz
@@ -351,6 +524,29 @@ Tests cover:
 - **Room state management**: Participant lifecycle, game flow, scoring logic
 - **Math rendering**, **name validation** and **network address discovery**
 - **Server integration**: CORS headers, HTTP API, WebSocket message flow
+- **The integration contract**: `/api/config` and the protocol handshake
+
+#### Browser tests
+
+```bash
+pnpm test:browser                    # Playwright, needs a browser (see below)
+pnpm test:all                        # both suites
+```
+
+These need Chromium, which a fresh checkout does **not** have: `pnpm-workspace.yaml`
+blocks Playwright's postinstall so that deploying the server never drags several
+hundred megabytes of browser binaries onto a production host. Install it once,
+explicitly:
+
+```bash
+pnpm --filter ld-quiz-server exec playwright install chromium
+```
+
+Or point the tests at a browser that is already on the machine:
+
+```bash
+PLAYWRIGHT_CHROMIUM_PATH=/path/to/chrome pnpm test:browser
+```
 
 Crypto is no longer tested here; it lives in and is tested by
 [`@lecturedoc2/libcrypto`](https://github.com/LectureDoc2/ld-libcrypto).

@@ -37,7 +37,7 @@ backend that hosts a quiz session.
 │   ├── ld-quiz/                    # the embeddable component (publishable to npm)
 │   │   ├── src/ld-quiz.js          #   the <ld-quiz> custom element
 │   │   ├── src/protocol.js         #   the wire contract; shared with the server
-│   │   ├── src/qrcode.min.js       #   minimal QR code generator (zero deps)
+│   │   ├── src/qrcode.js       #   minimal QR code generator (zero deps)
 │   │   ├── src/quiz-styles.js      #   Shadow DOM styles
 │   │   └── package.json            #   dep: @lecturedoc2/libcrypto
 │   │
@@ -309,13 +309,13 @@ Use this when the embedding project runs a bundler of its own — LectureDoc2, o
 anything else that can resolve a bare specifier.
 
 ```bash
-pnpm add @lecturedoc2/ld-quiz
+pnpm add @lecturedoc2/quizzy
 ```
 
 ```js
-import "@lecturedoc2/ld-quiz";                 // registers <ld-quiz>
+import "@lecturedoc2/quizzy";                 // registers <ld-quiz>
 // or, to control the tag name:
-import { defineLdQuiz } from "@lecturedoc2/ld-quiz";
+import { defineLdQuiz } from "@lecturedoc2/quizzy";
 defineLdQuiz("my-quiz");
 ```
 

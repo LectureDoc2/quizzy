@@ -1,5 +1,5 @@
 import { decryptAESGCMPBKDF } from "@lecturedoc2/libcrypto";
-import QRCode from "./qrcode.min.js";
+import QRCode from "./qrcode.js";
 import { quizStyles } from "./quiz-styles.js";
 import {
   PROTOCOL_VERSION,

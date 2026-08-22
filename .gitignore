@@ -10,3 +10,6 @@ server.log
 
 # This project uses pnpm; an npm lockfile would diverge from pnpm-lock.yaml
 package-lock.json
+
+# Scratch: this bridge cannot delete files, so removals land here
+_to_delete/

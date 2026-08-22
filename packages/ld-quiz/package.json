@@ -1,10 +1,31 @@
 {
-  "name": "@lecturedoc2/ld-quiz",
+  "name": "@lecturedoc2/quizzy",
   "version": "1.0.0",
   "description": "Embeddable <ld-quiz> web component for real-time quizzes in HTML presentations",
+  "keywords": [
+    "quiz",
+    "web-component",
+    "custom-element",
+    "lecturedoc",
+    "presentation",
+    "slides",
+    "realtime",
+    "websocket",
+    "teaching"
+  ],
+  "homepage": "https://github.com/Delors/quizzy#readme",
+  "bugs": {
+    "url": "https://github.com/Delors/quizzy/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Delors/quizzy.git",
+    "directory": "packages/ld-quiz"
+  },
   "type": "module",
   "license": "BSD-3-Clause",
   "author": "Michael Eichberg (http://www.michael-eichberg.de/)",
+  "//": "Source ESM, not a bundle: `ld-quiz.js` imports `@lecturedoc2/libcrypto` by bare specifier, so a consumer needs a bundler (or an import map). Consumers that cannot build use the pre-bundled script the quiz server publishes at /client/<version>/ld-quiz.js -- see the README.",
   "sideEffects": [
     "./src/ld-quiz.js"
   ],
@@ -16,8 +37,15 @@
   },
   "files": [
     "src",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@lecturedoc2/libcrypto": "^1.1.0"
   }

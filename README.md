@@ -301,7 +301,8 @@ value is whatever the last person at this lectern happened to type.
 ## Integrating Quizzy into Another Project
 
 There are two ways to consume the component, and they exist because the two kinds
-of consumer are opposites.
+of consumer are opposites. (Releasing a new version of the npm package is its own
+runbook: see [PUBLISH.md](PUBLISH.md).)
 
 ### 1. As an npm package (for projects that already have a build)
 

@@ -245,6 +245,10 @@ cost of a LectureDoc2Author change.
 
 ## 5. Releasing: CI, provenance, and why v1.0.0 still needs a token
 
+*The operational runbook — what to do for each release, and what to redo
+when the token expires — lives in [PUBLISH.md](PUBLISH.md). This section is the
+reasoning behind it.*
+
 Two workflows:
 
 ```

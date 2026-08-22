@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # So a release can depend on this workflow having passed for the same commit.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # pnpm-workspace.yaml blocks dependency lifecycle scripts, so Playwright's
+      # postinstall never fetches a browser. That is deliberate -- a production
+      # host has no use for several hundred megabytes of Chromium -- which means
+      # CI has to ask for it explicitly.
+      - name: Install Chromium for the browser tests
+        run: pnpm --filter ld-quiz-server exec playwright install --with-deps chromium
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Browser tests
+        run: pnpm test:browser
+
+      - name: Build the client bundles
+        run: pnpm build
+
+      # A publish that fails on its own manifest is a bad way to find out.
+      - name: Check the package would pack
+        run: npm pack --dry-run
+        working-directory: packages/ld-quiz

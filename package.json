@@ -6,6 +6,7 @@
   "author": "Michael Eichberg",
   "private": true,
   "license": "BSD-3-Clause",
+  "packageManager": "pnpm@11.22.0",
   "scripts": {
     "build": "node build.js",
     "watch": "node build.js --watch",

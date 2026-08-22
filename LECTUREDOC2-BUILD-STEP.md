@@ -16,11 +16,13 @@ been the second.
 
 | File | Change |
 |---|---|
-| `packages/ld-quiz/README.md` | new — usage, attributes, exports, CSP requirements, third-party notice |
-| `packages/ld-quiz/LICENSE` | new — copy of the repository's BSD-3 licence |
+| `packages/ld-quiz/README.md` | usage, attributes, exports, CSP requirements, third-party notice |
+| `packages/ld-quiz/LICENSE` | copy of the repository's BSD-3 licence |
 | `packages/ld-quiz/package.json` | `repository`+`directory`, `homepage`, `bugs`, `keywords`, `engines`, `publishConfig.access: public`, `LICENSE` in `files` |
 | `packages/ld-quiz/src/qrcode.js` | renamed from `qrcode.min.js` (it was never minified); its MIT header turned into a `/*! @license */` block — see below |
 | `packages/ld-quiz/package.json` | package renamed to **`@lecturedoc2/quizzy`**; `repository`/`homepage`/`bugs` now point at the **LectureDoc2** org |
+| `.github/workflows/{ci,release}.yml` | tests on every push, provenance-signed publish on a `v*` tag (see §5) |
+| root `package.json` | `packageManager: pnpm@11.22.0`, so CI does not guess the pnpm version |
 | `DEPLOY.md`, `packages/ld-quiz/README.md` | repository moved from `Delors/quizzy` to `LectureDoc2/quizzy` (DEPLOY.md still said `Delors/quiz.git`, an older name still) |
 
 `npm pack` → 7 files, 24 kB. Installed into a throwaway project, all four export
@@ -241,7 +243,99 @@ cost of a LectureDoc2Author change.
 
 ---
 
-## 5. What you have to do
+## 5. Releasing: CI, provenance, and why v1.0.0 still needs a token
+
+Two workflows:
+
+```
+.github/workflows/ci.yml
+.github/workflows/release.yml
+```
+
+`ci.yml` runs on pushes and pull requests: unit tests, browser tests, a build,
+and `npm pack --dry-run` so a broken manifest surfaces before a release rather
+than during one. It also declares `workflow_call`, so the release runs that same
+suite against the exact commit being published instead of trusting that CI
+passed earlier.
+
+`release.yml` fires on a `v*` tag and publishes `packages/ld-quiz` with
+`--provenance`.
+
+### The constraint: the first publish cannot use OIDC
+
+Trusted publishing is the end state — GitHub mints a short-lived OIDC token, npm
+accepts it, and no long-lived credential exists anywhere. It cannot do a
+package's *first* release. A trusted publisher is configured per package on
+npmjs.com, and `npm trust` states the prerequisite plainly: *"The package you're
+configuring must already exist on the npm registry."* npm/cli#8544 tracks
+lifting this; it is still open, and PyPI's ability to pre-configure is cited
+there as the precedent npm lacks.
+
+This does **not** cost v1.0.0 its provenance. Provenance and trusted publishing
+are separate mechanisms: a token-authenticated publish from a GitHub-hosted
+runner with `id-token: write` and `--provenance` produces exactly the same
+signed attestation, recorded in the same public transparency log. Only the
+authentication is interim.
+
+**Stage one — v1.0.0, token plus provenance**
+
+1. On npmjs.com create a **granular access token**: read-and-write, scoped to
+   the `@lecturedoc2` scope, short expiry. Store it as the repository secret
+   `NPM_TOKEN` under the LectureDoc2 org.
+2. Create a repository environment named `npm-publish`. `release.yml` pins the
+   publish job to it, which gives you one place to add a required reviewer, and
+   it is also what npm's trusted publisher config will match in stage two.
+3. Rehearse: run the workflow manually (`workflow_dispatch`) with **dry-run**
+   left on. It resolves, tests, packs, and stops.
+4. Tag and push:
+
+   ```bash
+   git tag v1.0.0 && git push origin v1.0.0
+   ```
+
+   The workflow refuses if the tag and `packages/ld-quiz/package.json` disagree.
+
+**Stage two — every release after that, OIDC**
+
+5. Configure the trusted publisher, from a local checkout:
+
+   ```bash
+   npm trust github @lecturedoc2/quizzy \
+       --file .github/workflows/release.yml \
+       --env npm-publish
+   ```
+
+   (Or the same thing through *Settings -> Trusted publisher* on the package
+   page.) Repository, workflow filename and environment must match what
+   `release.yml` actually uses.
+6. Delete the two lines in `release.yml` marked `BOOTSTRAP ONLY`, and revoke the
+   `NPM_TOKEN`. From then on nothing long-lived exists to leak.
+
+### Details worth knowing
+
+- **npm, not pnpm, does the publishing.** OIDC token exchange is implemented in
+  the npm CLI; pnpm installs the workspace but does not perform the exchange.
+  The workflow also pins `npm@latest` — trusted publishing needs npm >= 11.5.1
+  and provenance needs >= 9.5.0, and neither should depend on whatever the
+  runner happened to ship.
+- **`provenance` is a flag, not `publishConfig`.** Putting `"provenance": true`
+  in the manifest reads better but makes every local `npm publish --dry-run`
+  fail, because npm refuses to generate provenance outside a supported CI. The
+  flag stays in the workflow.
+- **`repository` must match, case-sensitively**, where the publish runs from. It
+  now reads `git+https://github.com/LectureDoc2/quizzy.git`, which is why the
+  org move had to land before any of this.
+- **`packageManager: "pnpm@11.22.0"`** was added to the root manifest;
+  `pnpm/action-setup@v4` reads the version from there rather than guessing.
+- **`engines.node` on the package went `>=20` -> `>=24`.** It depends on
+  `@lecturedoc2/libcrypto`, which requires `>=24`, so the old claim was untrue.
+  Say if you would rather drop the field — for a browser component it only ever
+  described the toolchain anyway.
+- **Verify afterwards** with `npm audit signatures`, and look for the
+  *Provenance* panel on the package page: it should name the workflow, the
+  commit and the runner.
+
+## 6. The rest of what you have to do
 
 Git writes do not work through the Cowork bridge — it cannot unlink, so every
 `git status` leaves a `.git/index.lock` behind and object writes fail halfway.
@@ -250,17 +344,16 @@ macOS the lock disappears on the first native git command (`rm .git/index.lock`
 if one is in the way).
 
 ```bash
-# 1. Quizzy26 -- review, commit, tag
+# 1. Quizzy26 -- drop in the two workflow files, review, commit
 cd ~/Code/Quizzy26
-git status                       # 4 modified, 3 new; _to_delete/ is now ignored
 rm -rf _to_delete                # stale dist trees + two 0-byte temp files
+mkdir -p .github/workflows       # then save ci.yml and release.yml there
+git status
 git add -A && git commit -m "publish the client component as @lecturedoc2/quizzy"
-git tag quizzy-v1.0.0
-#    the remote is already repointed at LectureDoc2/quizzy
+git push                         # remote already repointed at LectureDoc2/quizzy
 
-# 2. publish
-npm login                        # not authenticated on this machine
-pnpm --filter @lecturedoc2/quizzy publish
+# 2. release -- see section 5 for the token and environment setup first
+git tag v1.0.0 && git push origin v1.0.0
 
 # 3. rebuild the quiz server's own bundle, so the hosted copy
 #    carries the QR licence notice too
@@ -286,7 +379,7 @@ silence. Open any built deck and look at the bottom bar first.
 `ld.config.json`'s `target` (`~/Sites/delors.github.io`), which is outside the
 folders shared with this session.
 
-## 6. Optional, later
+## 7. Optional, later
 
 - `LectureDoc2Author/src/crypto.js` reimplements libcrypto's wire format for the
   Node side and says so in its header. libcrypto runs in Node too, so it could
@@ -294,3 +387,5 @@ folders shared with this session.
 - The `{module}` directive could learn a generic option passthrough onto
   `<ld-module>` as `data-*`, which would let a deck write `:server-url:` instead
   of wrapping the quiz in a JSON envelope. See §4.
+- LectureDoc2 itself now has a `files`-based `dist/`, so the same release
+  workflow would work there once it is ready to go to npm.

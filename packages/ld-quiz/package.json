@@ -13,13 +13,13 @@
     "websocket",
     "teaching"
   ],
-  "homepage": "https://github.com/Delors/quizzy#readme",
+  "homepage": "https://github.com/LectureDoc2/quizzy#readme",
   "bugs": {
-    "url": "https://github.com/Delors/quizzy/issues"
+    "url": "https://github.com/LectureDoc2/quizzy/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Delors/quizzy.git",
+    "url": "git+https://github.com/LectureDoc2/quizzy.git",
     "directory": "packages/ld-quiz"
   },
   "type": "module",

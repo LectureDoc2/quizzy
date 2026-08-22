@@ -20,7 +20,8 @@ been the second.
 | `packages/ld-quiz/LICENSE` | new — copy of the repository's BSD-3 licence |
 | `packages/ld-quiz/package.json` | `repository`+`directory`, `homepage`, `bugs`, `keywords`, `engines`, `publishConfig.access: public`, `LICENSE` in `files` |
 | `packages/ld-quiz/src/qrcode.js` | renamed from `qrcode.min.js` (it was never minified); its MIT header turned into a `/*! @license */` block — see below |
-| `packages/ld-quiz/package.json` | package renamed to **`@lecturedoc2/quizzy`** |
+| `packages/ld-quiz/package.json` | package renamed to **`@lecturedoc2/quizzy`**; `repository`/`homepage`/`bugs` now point at the **LectureDoc2** org |
+| `DEPLOY.md`, `packages/ld-quiz/README.md` | repository moved from `Delors/quizzy` to `LectureDoc2/quizzy` (DEPLOY.md still said `Delors/quiz.git`, an older name still) |
 
 `npm pack` → 7 files, 24 kB. Installed into a throwaway project, all four export
 paths bundle cleanly.
@@ -255,6 +256,7 @@ git status                       # 4 modified, 3 new; _to_delete/ is now ignored
 rm -rf _to_delete                # stale dist trees + two 0-byte temp files
 git add -A && git commit -m "publish the client component as @lecturedoc2/quizzy"
 git tag quizzy-v1.0.0
+#    the remote is already repointed at LectureDoc2/quizzy
 
 # 2. publish
 npm login                        # not authenticated on this machine

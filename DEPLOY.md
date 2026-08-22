@@ -1,6 +1,6 @@
 # Quizzy — Production Deployment on a Fresh Ubuntu 26.04 Host
 
-End-to-end runbook to deploy the `quizzy` project (https://github.com/Delors/quiz.git)
+End-to-end runbook to deploy the `quizzy` project (https://github.com/LectureDoc2/quizzy.git)
 behind Caddy with HTTPS, using the DHBW HARICA ACME endpoint, with the Node backend
 running under a dedicated service user, both managed by systemd.
 
@@ -290,7 +290,7 @@ getent passwd quizzy     # verify: low UID, shell /usr/sbin/nologin
 ## 8. Deploy the application code
 
 ```bash
-sudo git clone https://github.com/Delors/quiz.git /srv/quizzy
+sudo git clone https://github.com/LectureDoc2/quizzy.git /srv/quizzy
 
 # Section 9 hands the tree to the `quizzy` service user while you keep operating on
 # it as root. Git refuses to touch a repository owned by someone else ("detected

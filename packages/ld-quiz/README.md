@@ -3,7 +3,7 @@
 The `<ld-quiz>` web component: a real-time, embeddable quiz for HTML-based
 presentation systems. It handles presenter authentication, quiz decryption,
 participant management and the game flow; the scoring, the rooms and the
-WebSocket live in the [quiz server](https://github.com/Delors/quizzy).
+WebSocket live in the [quiz server](https://github.com/LectureDoc2/quizzy).
 
 This package is the *client half*. It is useless on its own — every instance
 talks to a running quiz server, which it discovers through `GET /api/config`.

@@ -156,8 +156,39 @@ function parseForwardedFor(header) {
   return normalizeAddress(value.split(',')[0]);
 }
 
+/**
+ * True for an address that can only belong to this machine.
+ *
+ * This is what makes "trust the proxy" safe as a default. A reverse proxy on
+ * the same host reaches the backend over the loopback interface, and no client
+ * anywhere else can make its socket address look like that -- the kernel
+ * decides it, not the peer. So an `X-Forwarded-For` arriving on a loopback
+ * connection came from software the operator installed, while the same header
+ * on any other connection is just a string the client chose.
+ *
+ * @param {string} raw
+ * @returns {boolean}
+ */
+function isLoopbackAddress(raw) {
+  const address = normalizeAddress(raw);
+  if (address === '') return false;
+
+  // The whole of 127.0.0.0/8, not just 127.0.0.1.
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(address)) return true;
+  if (!address.includes(':')) return false;
+
+  /* Compared in expanded form rather than against the literal "::1". Node
+     reports the compressed spelling today, but `::1`, `0:0:0:0:0:0:0:1` and
+     `0000:...:0001` are the same address, and a predicate that decides whether
+     to believe X-Forwarded-For should not depend on which spelling reached it. */
+  const groups = expandIpv6(address);
+  return Array.isArray(groups) && groups.length === 8 &&
+    groups[7] === 1 && groups.slice(0, 7).every((group) => group === 0);
+}
+
 export {
   clientKey,
+  isLoopbackAddress,
   normalizeAddress,
   parseForwardedFor,
   expandIpv6,

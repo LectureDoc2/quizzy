@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!--
+    This page handles a lecturer's quiz file and, for encryption, their
+    password. Both stay in the tab: there is no form action, no fetch, and no
+    endpoint behind any of the three panels. The policy below is what makes that
+    checkable rather than merely intended -- `connect-src 'none'` means the page
+    cannot talk to anything at all, so a future edit that quietly posts the
+    password somewhere is refused by the browser instead of shipping.
+
+    Unlike control.html this policy is only stated here, in the document. The
+    Caddyfile's header block is scoped to /control.html; adding a second scope
+    there would be a second place to keep it right. A <meta> policy is enforced
+    just as strictly for everything except frame-ancestors, which this page does
+    not need -- it holds no session and no token, only files the visitor chose.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src 'self';
+    style-src 'self';
+    img-src 'self' data:;
+    font-src 'self';
+    connect-src 'none';
+    base-uri 'none';
+    object-src 'none';
+    form-action 'none'">
+  <title>Quiz Tools</title>
+  <link rel="stylesheet" href="/styles/quiz-ui.css">
+  <link rel="stylesheet" href="/styles/tools.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Quiz Tools</h1>
+    <p class="lede">
+      Check a quiz before a lecture, and encrypt it for publication in a deck.
+      These are the same checks the server runs and the same cipher
+      <code>tools/encrypt-quiz.js</code> uses — running here, in this tab.
+      Nothing is uploaded: your quiz file and your password never leave the
+      browser.
+    </p>
+
+    <p id="insecure-context" class="message message--error" hidden>
+      This page is not being served over HTTPS (or from localhost), so the
+      browser withholds the Web Crypto API. Encryption and secret generation are
+      unavailable; validation still works. Open the page over HTTPS, or use
+      <code>node tools/encrypt-quiz.js</code>.
+    </p>
+
+    <section class="card">
+      <h2>Validate a quiz</h2>
+      <p>
+        Runs the structural check the server performs before it will create a
+        room, and additionally warns about a missing or weak
+        <code>secret</code> — the field that keeps a participant from
+        reconstructing the quiz JSON and deriving your presenter token.
+        Equivalent to <code>node tools/validate-quiz.js</code>.
+      </p>
+      <label class="field-label" for="validate-files">Quiz files (one or more)</label>
+      <input class="input" type="file" id="validate-files" accept=".json,application/json" multiple>
+      <button class="btn btn--primary" type="button" id="validate-run">Validate</button>
+      <div class="output" id="validate-output" aria-live="polite"></div>
+    </section>
+
+    <section class="card">
+      <h2>Encrypt a quiz</h2>
+      <p>
+        Validates the quiz, then encrypts it with AES-GCM and a key derived from
+        your password with <span id="iterations">600,000</span> PBKDF2
+        iterations — so the derivation takes a noticeable moment here, and an
+        offline guessing attack on the published file takes a great deal longer.
+        The result downloads as <code>&lt;name&gt;.encrypted.txt</code>, ready to
+        be referenced from a deck.
+      </p>
+      <label class="field-label" for="encrypt-file">Quiz file</label>
+      <input class="input" type="file" id="encrypt-file" accept=".json,application/json">
+      <label class="field-label" for="encrypt-password">Password</label>
+      <input class="input" type="password" id="encrypt-password" autocomplete="new-password">
+      <label class="field-label" for="encrypt-password-repeat">Repeat password</label>
+      <input class="input" type="password" id="encrypt-password-repeat" autocomplete="new-password">
+      <button class="btn btn--primary" type="button" id="encrypt-run">Encrypt and download</button>
+      <div class="output" id="encrypt-output" aria-live="polite"></div>
+    </section>
+
+    <section class="card">
+      <h2>Generate a secret</h2>
+      <p>
+        32 random characters for the quiz's top-level <code>secret</code> field,
+        from the browser's cryptographic random source. The same thing
+        <code>openssl rand -base64 24</code> gives you, without leaving the page.
+      </p>
+      <output class="secret" id="secret-value"></output>
+      <div class="button-row">
+        <button class="btn btn--primary" type="button" id="secret-run">Generate</button>
+        <button class="btn btn--secondary" type="button" id="secret-copy" disabled>Copy</button>
+      </div>
+      <div class="output" id="secret-output" aria-live="polite"></div>
+    </section>
+
+    <p class="footer-link"><a href="/">← Back to Quizzy</a></p>
+  </div>
+  <script type="module" src="/js/quiz-tools.js"></script>
+</body>
+</html>

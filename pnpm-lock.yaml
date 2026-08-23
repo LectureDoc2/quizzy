@@ -27,6 +27,9 @@ importers:
 
   packages/server:
     dependencies:
+      '@lecturedoc2/libcrypto':
+        specifier: ^1.1.0
+        version: 1.1.0
       express:
         specifier: ^5.2.1
         version: 5.2.1

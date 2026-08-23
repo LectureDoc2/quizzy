@@ -125,7 +125,7 @@ anyone embedding the component.
 |---|---|---|
 | `/component/<version>/ld-quiz.js` | `dist/component/` | immutable, one year — pin this |
 | `/component/ld-quiz.js` | `dist/component/` | `no-cache`; tracks the deployment |
-| `/`, `/join.html`, `/control.html`, `/demo.html` | `dist/app/` | default |
+| `/`, `/join.html`, `/control.html`, `/demo.html`, `/tools.html` | `dist/app/` | default |
 | `/styles/*`, `/katex/*`, `/js/*` | `dist/app/` | default |
 | `/api/config`, `/ws` | API server, via Caddy | — |
 
@@ -137,6 +137,39 @@ replace every formula with a fallback font, precisely in the cross-origin setup
 of the second case. This is a good illustration of the rule above: the
 stylesheet comes from `server-url`, not from wherever the component file was
 loaded from.
+
+---
+
+## Authoring runs in the browser, not on the server
+
+`/tools.html` validates a quiz, encrypts one, and generates a `secret`. All
+three run in the author's tab. The API server gained no route for any of them,
+and that is the design rather than an omission.
+
+Validation needs only the file. Encryption needs the file **and the password** —
+and that password is the one thing in this system that must not travel: it gates
+the encrypted quiz that every participant already holds a copy of, and via the
+quiz's `secret` it gates the presenter token as well (see
+[PRESENTER-TOKEN.md](PRESENTER-TOKEN.md)). A `POST /api/encrypt` would have been
+a new route accepting an arbitrary body, holding lecturers' passwords in memory,
+and passing them through Caddy's request buffers and anything that logs. There
+is nothing it could compute that `crypto.subtle` in the author's own browser
+cannot, so the attack surface would have bought nothing.
+
+What that costs is one constraint and one duplication risk:
+
+- **Secure context.** `crypto.subtle` is undefined outside HTTPS and
+  `localhost`, so encryption is unavailable on a plain-HTTP deployment. The page
+  detects this and says so; validation is pure JavaScript and keeps working.
+- **Two front ends, one implementation.** The page and the `tools/` CLI scripts
+  both import `packages/server/src/quiz-validator.js` (the very function the
+  server runs before it will create a room), `quiz-secret-advice.js` and
+  `quiz-encryption.js`. The PBKDF2 iteration count in particular lives in one
+  place on purpose: a browser path that quietly used a smaller number would
+  produce files indistinguishable from the CLI's and cheaper to break.
+
+The page also carries `connect-src 'none'` in its CSP, which makes "nothing is
+uploaded" enforced by the browser rather than merely intended.
 
 ---
 

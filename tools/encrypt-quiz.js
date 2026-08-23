@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Encrypts a quiz JSON file for embedding in a slide deck.
+ * Encrypts a quiz JSON file for embedding in a deck.
  *
  * Usage:  node tools/encrypt-quiz.js <input.json> <output.txt> [password]
  *
@@ -10,18 +10,13 @@
  * the machine, so prefer the variable for anything that is not a throwaway:
  *
  *     QUIZ_PASSWORD=… node tools/encrypt-quiz.js quiz.json quiz.txt
+ *
+ * The cipher and its parameters live in
+ * `packages/server/src/quiz-encryption.js`, which the browser tools page
+ * bundles as well, so both routes produce equally strong files.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
-import { encryptAESGCMPBKDF } from '@lecturedoc2/libcrypto';
-
-// OWASP's current floor for PBKDF2-HMAC-SHA256. This matters more than it
-// looks: the encrypted quiz ships inside the slide deck, so every participant
-// holds the ciphertext and can attack the password offline at their leisure --
-// and the password protects the "secret" that keeps the presenter token
-// underivable. The iteration count is stored in the encrypted blob and read
-// back at decryption time, so it is a property of each file rather than a
-// constant both ends have to agree on.
-const ITERATIONS = 600000;
+import { encryptQuiz } from '../packages/server/src/quiz-encryption.js';
 
 const [inputFile, outputFile, passwordArg] = process.argv.slice(2);
 const password = passwordArg ?? process.env.QUIZ_PASSWORD;
@@ -35,5 +30,5 @@ if (!inputFile || !outputFile || !password) {
 const quizData = readFileSync(inputFile, 'utf-8');
 JSON.parse(quizData); // reject a malformed quiz here rather than in a lecture hall
 
-writeFileSync(outputFile, await encryptAESGCMPBKDF(quizData, password, ITERATIONS));
+writeFileSync(outputFile, await encryptQuiz(quizData, password));
 console.log(`Encrypted quiz written to ${outputFile}`);

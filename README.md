@@ -53,6 +53,7 @@ diagrams: which asset is served by which host, and how a round is played.
 │       └── package.json            #   deps: express, ws, katex
 │
 ├── tools/encrypt-quiz.js           # CLI utility to encrypt quiz JSON
+├── tools/validate-quiz.js          # CLI utility to check a quiz file
 ├── quizzes/                        # example quizzes (plain and encrypted)
 └── dist/                           # build output served by Caddy (git-ignored)
 ```
@@ -68,6 +69,7 @@ and assembles `dist/` so that its layout matches the public URLs one-to-one:
 |--------|-----|
 | `packages/ld-quiz/src/ld-quiz.js` | `/component/ld-quiz.js` and `/component/<version>/ld-quiz.js` |
 | `packages/server/web/js/quiz-client.js` | `/js/quiz-client.js` |
+| `packages/server/web/js/quiz-tools.js` | `/js/quiz-tools.js` |
 | `packages/server/web/js/quiz-control.js` | `/js/quiz-control.js` |
 | `packages/server/web/*.html` | `/*.html` |
 | `packages/server/web/styles/` | `/styles/` |
@@ -127,12 +129,22 @@ Create a JSON file with your quiz questions:
 
 ### 4. Encrypt the Quiz
 
+Either on the command line:
+
 ```bash
 pnpm validate quizzes/my-quiz.json
 
 QUIZ_PASSWORD='the quiz password' \
   pnpm encrypt quizzes/my-quiz.json quizzes/my-quiz-encrypted.txt
 ```
+
+…or in a browser, at **`https://<host>/tools.html`**, which does the same two
+things plus generating a `secret`. Both routes import the same three modules —
+`quiz-validator.js`, `quiz-secret-advice.js` and `quiz-encryption.js` — so a
+quiz gets the same verdict and the same cipher parameters either way; only the
+front end differs. The page is a static file: nothing is uploaded, and the
+password never leaves the tab. It needs HTTPS or `localhost`, because browsers
+withhold `crypto.subtle` outside a secure context.
 
 `pnpm validate` checks the quiz against the *same* rules the server applies —
 it imports `packages/server/src/quiz-validator.js` rather than restating them —

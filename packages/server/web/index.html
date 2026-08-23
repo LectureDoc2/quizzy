@@ -11,6 +11,9 @@
                 max-width: 800px;
                 margin: 2rem auto;
                 padding: 1rem;
+                min-height: 100vh;
+                background-image: url('background.png');
+                background-size: cover; 
             }
             h1 {
                 color: #1e293b;
@@ -39,6 +42,16 @@
                     <ld-quiz server-url="http://192.168.178.151:3000"></ld-quiz>
             -->
             <ld-quiz></ld-quiz>
+        </div>
+
+        <div class="slide">
+            <h2>Preparing a Quiz</h2>
+            <p>
+                <a href="/tools.html">Quiz Tools</a> checks a quiz file against the
+                same rules the server applies, and encrypts one for publication in
+                a slide deck. Both run in your browser — the quiz and the password
+                are not uploaded anywhere.
+            </p>
         </div>
         <script type="module" src="/component/ld-quiz.js"></script>
     </body>

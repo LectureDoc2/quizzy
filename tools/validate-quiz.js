@@ -11,76 +11,15 @@
  *
  * Exit codes: 0 all files usable, 1 something is invalid (or, with --strict, a
  * warning was raised), 2 the tool was invoked wrongly.
+ *
+ * The structural checks live in `packages/server/src/quiz-validator.js` and the
+ * `secret` advice in `packages/server/src/quiz-secret-advice.js`, both of which
+ * the browser tools page bundles as well -- so a quiz gets the same verdict
+ * here and at /tools.html. What is left in this file is the command line.
  */
 import { readFileSync } from 'node:fs';
 import { validateQuiz } from '../packages/server/src/quiz-validator.js';
-
-/**
- * A `secret` is what stops a student who watched the lecture from
- * reconstructing the quiz file.
- *
- * The presenter token is `SHA-256(presenterName ‖ JSON.stringify(quiz))`.
- * Everything else that goes into that hash is visible: the questions and
- * options appear on the projector, and the presenter's name is guessable in
- * about one attempt. Without a high-entropy field inside the quiz, a
- * participant can rebuild the exact JSON, compute the hash, and hold the
- * presenter's credential for that quiz -- not just today, but for every future
- * session of it.
- *
- * For an encrypted quiz the same field does a second job: participants hold the
- * ciphertext, so they can attack the password offline, and being unable to
- * recognise a correct guess by regenerating the plaintext is what makes that
- * attack expensive.
- *
- * 128 bits is the target. `openssl rand -base64 24` produces 32 characters.
- */
-const SECRET_ADVICE =
-  'Add a high-entropy "secret" field at the top level of the quiz:\n' +
-  '      "secret": "' + '<32 random characters>' + '"\n' +
-  '    Generate one with:  openssl rand -base64 24';
-
-const RECOMMENDED_SECRET_LENGTH = 32;
-const MINIMUM_SECRET_LENGTH = 16;
-
-/** @returns {string[]} warnings about the `secret` field, worst first. */
-function checkSecret(quiz) {
-  if (!Object.prototype.hasOwnProperty.call(quiz, 'secret')) {
-    return [
-      'No "secret" field.\n' +
-      '    The presenter token is SHA-256(your name + the quiz JSON). Every other\n' +
-      '    ingredient is on the projector or easy to guess, so without a secret a\n' +
-      '    participant who watched the lecture can rebuild the file, compute the\n' +
-      '    token, and act as presenter in this and every future session of it.\n' +
-      '    ' + SECRET_ADVICE
-    ];
-  }
-
-  const secret = quiz.secret;
-  if (typeof secret !== 'string') {
-    return [`"secret" has the wrong type: ${Array.isArray(secret) ? 'array' : typeof secret}; string expected. ` + SECRET_ADVICE];
-  }
-  if (secret.trim() === '') {
-    return ['"secret" is empty, which is the same as not having one. ' + SECRET_ADVICE];
-  }
-  if (secret.length < MINIMUM_SECRET_LENGTH) {
-    return [
-      `"secret" is only ${secret.length} characters. That is short enough to\n` +
-      '    enumerate, which defeats the point of having one. ' + SECRET_ADVICE
-    ];
-  }
-  // Before the length check: a placeholder that happens to be long is still a
-  // placeholder, and one that is short deserves the more useful complaint.
-  if (/^(?:secret|changeme|change-me|password|todo|xxx+|test|example|placeholder)/i.test(secret)) {
-    return ['"secret" looks like a placeholder rather than random data. ' + SECRET_ADVICE];
-  }
-  if (secret.length < RECOMMENDED_SECRET_LENGTH) {
-    return [
-      `"secret" is ${secret.length} characters; ${RECOMMENDED_SECRET_LENGTH} is the ` +
-      'recommended length for roughly 128 bits.'
-    ];
-  }
-  return [];
-}
+import { checkSecret } from '../packages/server/src/quiz-secret-advice.js';
 
 function describe(file) {
   let raw;

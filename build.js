@@ -6,7 +6,7 @@
  * embedding pages are unchanged:
  *
  *   dist/
- *   ├── index.html, demo.html, join.html, control.html
+ *   ├── index.html, demo.html, join.html, control.html, tools.html
  *   ├── client/         bundled ES modules (moving "latest" alias)
  *   ├── client/<ver>/   the same bundles, immutable and safe to pin
  *   ├── styles/         stylesheets of the join/control pages
@@ -81,13 +81,22 @@ const COMPONENT_ENTRY = [
 const APP_ENTRIES = [
     ["packages/server/web/js/quiz-client.js", "js/quiz-client"],
     ["packages/server/web/js/quiz-control.js", "js/quiz-control"],
+    /* The authoring tools page. Bundled rather than served as source because it
+       imports the very modules that make it trustworthy -- the server's
+       `validateQuiz` and `@lecturedoc2/libcrypto` -- and the browser cannot
+       resolve either by bare path. Publishing the sources separately would have
+       meant a second copy of the validator on its way out of sync with the one
+       the server enforces. */
+    ["packages/server/web/js/quiz-tools.js", "js/quiz-tools"],
 ].map(([from, out]) => ({ in: join(ROOT, from), out }));
 
 /** Files and directories copied verbatim: [source, destination]. */
 const COPIES = [
     ["packages/server/web/index.html", "app/index.html"],
+    ["packages/server/web/background.png", "app/background.png"],
     ["packages/server/web/demo.html", "app/demo.html"],
     ["packages/server/web/join.html", "app/join.html"],
+    ["packages/server/web/tools.html", "app/tools.html"],
     ["packages/server/web/control.html", "app/control.html"],
     ["packages/server/web/styles", "app/styles"],
     ["packages/server/web/katex", "app/katex"],
@@ -158,5 +167,5 @@ if (WATCH) {
     console.log(`Build complete: ${DIST}`);
     console.log(`  component, immutable: /component/${CLIENT_VERSION}/ld-quiz.js`);
     console.log(`  component, moving:    /component/ld-quiz.js`);
-    console.log(`  application:          / (index, demo, join, control)`);
+    console.log(`  application:          / (index, demo, join, control, tools)`);
 }

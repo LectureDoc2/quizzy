@@ -1,57 +1,39 @@
-import { readFileSync, writeFileSync } from 'fs';
-import { createInterface } from 'readline';
+#!/usr/bin/env node
+/**
+ * Encrypts a quiz JSON file for embedding in a slide deck.
+ *
+ * Usage:  node tools/encrypt-quiz.js <input.json> <output.txt> [password]
+ *
+ * With no password argument the value is read from the QUIZ_PASSWORD
+ * environment variable. Passing it on the command line is convenient and
+ * leaves it in the shell history and in `ps` output for every other user on
+ * the machine, so prefer the variable for anything that is not a throwaway:
+ *
+ *     QUIZ_PASSWORD=… node tools/encrypt-quiz.js quiz.json quiz.txt
+ */
+import { readFileSync, writeFileSync } from 'node:fs';
 import { encryptAESGCMPBKDF } from '@lecturedoc2/libcrypto';
 
 // OWASP's current floor for PBKDF2-HMAC-SHA256. This matters more than it
 // looks: the encrypted quiz ships inside the slide deck, so every participant
 // holds the ciphertext and can attack the password offline at their leisure --
 // and the password protects the "secret" that keeps the presenter token
-// underivable. Raising this is backwards compatible, because the iteration
-// count is stored in the encrypted blob and read back at decryption time.
+// underivable. The iteration count is stored in the encrypted blob and read
+// back at decryption time, so it is a property of each file rather than a
+// constant both ends have to agree on.
 const ITERATIONS = 600000;
 
-async function main() {
-  const args = process.argv.slice(2);
-  if (args.length !== 2) {
-    console.log('Usage: node encrypt-quiz.js <input.json> <output.txt>');
-    console.log('You will be prompted for a password.');
-    process.exit(1);
-  }
+const [inputFile, outputFile, passwordArg] = process.argv.slice(2);
+const password = passwordArg ?? process.env.QUIZ_PASSWORD;
 
-  const [inputFile, outputFile] = args;
-  const quizData = readFileSync(inputFile, 'utf-8');
-  
-  // Validate JSON
-  JSON.parse(quizData);
-
-  const password = process.stdin.isTTY ? 
-    await promptPassword() : 
-    (await readStdin()).trim();
-
-  const encrypted = await encryptAESGCMPBKDF(quizData, password, ITERATIONS);
-  writeFileSync(outputFile, encrypted);
-  console.log(`Encrypted quiz written to ${outputFile}`);
+if (!inputFile || !outputFile || !password) {
+  console.error('Usage: node tools/encrypt-quiz.js <input.json> <output.txt> [password]');
+  console.error('       (without the argument, the password is read from QUIZ_PASSWORD)');
+  process.exit(2);
 }
 
-function promptPassword() {
-  return new Promise((resolve) => {
-    const rl = createInterface({
-      input: process.stdin,
-      output: process.stdout
-    });
-    rl.question('Enter password: ', (password) => {
-      rl.close();
-      resolve(password);
-    });
-  });
-}
+const quizData = readFileSync(inputFile, 'utf-8');
+JSON.parse(quizData); // reject a malformed quiz here rather than in a lecture hall
 
-function readStdin() {
-  return new Promise((resolve) => {
-    let data = '';
-    process.stdin.on('data', chunk => data += chunk);
-    process.stdin.on('end', () => resolve(data));
-  });
-}
-
-main().catch(console.error);
+writeFileSync(outputFile, await encryptAESGCMPBKDF(quizData, password, ITERATIONS));
+console.log(`Encrypted quiz written to ${outputFile}`);

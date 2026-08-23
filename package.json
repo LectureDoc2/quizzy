@@ -16,6 +16,7 @@
     "test:browser": "pnpm --filter ld-quiz-server test:browser",
     "test:all": "pnpm --filter ld-quiz-server test:all",
     "encrypt": "node tools/encrypt-quiz.js",
+    "validate": "node tools/validate-quiz.js",
     "clean": "rm -rf dist"
   },
   "dependencies": {

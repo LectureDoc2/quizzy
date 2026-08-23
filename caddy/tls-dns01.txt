@@ -1,19 +1,18 @@
 # DNS-01 certificate issuance via RFC2136 dynamic DNS update.
 #
 # Required where the ACME validator cannot reach this host: HTTP-01 and
-# TLS-ALPN-01 both need the CA to open a connection *to* us, and the DHBW CA
-# (certificates.dhbw.cloud) has no IPv6 connectivity to an IPv6-only VM.
+# TLS-ALPN-01 both need the CA to open a connection *to* us.
 # DNS-01 inverts that -- Caddy publishes a TXT record and the CA only queries
 # DNS -- so it works regardless of inbound reachability.
 #
-# Needs a Caddy built with the RFC2136 provider; the packaged binary does not
-# include it:
+# Needs a Caddy built with the RFC2136 provider:
 #
 #     xcaddy build --with github.com/caddy-dns/rfc2136
 #
-# TSIG_KEY_NAME and TSIG_SECRET come from the environment file (step 8c) so the
-# shared secret is never committed. The secret grants dynamic-update rights over
-# the whole zone -- treat it like a password.
+# TSIG_KEY_NAME and TSIG_SECRET come from the environment file 
+# (see DEPLOY.md step 8c) so the shared secret is never committed. 
+# The secret grants dynamic-update rights over the whole zone -- 
+# treat it like a password.
 tls {
 	dns rfc2136 {
 		key_name {env.TSIG_KEY_NAME}

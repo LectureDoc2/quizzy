@@ -65,9 +65,9 @@ and assembles `dist/` so that its layout matches the public URLs one-to-one:
 
 | Source | URL |
 |--------|-----|
-| `packages/ld-quiz/src/ld-quiz.js` | `/client/ld-quiz.js` and `/client/<version>/ld-quiz.js` |
-| `packages/server/web/js/quiz-client.js` | `/client/quiz-client.js` |
-| `packages/server/web/js/quiz-control.js` | `/client/quiz-control.js` |
+| `packages/ld-quiz/src/ld-quiz.js` | `/component/ld-quiz.js` and `/component/<version>/ld-quiz.js` |
+| `packages/server/web/js/quiz-client.js` | `/js/quiz-client.js` |
+| `packages/server/web/js/quiz-control.js` | `/js/quiz-control.js` |
 | `packages/server/web/*.html` | `/*.html` |
 | `packages/server/web/styles/` | `/styles/` |
 | `packages/server/web/katex/` | `/katex/` |

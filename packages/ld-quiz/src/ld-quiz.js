@@ -649,18 +649,6 @@ class QuizHost extends HTMLElement {
       "quiz-control",
       "width=900,height=700,scrollbars=yes",
     );
-    /* We already have an explicit button to open the control window.
-    if (!popup || popup.closed || typeof popup.closed === "undefined") {
-      // Popup blocked - show fallback
-      const existingBtn = this.shadowRoot.getElementById("btn-control");
-      if (existingBtn) {
-        const info = document.createElement("div");
-        info.className = "quiz-info";
-        info.innerHTML = `Control window blocked. <a href="${controlUrl}" target="_blank">Click here to open control window</a>`;
-        existingBtn.parentElement.appendChild(info);
-      }
-    }
-    */
   }
 
   showError(message) {

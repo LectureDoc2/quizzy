@@ -98,6 +98,52 @@ describe('Room', () => {
     assert.strictEqual(autoEndCalled, true);
   });
 
+  it('still auto-ends after a participant answers and then disconnects', () => {
+    // The failure this pins down was permanent rather than momentary: the
+    // answer of somebody who has left stayed in currentAnswers while they
+    // left participants, so the two counts could never meet again and every
+    // remaining question of that lecture had to be ended by hand.
+    const quiz = { title: 'Test', questions: [{ type: 'multiple-choice', text: 'Q1', options: ['A', 'B'], correctIndices: [0] }] };
+    const room = new Room('ABC123', 'token', quiz);
+    let autoEndCalled = false;
+    room.onAutoEnd = () => {
+      autoEndCalled = true;
+    };
+    const ws1 = { readyState: 1 };
+    const ws2 = { readyState: 1 };
+    const p1 = room.addParticipant(ws1, 'Alice');
+    const p2 = room.addParticipant(ws2, 'Bob');
+
+    room.startGame();
+    room.submitAnswer(p1.id, [0]);
+    assert.strictEqual(room.state, 'question');
+    room.removeParticipant(ws1); // Alice shuts her laptop
+
+    room.submitAnswer(p2.id, [1]);
+    assert.strictEqual(room.state, 'results');
+    assert.strictEqual(autoEndCalled, true);
+  });
+
+  it('never auto-ends a question that nobody is present for', () => {
+    // An answer can outlive its author -- see the test above -- so 'everybody
+    // has answered' must not be read as true of an empty room, which would
+    // close the question behind the presenter's back.
+    const quiz = { title: 'Test', questions: [{ type: 'multiple-choice', text: 'Q1', options: ['A', 'B'], correctIndices: [0] }] };
+    const room = new Room('ABC123', 'token', quiz);
+    let autoEndCalled = false;
+    room.onAutoEnd = () => {
+      autoEndCalled = true;
+    };
+    const ws1 = { readyState: 1 };
+    const p1 = room.addParticipant(ws1, 'Alice');
+
+    room.startGame();
+    room.removeParticipant(ws1);
+    room.submitAnswer(p1.id, [0]);
+    assert.strictEqual(room.state, 'question');
+    assert.strictEqual(autoEndCalled, false);
+  });
+
   it('time limit auto-ends question', async () => {
     const quiz = { title: 'Test', questions: [{ type: 'multiple-choice', text: 'Q1', options: ['A', 'B'], correctIndices: [0], timeLimit: 0.05 }] };
     const room = new Room('ABC123', 'token', quiz);
@@ -504,6 +550,24 @@ describe('Room expiry', () => {
     room.emptySince = now;
     assert.strictEqual(room.isExpired(now + ENDED_ROOM_TTL_MS - 1000), false);
     assert.strictEqual(room.isExpired(now + ENDED_ROOM_TTL_MS), true);
+  });
+
+  it('discards a finished room sooner than a running one, as the comment claims', () => {
+    // The ended TTL used to be the longer of the two, which contradicted the
+    // reasoning written above it: a finished room can never be read again,
+    // while an empty running one is waiting for its presenter to come back.
+    assert.ok(ENDED_ROOM_TTL_MS < EMPTY_ROOM_TTL_MS,
+      'a room nobody can read again must not be kept longer than one still in play');
+
+    const { room: finished } = roomWith('ended');
+    const { room: running } = roomWith('lobby');
+    const now = Date.now();
+    finished.emptySince = now;
+    running.emptySince = now;
+
+    const afterEndedTtl = now + ENDED_ROOM_TTL_MS;
+    assert.strictEqual(finished.isExpired(afterEndedTtl), true);
+    assert.strictEqual(running.isExpired(afterEndedTtl), false);
   });
 
   it('the absolute TTL applies even to a room that is still in use', () => {

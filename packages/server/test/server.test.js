@@ -11,7 +11,7 @@ import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert';
 import { WebSocket } from 'ws';
 import { createHash } from 'crypto';
-import { createQuizServer, GENERIC_REJECTION, QUIZ_FINISHED } from '../src/server.js';
+import { createQuizServer, limitsFromEnv, DEFAULT_LIMITS, GENERIC_REJECTION, QUIZ_FINISHED } from '../src/server.js';
 import { PROTOCOL_VERSION } from '../../ld-quiz/src/protocol.js';
 import { loopbackHost, originFor } from './loopback.js';
 
@@ -420,6 +420,89 @@ describe('Server integration', () => {
     });
   });
 
+  describe('one socket, one participant', () => {
+    it('refuses a second join_room on a connection that has already joined', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const player = await joinRoom(roomId, 'Alice Adams');
+      assert.strictEqual(player.reply.type, 'joined');
+
+      send(player.ws, { type: 'join_room', roomId, name: 'Alice Again' });
+      const refusal = await waitFor(player.ws, 'error');
+      assert.match(refusal.message, /already joined/i);
+      assert.strictEqual(player.ws.readyState, WebSocket.OPEN,
+        'a confused client should be told what is wrong, not disconnected');
+      assert.strictEqual(quizServer.roomManager.getRoom(roomId).getParticipantCount(), 1);
+    });
+
+    it('does not let a re-join answer the open question a second time', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      const bob = await joinRoom(roomId, 'Bob Brown');
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(presenter.ws, 'game_started');
+      await waitFor(alice.ws, 'question');
+      await waitFor(bob.ws, 'question');
+
+      send(alice.ws, { type: 'submit_answer', answer: [0, 2] });
+      await waitFor(alice.ws, 'answer_accepted');
+
+      // Re-joining used to mint a second participant id on Alice's socket:
+      // that identity could answer the same question again, and the first one
+      // -- which the presenter's results still referred to -- stopped
+      // resolving to anybody and showed up as a phantom 'Unknown' row.
+      send(alice.ws, { type: 'join_room', roomId, name: 'Alice Adams' });
+      await waitFor(alice.ws, 'error');
+      send(alice.ws, { type: 'submit_answer', answer: [1] });
+      await new Promise((r) => setTimeout(r, 50));
+
+      const results = waitFor(presenter.ws, 'question_results');
+      send(bob.ws, { type: 'submit_answer', answer: [1] });
+      const msg = await results;
+
+      assert.strictEqual(msg.answers.length, 2, 'two people answered, so there are two answers');
+      assert.ok(!msg.answers.some((a) => a.name === 'Unknown'),
+        'the presenter must never be shown a row it cannot name');
+      assert.strictEqual(msg.answers.filter((a) => a.name === 'Alice Adams').length, 1);
+      assert.strictEqual(msg.leaderboard.find((p) => p.name === 'Alice Adams').score, 100);
+    });
+  });
+
+  describe('ending the quiz on purpose', () => {
+    it('ends the game where it stands instead of advancing', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const player = await joinRoom(roomId, 'Alice Adams');
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(presenter.ws, 'game_started');
+      await waitFor(player.ws, 'question'); // the first of two questions
+
+      const playerEnded = waitFor(player.ws, 'game_ended');
+      const presenterEnded = waitFor(presenter.ws, 'game_ended');
+      send(presenter.ws, { type: 'end_game' });
+      await playerEnded;
+      const ended = await presenterEnded;
+
+      assert.ok(Array.isArray(ended.statistics.questions), 'the export must be ready at once');
+      assert.strictEqual(quizServer.roomManager.getRoom(roomId).state, 'ended');
+      // The whole point: `next_question` would have pushed question two.
+      assert.ok(!player.ws.inbox.some((m) => m.type === 'question'));
+    });
+
+    it('is presenter-only, like every other control message', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const player = await joinRoom(roomId, 'Alice Adams');
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(player.ws, 'question');
+
+      send(player.ws, { type: 'end_game' });
+      await new Promise((r) => setTimeout(r, 100));
+      assert.strictEqual(quizServer.roomManager.getRoom(roomId).state, 'question');
+    });
+  });
+
   describe('post-game export', () => {
     it('delivers aggregate statistics when the quiz ends', async () => {
       const presenter = await openRoom();
@@ -501,6 +584,106 @@ describe('Server integration', () => {
       assert.ok(res.headers.get('access-control-allow-origin'));
       assert.ok(res.headers.get('access-control-allow-methods'));
     });
+  });
+});
+
+/**
+ * The failed-attempt budget, across reconnects.
+ *
+ * Its own server instance: the counters are per address and per server, and
+ * the integration suite above deliberately spends its budget, so sharing a
+ * server would let these tests pass for the wrong reason.
+ */
+describe('Failed-attempt budget', () => {
+  let quizServer;
+  let port;
+  const host = loopbackHost();
+  const sockets = [];
+
+  before(async () => {
+    quizServer = createQuizServer({
+      limits: { maxFailedAttemptsPerWindow: 3 },
+      heartbeatIntervalMs: 60_000
+    });
+    port = await quizServer.listen(0, host);
+  });
+
+  after(async () => {
+    for (const ws of sockets) {
+      try { ws.terminate(); } catch { /* already gone */ }
+    }
+    await quizServer.close();
+  });
+
+  async function probe(target = port) {
+    const ws = new WebSocket(`${originFor('ws', host, target)}/ws`);
+    sockets.push(ws);
+    ws.on('error', () => {});
+    ws.closed = new Promise((resolve) => ws.once('close', resolve));
+    await new Promise((resolve, reject) => {
+      ws.once('open', resolve);
+      ws.once('error', reject);
+    });
+    return ws;
+  }
+
+  /** One wrong room code, which costs exactly one slot of the budget. */
+  function guess(ws, attempt) {
+    ws.send(JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'join_room',
+      roomId: `CCCC${String(attempt).padStart(2, '0')}`,
+      name: 'Flood Bot'
+    }));
+  }
+
+  const closedWithin = (ws, ms = 1500) => Promise.race([
+    ws.closed.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), ms))
+  ]);
+
+  it('is not reset by reconnecting', async () => {
+    const first = await probe();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      guess(first, attempt);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.strictEqual(first.readyState, WebSocket.OPEN, 'three guesses is still within the budget');
+
+    first.close();
+    await first.closed;
+    await new Promise((r) => setTimeout(r, 50)); // let the server process the close
+    assert.strictEqual(quizServer.ipState.size, 1, 'the counters must outlive the socket');
+
+    // Closing the socket is what the limiter itself does once the budget is
+    // spent, so a budget that started again here would make room-code probing
+    // free: reconnect, guess, reconnect, guess.
+    const second = await probe();
+    guess(second, 9);
+    assert.ok(await closedWithin(second), 'reconnecting handed the prober a fresh budget');
+  });
+
+  it('forgets the retained counters once their window has passed', async () => {
+    // Keeping the counters must not mean keeping one entry per address that
+    // ever mistyped a room code. The room sweep drops them as soon as the
+    // window they describe is over.
+    const shortLived = createQuizServer({
+      limits: { maxFailedAttemptsPerWindow: 3, failedAttemptWindowMs: 100 },
+      sweepIntervalMs: 30,
+      heartbeatIntervalMs: 60_000
+    });
+    const shortPort = await shortLived.listen(0, host);
+
+    const ws = await probe(shortPort);
+    guess(ws, 0);
+    await new Promise((r) => setTimeout(r, 50));
+    ws.close();
+    await ws.closed;
+    assert.strictEqual(shortLived.ipState.size, 1);
+
+    await new Promise((r) => setTimeout(r, 300));
+    assert.strictEqual(shortLived.ipState.size, 0, 'expired counters were never released');
+    await shortLived.close();
   });
 });
 
@@ -588,5 +771,133 @@ describe('Abuse limits on IPv6', () => {
   it('accepts the bracketed forwarded form', async () => {
     const bracketed = await openRoomFrom('[2001:db8:1:2:5555::5]:41234', 'presenter-six');
     assert.strictEqual(bracketed.type, 'error', 'bracketed form was not matched to its /64');
+  });
+});
+
+/**
+ * The per-client limits only mean anything if clients land in different
+ * buckets. Behind a reverse proxy on the same host every connection arrives
+ * from 127.0.0.1, so this used to require TRUST_PROXY=true -- and forgetting it
+ * silently turned `maxRoomsPerIp` into a limit on the whole deployment.
+ */
+describe('Bucketing behind a local reverse proxy', () => {
+  let quizServer;
+  let port;
+  const host = loopbackHost();
+  const sockets = [];
+
+  before(async () => {
+    // No trustProxy option and no TRUST_PROXY env var: the default is what is
+    // under test.
+    quizServer = createQuizServer({
+      limits: { maxRoomsPerIp: 1 },
+      heartbeatIntervalMs: 60_000
+    });
+    port = await quizServer.listen(0, host);
+  });
+
+  after(async () => {
+    for (const ws of sockets) {
+      try { ws.terminate(); } catch { /* already gone */ }
+    }
+    await quizServer.close();
+  });
+
+  /** A socket carrying the header Caddy would add for `forwardedFor`. */
+  async function proxiedSocket(forwardedFor) {
+    const ws = new WebSocket(`${originFor('ws', host, port)}/ws`, {
+      headers: { 'x-forwarded-for': forwardedFor }
+    });
+    sockets.push(ws);
+    ws.inbox = [];
+    ws.on('message', (data) => ws.inbox.push(JSON.parse(data)));
+    await new Promise((resolve, reject) => {
+      ws.once('open', resolve);
+      ws.once('error', reject);
+    });
+    return ws;
+  }
+
+  async function tryCreateRoom(ws, who) {
+    ws.send(JSON.stringify(withProtocolVersion({
+      type: 'create_room',
+      presenterToken: tokenFor(who),
+      quiz: QUIZ
+    })));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    return {
+      created: ws.inbox.find((m) => m.type === 'room_created'),
+      error: ws.inbox.find((m) => m.type === 'error')
+    };
+  }
+
+  it('gives two forwarded addresses two separate budgets', async () => {
+    const first = await tryCreateRoom(await proxiedSocket('203.0.113.7'), 'lecturer-one');
+    assert.ok(first.created, 'the first lecturer should get a room');
+
+    // With the limit at one room per client, this only succeeds if the second
+    // lecturer is counted as a different client.
+    const second = await tryCreateRoom(await proxiedSocket('198.51.100.42'), 'lecturer-two');
+    assert.ok(second.created, 'a second forwarded address must not inherit the first budget');
+    assert.notStrictEqual(second.created.roomId, first.created.roomId);
+  });
+
+  it('still holds one forwarded address to its own budget', async () => {
+    const ws = await proxiedSocket('203.0.113.99');
+    const first = await tryCreateRoom(ws, 'same-client-one');
+    assert.ok(first.created, 'setup: the first room should be created');
+
+    const again = await tryCreateRoom(await proxiedSocket('203.0.113.99'), 'same-client-two');
+    assert.ok(!again.created, 'the same forwarded address must not get a second room');
+    assert.ok(again.error, 'and should be told why');
+  });
+});
+
+describe('limitsFromEnv', () => {
+  /*
+   * A deployment that cannot resize these is stuck with numbers chosen for
+   * someone else's lecture hall, so the parsing has to be both usable and
+   * unwilling to disable a limit by accident.
+   */
+  it('reads every limit', () => {
+    assert.deepStrictEqual(limitsFromEnv({
+      MAX_MESSAGES_PER_WINDOW: '120',
+      MESSAGE_WINDOW_MS: '5000',
+      MAX_FAILED_ATTEMPTS_PER_WINDOW: '80',
+      FAILED_ATTEMPT_WINDOW_MS: '30000',
+      MAX_ROOMS_PER_IP: '40',
+      MAX_SOCKETS_PER_IP: '1200'
+    }), {
+      maxMessagesPerWindow: 120,
+      messageWindowMs: 5000,
+      maxFailedAttemptsPerWindow: 80,
+      failedAttemptWindowMs: 30000,
+      maxRoomsPerIp: 40,
+      maxSocketsPerIp: 1200
+    });
+  });
+
+  it('leaves unset variables alone', () => {
+    assert.deepStrictEqual(limitsFromEnv({}), {});
+  });
+
+  it('keeps the default rather than accepting a value that would disable a limit', () => {
+    // An empty or malformed value in a unit file must not read as zero, which
+    // would refuse every connection.
+    for (const bad of ['', '   ', '0', '-5', 'lots', 'NaN', 'Infinity']) {
+      assert.deepStrictEqual(
+        limitsFromEnv({ MAX_SOCKETS_PER_IP: bad }), {},
+        `MAX_SOCKETS_PER_IP=${JSON.stringify(bad)} should be ignored`
+      );
+    }
+  });
+
+  it('is sized for a lecture hall rather than a household', () => {
+    // A few hundred people behind one NATed address or one IPv6 /64 all land in
+    // the same bucket; these numbers exist to survive that, not to be tuned.
+    assert.ok(DEFAULT_LIMITS.maxSocketsPerIp >= 300,
+      'a full lecture hall shares one egress address');
+    assert.ok(DEFAULT_LIMITS.maxRoomsPerIp >= 10,
+      'an institution runs several lectures at once from one address');
   });
 });

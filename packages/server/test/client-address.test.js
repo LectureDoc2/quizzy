@@ -5,7 +5,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { clientKey, normalizeAddress, parseForwardedFor, expandIpv6, isIpv4 } from '../src/client-address.js';
+import { clientKey, normalizeAddress, parseForwardedFor, expandIpv6, isIpv4, isLoopbackAddress } from '../src/client-address.js';
 
 describe('normalizeAddress', () => {
   it('passes plain addresses through', () => {
@@ -188,5 +188,39 @@ describe('loopbackHost (test infrastructure)', () => {
   it('lets the OS choose when nothing is enumerable', async () => {
     const { loopbackHost } = await import('./loopback.js');
     assert.strictEqual(loopbackHost({}), undefined);
+  });
+});
+
+describe('isLoopbackAddress', () => {
+  /*
+   * This predicate decides whether an X-Forwarded-For header is believed, so a
+   * false positive would let a remote client choose its own rate-limit bucket.
+   */
+  it('accepts the whole of 127.0.0.0/8 and ::1', () => {
+    for (const address of ['127.0.0.1', '127.0.0.53', '127.1.2.3', '::1']) {
+      assert.strictEqual(isLoopbackAddress(address), true, address);
+    }
+  });
+
+  it('sees through the forms Node actually reports', () => {
+    // Ports, brackets and IPv4-mapped IPv6 all reach this function in practice.
+    for (const address of ['127.0.0.1:54321', '[::1]:54321', '::ffff:127.0.0.1']) {
+      assert.strictEqual(isLoopbackAddress(address), true, address);
+    }
+  });
+
+  it('refuses everything a remote client could arrive as', () => {
+    for (const address of [
+      '192.168.1.5', '10.0.0.1', '203.0.113.7', '2001:db8::1',
+      '::ffff:203.0.113.7', '0.0.0.0', '', '   ', 'localhost', undefined, null, 12
+    ]) {
+      assert.strictEqual(isLoopbackAddress(address), false, String(address));
+    }
+  });
+
+  it('is not fooled by an address that merely starts with 127', () => {
+    for (const address of ['1270.0.0.1', '127.0.0.1.evil.com', '2127.0.0.1']) {
+      assert.strictEqual(isLoopbackAddress(address), false, address);
+    }
   });
 });

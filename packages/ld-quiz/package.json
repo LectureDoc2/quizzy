@@ -25,7 +25,7 @@
   "type": "module",
   "license": "BSD-3-Clause",
   "author": "Michael Eichberg (http://www.michael-eichberg.de/)",
-  "//": "Source ESM, not a bundle: `ld-quiz.js` imports `@lecturedoc2/libcrypto` by bare specifier, so a consumer needs a bundler (or an import map). Consumers that cannot build use the pre-bundled script the quiz server publishes at /client/<version>/ld-quiz.js -- see the README.",
+  "//": "Source ESM, not a bundle: `ld-quiz.js` imports `@lecturedoc2/libcrypto` and (via `qr-canvas.js`) `qrcode-generator` by bare specifier, so a consumer needs a bundler (or an import map). Consumers that cannot build use the pre-bundled script the quiz server publishes at /client/<version>/ld-quiz.js -- see the README.",
   "sideEffects": [
     "./src/ld-quiz.js"
   ],
@@ -47,6 +47,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@lecturedoc2/libcrypto": "^1.1.0"
+    "@lecturedoc2/libcrypto": "^1.1.0",
+    "qrcode-generator": "^2.0.4"
   }
 }

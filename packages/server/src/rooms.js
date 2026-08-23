@@ -14,15 +14,19 @@ const EMPTY_ROOM_TTL_MS = 90 * 60 * 1000; // 90 minutes
 /**
  * How long a finished room is kept after its last connection goes away.
  *
- * Deliberately short: once the last socket closes, nothing can read the room
- * again -- there is no room listing, no persistence, and a process restart
- * discards it anyway -- so a longer window buys nothing and only widens the
- * memory that an unauthenticated `create_room` can pin down. If final results
- * need to outlive the lecture, export them from the control view rather than
- * holding participant data in RAM.
+ * Deliberately shorter than EMPTY_ROOM_TTL_MS above: once the last socket
+ * closes, nothing can read the room again -- there is no room listing, no
+ * persistence, and a process restart discards it anyway -- so a longer window
+ * buys nothing and only widens the memory that an unauthenticated
+ * `create_room` can pin down. An empty room that is still running is the
+ * opposite case, and is what the ninety minutes above pay for: its presenter
+ * is expected back. Fifteen minutes is enough for a presenter whose laptop
+ * slept as the lecture broke up to reattach and export, and no longer. If the
+ * final results need to outlive the lecture, export them from the control view
+ * rather than holding participant data in RAM.
  */
 const ENDED_ROOM_TTL_MS =
-  Number(process.env.ENDED_ROOM_RETENTION_MINUTES || 120) * 60 * 1000;
+  Number(process.env.ENDED_ROOM_RETENTION_MINUTES || 15) * 60 * 1000;
 
 /** Backstop: no room outlives this, whatever its state or connections. */
 const ABSOLUTE_ROOM_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
@@ -128,7 +132,17 @@ class Room {
     const question = this.getCurrentQuestion();
     if (question && question.timeLimit > 0 && typeof this.onAutoEnd === 'function') {
       this.questionTimer = setTimeout(() => {
-        this.autoEndQuestion();
+        /* This callback runs on the event loop with no caller to catch it, so
+           anything thrown here reaches the process and Node exits -- taking
+           every other room on the host with it. Quizzes are validated before a
+           room is created (see quiz-validator.js), which should make a throw
+           here impossible; this is the guard that keeps "should" from being
+           load-bearing. */
+        try {
+          this.autoEndQuestion();
+        } catch (err) {
+          console.error(`auto-ending a question in room ${this.roomId} failed:`, err);
+        }
       }, question.timeLimit * 1000);
     }
   }
@@ -200,13 +214,39 @@ class Room {
       timestamp: Date.now()
     });
 
-    // Auto-end if all participants have answered
-    if (this.participants.size > 0 && this.currentAnswers.size === this.participants.size) {
+    // Close the question as soon as nobody who is still in the room is being
+    // waited for. Comparing currentAnswers.size against participants.size was
+    // wrong in one direction that never healed: a participant is dropped from
+    // the room the instant their socket closes, but their answer stays in
+    // currentAnswers, so after any mid-question disconnect the two counts
+    // could not become equal again and the presenter had to end every
+    // remaining question by hand. Counting who has *not* answered instead
+    // ignores answers from people who have left, which is the intent.
+    //
+    // The emptiness check stays: a question with nobody in the room must not
+    // close itself, or a stray answer -- or a room whose last participant
+    // dropped -- would silently advance the quiz behind the presenter's back.
+    if (this.participants.size > 0 && this.countAwaitedAnswers() === 0) {
       this.clearQuestionTimer();
       this.autoEndQuestion();
     }
 
     return true;
+  }
+
+  /**
+   * How many connected participants have yet to answer the current question.
+   *
+   * Deliberately derived from `participants` rather than from a counter kept
+   * alongside it: participants come and go mid-question, and a counter would
+   * have to be corrected on every join, leave and answer to stay honest.
+   */
+  countAwaitedAnswers() {
+    let awaited = 0;
+    for (const [, participant] of this.participants) {
+      if (!this.currentAnswers.has(participant.id)) awaited++;
+    }
+    return awaited;
   }
 
   endQuestion() {
@@ -338,7 +378,11 @@ class Room {
     const rankings = [];
 
     if (question.type === 'multiple-choice') {
-      const correctSorted = [...question.correctIndices].sort((a, b) => a - b);
+      /* Guarded like the identical read in getQuestionStatistics. Validation
+         makes this unreachable for any quiz that created a room, but scoring is
+         reached from a timer, and an unguarded spread on a missing field is
+         exactly how this used to become a process exit. */
+      const correctSorted = [...(question.correctIndices || [])].sort((a, b) => a - b);
       for (const [participantId, data] of this.currentAnswers) {
         let points = 0;
         if (Array.isArray(data.answer)) {

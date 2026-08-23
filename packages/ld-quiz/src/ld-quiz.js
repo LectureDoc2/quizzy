@@ -1,5 +1,5 @@
 import { decryptAESGCMPBKDF } from "@lecturedoc2/libcrypto";
-import QRCode from "./qrcode.js";
+import * as QRCode from "./qr-canvas.js";
 import { quizStyles } from "./quiz-styles.js";
 import {
   PROTOCOL_VERSION,
@@ -676,14 +676,14 @@ class QuizHost extends HTMLElement {
  * projects to embed, and a name registered globally is a name they cannot have
  * back if it collides with one of their own.
  *
- * @param {string} [tagName]
+ * @param {string} [tagName] 
  * @returns {CustomElementConstructor} Whatever now owns the name.
  */
 export function defineLdQuiz(tagName = "ld-quiz") {
   const registered = customElements.get(tagName);
   if (registered) {
     if (registered !== QuizHost) {
-      console.warn(
+      console.error(
         `<${tagName}> is already registered by a different implementation; ` +
           "this copy of ld-quiz will not replace it. " +
           "Pass another tag name to defineLdQuiz() if both are needed.",

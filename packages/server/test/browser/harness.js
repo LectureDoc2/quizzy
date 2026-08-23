@@ -42,8 +42,9 @@ const CONTENT_TYPES = {
 };
 
 /**
- * Serve packages/server/web the way Caddy does in production: static files at
- * the root, client modules under /client/, and /ws proxied to the backend.
+ * Serve packages/server/web the way Caddy does in production: the application
+ * at the root with its page scripts under /js/, the embeddable component under
+ * /component/, and /ws proxied to the backend.
  *
  * @param {number|null} backendPort Port to proxy /ws to, or null for no proxy.
  */
@@ -51,11 +52,14 @@ export async function startStaticServer(backendPort = null) {
   const server = createServer((req, res) => {
     let path = req.url.split('?')[0];
     let root = WEB_ROOT;
-    if (path.startsWith('/client/')) {
-      path = '/js/' + path.slice('/client/'.length);
+    if (path.startsWith('/component/')) {
+      // The component is bundled into dist/component/ in production; the tests
+      // serve its source directly, which is why protocol.js resolves below.
+      root = LD_QUIZ_ROOT;
+      path = path.slice('/component'.length);
     } else if (path.startsWith('/ld-quiz/src/')) {
       // Shared sources (protocol.js) resolve to here once the browser has
-      // walked the relative specifier up out of /client/.
+      // walked the relative specifier up out of the component directory.
       root = LD_QUIZ_ROOT;
       path = path.slice('/ld-quiz/src'.length);
     }

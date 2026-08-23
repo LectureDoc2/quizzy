@@ -42,14 +42,37 @@ entirely. It cannot be configured until the package exists on the registry, so
 the *first* release has to go out on a token (§2); do this immediately
 afterwards:
 
+Needs **npm CLI >= 11.10.0**!
+
 ```bash
 npm trust github @lecturedoc2/quizzy \
-    --file .github/workflows/release.yml \
-    --env npm-publish
+    --file release.yml \
+    --repo LectureDoc2/quizzy \
+    --env npm-publish \
+    --allow-publish
 ```
 
-Repository, workflow filename and environment must match what `release.yml`
-actually uses. Then:
+Three things the flags do not forgive:
+
+- **`--file` takes the bare filename**, not a path. `.github/workflows/` is
+  implicit, so `--file .github/workflows/release.yml` is wrong.
+- **At least one of `--allow-publish` / `--allow-stage-publish` is required.**
+  `--allow-publish` is what lets the workflow run `npm publish`; add
+  `--allow-stage-publish` too if you later want CI to stage releases for
+  approval instead.
+- **`--repo` defaults to `repository.url` from package.json**, but state it
+  anyway — a mismatch here is the thing that makes OIDC silently refuse later.
+
+The repository, workflow filename and environment must match what `release.yml`
+actually uses. Confirm afterwards with `npm trust list @lecturedoc2/quizzy`.
+
+The equivalent web UI is the package page → *Settings* → *Trusted publisher*,
+which is the better route if the CLI upgrade is inconvenient.
+
+> Use the npmjs.com web UI, or `npm login` interactively so the command runs 
+> against a 2FA-backed session.
+
+Then:
 
 1. Delete the two lines in `release.yml` marked `BOOTSTRAP ONLY`.
 2. Revoke the `NPM_TOKEN` on npmjs.com and delete the secret:
@@ -65,8 +88,16 @@ applying — permanently.
 **Only needed before trusted publishing is configured**, or if a trusted
 publisher is ever revoked. A publish-capable npm token is short-lived by policy:
 npm caps write-scoped granular tokens at 90 days, and a tighter expiry is better
-still. Whatever the expiry, it will lapse between releases, and the failure looks
-like an authentication error in the publish step.
+still. Whatever the expiry, it will lapse between releases, and the failure shows
+up as an authentication error in the publish step.
+
+> **This path has an end date.** npm is retiring bypass-2FA tokens: since early
+> August 2026 they can no longer change account, org or package settings, and
+> **direct publishing with them stops in January 2027**. Trusted publishing is
+> not a nicety to get to eventually; it is the only automated path that
+> survives. Staged publishing (`npm stage publish` + a 2FA approval) is the
+> other supported option, but it cannot stage a package that has never been
+> published, so it is no help for a first release either.
 
 Re-minting is three steps:
 
@@ -74,9 +105,18 @@ Re-minting is three steps:
    - Packages: only the `@lecturedoc2` scope, **Read and write**
    - Expiration: as short as you will tolerate
    - **Enable "Bypass 2FA".** npm enforces 2FA on write tokens by default, and
-     a token without this set cannot publish unattended — CI has no way to
-     answer the prompt. This is the single most common reason a freshly minted
-     token still fails.
+     a token without it cannot publish unattended — CI has no way to answer the
+     prompt. The publish gets all the way through packing and signing, then
+     fails with:
+
+     ```
+     npm error code EOTP
+     npm error This operation requires a one-time password.
+     ```
+
+     Nothing is published when this happens. (A provenance statement *is* left
+     in the sigstore transparency log, because npm signs before it uploads —
+     npm/cli#7654. It is harmless and refers to a tarball that never landed.)
 2. **Store it on the environment**, not the repository, so nothing else in the
    repo can read it:
 
@@ -129,6 +169,10 @@ registry.
 
 If a required reviewer is configured, approve the run when it pauses.
 
+**If the publish step fails**, fix the cause and use *Re-run failed jobs* on the
+same run. The tag is already correct, so re-tagging is unnecessary — and
+`git tag -f` on a released version is a habit worth not acquiring.
+
 ---
 
 ## 4. After the publish
@@ -148,8 +192,9 @@ exist on the server until you rebuild and deploy:
 pnpm build      # writes dist/component/<version>/ and the moving alias
 ```
 
-Then follow `DEPLOY.md`. Decks that pinned an older versioned URL keep working —
-that is what pinning is for — but nothing can pin the new one until it is served.
+Then follow `DEPLOY.md`. `build.js` clears `dist/` before it writes, so the
+deployment serves exactly one versioned directory: the new URL cannot be pinned
+until it is served, and the previous one stops resolving once it is.
 
 **Update consumers.** LectureDoc2 depends on `^1.0.0`, so a minor or patch is
 picked up by a plain `npm install`; a major needs the range widened in
@@ -161,7 +206,9 @@ picked up by a plain `npm install`; a major needs the range widened in
 
 | Symptom | Cause |
 |---|---|
-| `401`/`403` in the publish step | token expired, or minted without **Bypass 2FA** — see §2 |
+| `EOTP`, "This operation requires a one-time password" | the token was minted without **Bypass 2FA** — re-mint per §2 |
+| `401`/`403` in the publish step | token expired, or the environment secret is missing — see §2 |
+| `Unknown command: "trust"` | npm CLI older than 11.10.0 — `npm install -g npm@latest` |
 | `ENEEDAUTH` after configuring trusted publishing | the trusted publisher's repository, workflow filename or environment does not match `release.yml` exactly; check with `npm trust list @lecturedoc2/quizzy` |
 | `tag … does not match package version` | the guard did its job — fix the manifest or the tag, do not bypass it |
 | Provenance panel missing, publish otherwise fine | the job lost `id-token: write`, or `--provenance` was dropped from the publish command |

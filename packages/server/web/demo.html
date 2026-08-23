@@ -11,9 +11,12 @@
                 max-width: 800px;
                 margin: 2rem auto;
                 padding: 1rem;
+                min-height: 100vh;
+                background-image: url('background.png');
+                background-size: cover; 
             }
-            h1 {
-                color: #1e293b;
+            header {
+                color: white;
             }
             .slide {
                 background: #f8fafc;
@@ -25,12 +28,13 @@
         </style>
     </head>
     <body>
-        <h1>Quizzy Demo Page</h1>
-        <p>
-            This is a standalone demo page showing how the quiz component can be embedded
-            in any HTML document.
-        </p>
-
+        <header>
+          <h1>Quizzy Demo Page</h1>
+          <p>
+              This is a standalone demo page showing how the quiz component can be embedded
+              in any HTML document.
+          </p>
+        </header>
         <div class="slide">
             <h2>Mathematics Quiz</h2>
             <p><i>(AI Generated)</i></p>

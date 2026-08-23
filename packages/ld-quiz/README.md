@@ -49,12 +49,12 @@ pre-bundled script the quiz server publishes:
 
 ```html
 <script type="module"
-        src="https://quiz.example.com/client/1.0.0/ld-quiz.js"></script>
+        src="https://quiz.example.com/component/1.0.0/ld-quiz.js"></script>
 ```
 
-`/client/<version>/ld-quiz.js` is immutable and may be pinned with Subresource
-Integrity; `/client/ld-quiz.js` tracks whatever the server was last deployed
-with. `/client/version.json` reports the deployed version.
+`/component/<version>/ld-quiz.js` is immutable and may be pinned with Subresource
+Integrity; `/component/ld-quiz.js` tracks whatever the server was last deployed
+with. `/component/version.json` reports the deployed version.
 
 ## Attributes
 

@@ -17,15 +17,15 @@
  *
  * ## Why the output is published twice
  *
- * `/client/ld-quiz.js` cannot be cached and cannot be pinned with Subresource
+ * `/component/ld-quiz.js` cannot be cached and cannot be pinned with Subresource
  * Integrity: its contents change under a stable URL, so a correct SRI hash today
  * is a broken page tomorrow. That is fine for the demo pages, which are served
  * from the same deployment, and wrong for an external embedder -- a LectureDoc2
  * deck or a Moodle course -- that wants a URL which will still mean the same
  * thing next term.
  *
- * So both exist: `/client/<version>/ld-quiz.js` never changes and may be cached
- * forever and hashed; `/client/ld-quiz.js` always tracks the deployment. Which
+ * So both exist: `/component/<version>/ld-quiz.js` never changes and may be cached
+ * forever and hashed; `/component/ld-quiz.js` always tracks the deployment. Which
  * one an integrator picks is a decision about coupling, and it should be theirs.
  *
  * Usage: node build.js [--watch] [--minify]
@@ -48,8 +48,19 @@ const { version: CLIENT_VERSION } = JSON.parse(
     await readFile(join(ROOT, "packages/ld-quiz/package.json"), "utf8"),
 );
 
-const CLIENT_DIR = join(DIST, "client");
-const VERSIONED_DIR = join(CLIENT_DIR, CLIENT_VERSION);
+/*
+ * Two output trees, because two different people deploy them.
+ *
+ *   dist/component/  the embeddable component, and nothing else. This is what
+ *                    a slide deck on another site loads, and the only part an
+ *                    external integrator ever has to think about.
+ *   dist/app/        the Quizzy web application: the join, control, demo and
+ *                    index pages with their styles and KaTeX. Served at the
+ *                    root of the Quizzy server.
+ */
+const COMPONENT_DIR = join(DIST, "component");
+const VERSIONED_DIR = join(COMPONENT_DIR, CLIENT_VERSION);
+const APP_DIR = join(DIST, "app");
 
 /**
  * Watch mode publishes only the moving alias.
@@ -58,23 +69,28 @@ const VERSIONED_DIR = join(CLIENT_DIR, CLIENT_VERSION);
  * keystroke would teach exactly the wrong lesson about what that URL promises,
  * and the pages used during development track the alias anyway.
  */
-const OUTPUT_DIR = WATCH ? CLIENT_DIR : VERSIONED_DIR;
+const OUTPUT_DIR = WATCH ? COMPONENT_DIR : VERSIONED_DIR;
 
-/** ES module entry points, all served from `/client/`. */
-const ENTRY_POINTS = [
-    ["packages/ld-quiz/src/ld-quiz.js", "ld-quiz"],
-    ["packages/server/web/js/quiz-client.js", "quiz-client"],
-    ["packages/server/web/js/quiz-control.js", "quiz-control"],
+/** ES module entry points, the component tree and the application tree. */
+/** The component. Its own tree, its own versioned URL. */
+const COMPONENT_ENTRY = [
+    { in: join(ROOT, "packages/ld-quiz/src/ld-quiz.js"), out: "ld-quiz" },
+];
+
+/** The application's own page scripts, which no embedder ever loads. */
+const APP_ENTRIES = [
+    ["packages/server/web/js/quiz-client.js", "js/quiz-client"],
+    ["packages/server/web/js/quiz-control.js", "js/quiz-control"],
 ].map(([from, out]) => ({ in: join(ROOT, from), out }));
 
 /** Files and directories copied verbatim: [source, destination]. */
 const COPIES = [
-    ["packages/server/web/index.html", "index.html"],
-    ["packages/server/web/demo.html", "demo.html"],
-    ["packages/server/web/join.html", "join.html"],
-    ["packages/server/web/control.html", "control.html"],
-    ["packages/server/web/styles", "styles"],
-    ["packages/server/web/katex", "katex"],
+    ["packages/server/web/index.html", "app/index.html"],
+    ["packages/server/web/demo.html", "app/demo.html"],
+    ["packages/server/web/join.html", "app/join.html"],
+    ["packages/server/web/control.html", "app/control.html"],
+    ["packages/server/web/styles", "app/styles"],
+    ["packages/server/web/katex", "app/katex"],
 ];
 
 async function copyStaticFiles() {
@@ -84,7 +100,7 @@ async function copyStaticFiles() {
 }
 
 /**
- * Mirror the versioned build up to the moving `/client/` alias.
+ * Mirror the versioned build up to the moving `/component/` alias.
  *
  * Built once and copied, rather than bundled twice: the two URLs are supposed to
  * serve identical bytes, and a second esbuild pass would only create
@@ -96,19 +112,19 @@ async function copyStaticFiles() {
  */
 async function publishMovingAlias() {
     for (const entry of await readdir(VERSIONED_DIR)) {
-        await cp(join(VERSIONED_DIR, entry), join(CLIENT_DIR, entry), {
+        await cp(join(VERSIONED_DIR, entry), join(COMPONENT_DIR, entry), {
             recursive: true,
         });
     }
     await writeFile(
-        join(CLIENT_DIR, "version.json"),
+        join(COMPONENT_DIR, "version.json"),
         JSON.stringify({ version: CLIENT_VERSION }, null, 2) + "\n",
         "utf8",
     );
 }
 
-const buildOptions = {
-    entryPoints: ENTRY_POINTS,
+const componentOptions = {
+    entryPoints: COMPONENT_ENTRY,
     outdir: OUTPUT_DIR,
     bundle: true,
     format: "esm",
@@ -123,18 +139,24 @@ const buildOptions = {
 await rm(DIST, { recursive: true, force: true });
 await mkdir(DIST, { recursive: true });
 
+const appOptions = { ...componentOptions, entryPoints: APP_ENTRIES, outdir: APP_DIR };
+
 if (WATCH) {
-    const ctx = await esbuild.context(buildOptions);
+    const ctx = await esbuild.context(componentOptions);
     await ctx.watch();
+    const appCtx = await esbuild.context(appOptions);
+    await appCtx.watch();
     await copyStaticFiles();
     console.log("Watching for changes in the client sources ...");
     console.log("(HTML, CSS and KaTeX are copied once; re-run to refresh them.)");
-    console.log("(The versioned /client/<version>/ copy is not written in watch mode.)");
+    console.log("(The versioned /component/<version>/ copy is not written in watch mode.)");
 } else {
-    await esbuild.build(buildOptions);
+    await esbuild.build(componentOptions);
+    await esbuild.build(appOptions);
     await copyStaticFiles();
     await publishMovingAlias();
     console.log(`Build complete: ${DIST}`);
-    console.log(`  moving:    /client/ld-quiz.js`);
-    console.log(`  immutable: /client/${CLIENT_VERSION}/ld-quiz.js`);
+    console.log(`  component, immutable: /component/${CLIENT_VERSION}/ld-quiz.js`);
+    console.log(`  component, moving:    /component/ld-quiz.js`);
+    console.log(`  application:          / (index, demo, join, control)`);
 }

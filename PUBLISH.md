@@ -141,11 +141,11 @@ npm audit signatures
 ```
 
 **Re-deploy the quiz server.** `build.js` takes the immutable client URL from
-this same version, so a release means `/client/<new-version>/ld-quiz.js` does not
+this same version, so a release means `/component/<new-version>/ld-quiz.js` does not
 exist on the server until you rebuild and deploy:
 
 ```bash
-pnpm build      # writes dist/client/<version>/ and the moving alias
+pnpm build      # writes dist/component/<version>/ and the moving alias
 ```
 
 Then follow `DEPLOY.md`. Decks that pinned an older versioned URL keep working —

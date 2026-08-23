@@ -42,27 +42,27 @@
 
 	# Client bundles come in two flavours; see build.js for why.
 	#
-	#   /client/<version>/...  never changes, so it may be cached forever and
+	#   /component/<version>/...  never changes, so it may be cached forever and
 	#                          pinned with Subresource Integrity. This is the URL
 	#                          an external embedder -- a LectureDoc2 deck, a
 	#                          Moodle course -- should reference.
-	#   /client/...            tracks the deployment, so it must not be cached,
+	#   /component/...            tracks the deployment, so it must not be cached,
 	#                          or the pages served alongside it would keep using
 	#                          the previous release.
 	#
 	# path_regexp rather than the `path` matcher on purpose: Caddy's `path`
-	# wildcards match across slashes, so `/client/*.js` would also catch the
+	# wildcards match across slashes, so `/component/*.js` would also catch the
 	# versioned copies and cache-bust exactly what is meant to be immutable.
-	@client_versioned path_regexp ^/client/v?[0-9][^/]*/
-	@client_moving path_regexp ^/client/[^/]+$
+	@component_versioned path_regexp ^/component/[0-9][^/]*/
+	@component_moving path_regexp ^/component/[^/]+$
 
 	# Static files served directly by Caddy from the build output.
 	# Run `pnpm build` to (re-)generate `dist/`.
 	handle {
 		header Access-Control-Allow-Origin "*"
 
-		header @client_versioned Cache-Control "public, max-age=31536000, immutable"
-		header @client_moving Cache-Control "no-cache"
+		header @component_versioned Cache-Control "public, max-age=31536000, immutable"
+		header @component_moving Cache-Control "no-cache"
 
 		# The control page holds the presenter token, so it gets a strict CSP.
 		# This is the authoritative copy; control.html carries the same policy in
@@ -92,7 +92,14 @@
 			X-Content-Type-Options "nosniff"
 		}
 
-		root * dist
+		# Two document roots, matching the two halves of the build. Only
+		# `/component/*` is meant to be loaded by anyone else's page; the rest
+		# is this server's own application.
+		handle_path /component/* {
+			root * dist/component
+			file_server
+		}
+		root * dist/app
 		file_server
 	}
 }

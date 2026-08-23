@@ -167,7 +167,7 @@ Add the `encrypted` attribute and provide the encrypted quiz data:
 
 ```html
 <ld-quiz encrypted quiz="MTAwMDAw:abc123...encrypted-data..." server-url="https://quiz.example.com"></ld-quiz>
-<script type="module" src="https://quiz.example.com/client/1.0.0/ld-quiz.js"></script>
+<script type="module" src="https://quiz.example.com/component/1.0.0/ld-quiz.js"></script>
 ```
 
 The presenter will be prompted for a password to decrypt the quiz.
@@ -334,17 +334,17 @@ bundler — a Moodle plugin, a CMS, a hand-written HTML page.
 <ld-quiz quiz='{"title":"Demo","questions":[]}'
          server-url="https://quiz.example.com"></ld-quiz>
 <script type="module"
-        src="https://quiz.example.com/client/1.0.0/ld-quiz.js"></script>
+        src="https://quiz.example.com/component/1.0.0/ld-quiz.js"></script>
 ```
 
-Prefer the **versioned** URL. `/client/<version>/ld-quiz.js` is immutable: it is
+Prefer the **versioned** URL. `/component/<version>/ld-quiz.js` is immutable: it is
 served with a one-year `immutable` cache header and its bytes never change, so it
 can be pinned with Subresource Integrity and will still mean the same thing next
-term. `/client/ld-quiz.js` tracks whatever the quiz server was last deployed
+term. `/component/ld-quiz.js` tracks whatever the quiz server was last deployed
 with, which is convenient for the pages served alongside it and a poor promise to
 make to anyone else.
 
-`/client/version.json` reports the version currently deployed.
+`/component/version.json` reports the version currently deployed.
 
 ### Both at once on one page
 

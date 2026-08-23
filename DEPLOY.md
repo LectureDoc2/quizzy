@@ -434,6 +434,23 @@ sudo chmod 640 /etc/caddy/quizzy.env
 > have to be **bracketed** (`BACKEND_HOST=[::1]`): the Caddyfile appends `:port`, so
 > an unbracketed `::1` becomes the invalid `::1:3000`.
 
+#### Optional: bind the backend to loopback only
+
+By default the backend listens on every interface, and the firewall from section 5
+is what keeps port 3000 private. If you would rather it were not reachable at all
+from outside the machine, set `HOST` on the backend service — but it must name the
+**same family Caddy will connect over**, or Caddy gets "connection refused":
+
+| Profile | `BACKEND_HOST` (Caddy) | `HOST` (backend) |
+|---|---|---|
+| IPv4 only | `localhost` | `127.0.0.1` |
+| IPv6 only | `localhost` | `::1` |
+| dual-stack | `localhost` | *leave unset* — one `listen()` call binds one family, so pinning either one can strand Caddy on the other |
+
+Note the asymmetry, which is easy to get backwards: `HOST` takes a **bare** `::1`
+because Node's `listen()` wants an address, while `BACKEND_HOST` needs
+**`[::1]`** because the Caddyfile appends `:port` to it.
+
 ### 10d. DNS-01 credentials — `PROFILE_CERT = dns-01` only
 
 Append the TSIG credentials. They grant dynamic-update rights over your zone, so
@@ -575,7 +592,7 @@ echo | openssl s_client -connect '<HOST>:443' -servername '<HOST>' 2>/dev/null \
 # 5. A large response completes rather than stalling. A hang here means PMTUD is
 #    blackholed -- check the ICMPv6 rule in 3a.
 curl -o /dev/null -w 'transferred %{size_download} bytes in %{time_total}s\n' \
-  https://<HOST>/client/quiz-control.js
+  https://<HOST>/js/quiz-control.js
 ```
 
 On an IPv6 or dual-stack profile, add `-6` to the curl commands to force the family,
@@ -644,9 +661,71 @@ which case repeat 10a first and then `sudo systemctl reload caddy`.
   `secret` field. See the README.
 - **Room state is in memory only.** Restarting the backend ends every running
   session; there is no persistence and none is intended.
-- **`ENDED_ROOM_RETENTION_MINUTES`** (default 120) controls how long a finished room
+- **`ENDED_ROOM_RETENTION_MINUTES`** (default 15) controls how long a finished room
   is kept so its results can still be exported. Set it on the backend service if you
   want longer.
-- **`TRUST_PROXY=true`** must be set on the backend only if something in front of it
-  sets `X-Forwarded-For`. Caddy does. Without it, every client shares one rate-limit
-  bucket; with it set behind nothing, clients can spoof their own.
+### Sizing the abuse limits for your audience
+
+**Read this before the first large lecture.** Every "per IP" limit in the backend
+is really *per egress address*, and an audience almost never has one address each:
+
+- a campus or corporate network NATs hundreds of people behind **one IPv4 address**;
+- on IPv6 the backend buckets clients by **/64 prefix**, deliberately — a host can
+  otherwise pick a fresh address per connection and evade every limit — so an
+  audience inside one /64 is likewise one bucket.
+
+Either way, one lecture hall counts as one client. The defaults are sized for that
+(a few hundred participants and a couple of dozen concurrent rooms per address),
+but they are the right thing to raise if a deployment is bigger, and the right
+thing to lower if it is a single classroom exposed to the open internet.
+
+| Variable | Default | What it bounds |
+|---|---|---|
+| `MAX_SOCKETS_PER_IP` | 500 | Concurrent connections per address: one per participant, plus presenter and control window |
+| `MAX_ROOMS_PER_IP` | 25 | Concurrent rooms per address: one per lecture in progress |
+| `MAX_FAILED_ATTEMPTS_PER_WINDOW` | 50 | Wrong room ids per address per minute — a six-character code invites typos, and they all come from the same address |
+| `FAILED_ATTEMPT_WINDOW_MS` | 60000 | The window for the above |
+| `MAX_MESSAGES_PER_WINDOW` | 60 | Messages per **socket** per window; this one is genuinely per client |
+| `MESSAGE_WINDOW_MS` | 10000 | The window for the above |
+| `IPV6_PREFIX_BITS` | 64 | Prefix used to group IPv6 clients. Set to `56` where subscribers get a /56 |
+
+Set them like any other variable in the unit file:
+
+```ini
+Environment=MAX_SOCKETS_PER_IP=1500
+Environment=MAX_ROOMS_PER_IP=50
+```
+
+A value that is empty, zero, negative or unparseable is **ignored with a warning**
+and the default is kept, so a stray `Environment=MAX_SOCKETS_PER_IP=` in a unit
+file cannot accidentally refuse every connection.
+
+Raising these is safer than it looks. Room ids are six characters from a
+32-symbol alphabet — about 10^9 of them, of which a handful are live — so guessing
+one is hopeless whether an attacker gets ten tries a minute or fifty. What the
+limits really protect is memory, and a socket is cheap.
+
+**Symptom to recognise:** participants who cannot join a lecture that is already
+running, or a lecturer who cannot open a room while colleagues are presenting,
+with everything working fine for the first N people. That is a limit, not a bug —
+check the backend log, which names the limit it refused on.
+
+- **`TRUST_PROXY` normally needs no setting at all.** The backend believes
+  `X-Forwarded-For` when the connection comes from this machine, and ignores it
+  otherwise. That is exactly the deployment above -- Caddy and the backend share a
+  host -- and it cannot be abused from off-box, because the socket address is
+  decided by the kernel rather than by the peer.
+
+  Set it only for the two cases the default does not cover:
+
+  - `TRUST_PROXY=true` when the proxy is on a *different* machine. Only do this if
+    that proxy is genuinely the sole route to this port; otherwise any client can
+    choose its own rate-limit bucket by sending the header itself.
+  - `TRUST_PROXY=false` to bucket strictly by socket address, which is right only
+    if there is no proxy at all.
+
+  If the backend ever finds itself taking loopback connections with no usable
+  `X-Forwarded-For`, it logs a warning once: in that situation every client counts
+  as the same client, so `maxRoomsPerIp` (5) silently becomes a limit on the whole
+  deployment. That warning previously did not exist and the symptom was a sixth
+  lecture that simply could not start a room.

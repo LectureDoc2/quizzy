@@ -24,7 +24,8 @@ A real-time, embeddable quiz application designed for integration with any HTML-
 ## Project Structure
 
 This is a **pnpm workspace** with two packages: the embeddable web component and the
-backend that hosts a quiz session.
+backend that hosts a quiz session. [ARCHITECTURE.md](ARCHITECTURE.md) has the
+diagrams: which asset is served by which host, and how a round is played.
 
 ```
 .
@@ -37,9 +38,9 @@ backend that hosts a quiz session.
 │   ├── ld-quiz/                    # the embeddable component (publishable to npm)
 │   │   ├── src/ld-quiz.js          #   the <ld-quiz> custom element
 │   │   ├── src/protocol.js         #   the wire contract; shared with the server
-│   │   ├── src/qrcode.js       #   minimal QR code generator (zero deps)
+│   │   ├── src/qr-canvas.js        #   draws the join QR code onto a <canvas>
 │   │   ├── src/quiz-styles.js      #   Shadow DOM styles
-│   │   └── package.json            #   dep: @lecturedoc2/libcrypto
+│   │   └── package.json            #   deps: @lecturedoc2/libcrypto, qrcode-generator
 │   │
 │   └── server/                     # the backend and the pages it serves
 │       ├── src/server.js           #   Express + WebSocket server

@@ -273,7 +273,7 @@ class QuizControl {
     const btnEndGame = document.getElementById("btn-end-game");
     if (btnEndGame) {
       btnEndGame.addEventListener("click", () => {
-        this.ws.send(JSON.stringify({ type: "next_question" })); // Will end if no more questions
+        this.ws.send(JSON.stringify({ type: "end_game" }));
       });
     }
   }

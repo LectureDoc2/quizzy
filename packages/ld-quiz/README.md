@@ -46,7 +46,7 @@ pre-bundled script the quiz server publishes:
 
 ```html
 <script type="module"
-        src="https://quiz.example.com/component/1.0.0/ld-quiz.js"></script>
+        src="https://quiz.example.com/component/1.0.1/ld-quiz.js"></script>
 ```
 
 `/component/<version>/ld-quiz.js` is immutable and may be pinned with Subresource

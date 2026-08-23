@@ -147,12 +147,27 @@ would make an old client and a new server misbehave — and remember that a bump
 protocol invalidates every deck with an older bundled copy, which is the whole
 reason the two numbers are separate.
 
+**Write the changelog entry first**, while the reasons are still in reach.
+`packages/ld-quiz/CHANGELOG.md` is published in the tarball, so it is the note a
+consumer reads before deciding whether to upgrade — say what changed for *them*,
+not what changed in the repository. A release with nothing worth writing there is
+usually a release that does not need cutting.
+
+Then bump the version in the same commit, so the manifest and the changelog can
+never disagree about what a version contains:
+
 ```bash
 cd ~/Code/Quizzy26
+# edit packages/ld-quiz/CHANGELOG.md -> new section
 # edit packages/ld-quiz/package.json -> "version"
 git add -A && git commit -m "release <version>"
 git push
 ```
+
+The pinned example URLs in `README.md` and `packages/ld-quiz/README.md` name a
+version too (`/component/<version>/ld-quiz.js`). They are illustrations rather
+than anything the build reads, but an example pinning a version that predates the
+package it appears in is a bad look; bump them in the same commit.
 
 **Rehearse.** Run *Actions → Release → Run workflow* with **dry-run** left on.
 It installs, runs the full test suite, packs, and stops without publishing.

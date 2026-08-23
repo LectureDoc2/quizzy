@@ -49,17 +49,27 @@ paths bundle cleanly.
 
 ### The QR library's MIT notice was being stripped from every bundle
 
-`src/qrcode.js` carries Kazuhiko Arase's copyright and MIT notice as an ordinary
-`//---` comment block. esbuild keeps only *legal* comments — ones marked `//!`,
-`/*!`, `@license` or `@preserve` — and discards the rest, so the attribution was
-absent from `dist/client/ld-quiz.js`, from anything a consumer bundled, and now
-from LectureDoc2's `dist` as well. MIT requires the notice in all copies.
+The vendored `src/qrcode.js` carried Kazuhiko Arase's copyright and MIT notice
+as an ordinary `//---` comment block. esbuild keeps only *legal* comments — ones
+marked `//!`, `/*!`, `@license` or `@preserve` — and discards the rest, so the
+attribution was absent from `dist/component/ld-quiz.js`, from anything a consumer
+bundled, and from LectureDoc2's `dist` as well. MIT requires the notice in all
+copies.
 
-The header is now a `/*! @license */` block. Verified: the notice survives both
-a plain and a `--minify` bundle. Nothing else changed in that file.
+Fixed first by marking that header `/*! @license */`. Since **v1.0.1** the
+vendored file is gone entirely: the component depends on the published
+[`qrcode-generator`](https://www.npmjs.com/package/qrcode-generator) package and
+draws the symbol in `src/qr-canvas.js`. That changes nothing about the hazard —
+`qrcode-generator`'s own header is an ordinary line-comment block too — so the
+notice is restated as a `/*! @license */` block at the top of `qr-canvas.js`,
+in first-party source where the build cannot lose it. Verified: it survives both
+a plain and a `--minify` bundle.
+
+The general rule stands for any future dependency whose licence lives in a
+comment esbuild does not recognise: restate it in first-party source.
 
 **`pnpm build` in Quizzy26 should be re-run on macOS before the quiz server is
-deployed again**, so the hosted `/client/<version>/ld-quiz.js` carries it too.
+deployed again**, so the hosted `/component/<version>/ld-quiz.js` carries it too.
 
 ---
 

@@ -193,7 +193,7 @@ Add the `encrypted` attribute and provide the encrypted quiz data:
 
 ```html
 <ld-quiz encrypted quiz="MTAwMDAw:abc123...encrypted-data..." server-url="https://quiz.example.com"></ld-quiz>
-<script type="module" src="https://quiz.example.com/component/1.0.0/ld-quiz.js"></script>
+<script type="module" src="https://quiz.example.com/component/1.0.1/ld-quiz.js"></script>
 ```
 
 The presenter will be prompted for a password to decrypt the quiz.
@@ -360,7 +360,7 @@ bundler — a Moodle plugin, a CMS, a hand-written HTML page.
 <ld-quiz quiz='{"title":"Demo","questions":[]}'
          server-url="https://quiz.example.com"></ld-quiz>
 <script type="module"
-        src="https://quiz.example.com/component/1.0.0/ld-quiz.js"></script>
+        src="https://quiz.example.com/component/1.0.1/ld-quiz.js"></script>
 ```
 
 Prefer the **versioned** URL. `/component/<version>/ld-quiz.js` is immutable: it is

@@ -128,9 +128,22 @@ Create a JSON file with your quiz questions:
 ### 4. Encrypt the Quiz
 
 ```bash
-pnpm encrypt quizzes/my-quiz.json quizzes/my-quiz-encrypted.txt
-# Enter your password when prompted
+pnpm validate quizzes/my-quiz.json
+
+QUIZ_PASSWORD='the quiz password' \
+  pnpm encrypt quizzes/my-quiz.json quizzes/my-quiz-encrypted.txt
 ```
+
+`pnpm validate` checks the quiz against the *same* rules the server applies —
+it imports `packages/server/src/quiz-validator.js` rather than restating them —
+so a quiz it accepts is a quiz that will start. It additionally warns when the
+quiz has no `secret` field, which the server cannot require but an author almost
+always wants: see [PRESENTER-TOKEN.md](PRESENTER-TOKEN.md). Add `--strict` to
+turn those warnings into a non-zero exit for CI.
+
+The password may also be given as a third argument, which is handier and leaves
+it in the shell history and in `ps` output — fine for a throwaway, not for the
+password that also gates the presenter token.
 
 ### 5. Start the Backend
 

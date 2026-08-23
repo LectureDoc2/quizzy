@@ -2,27 +2,10 @@ name: Release
 
 # Publishes @lecturedoc2/quizzy when a `v*` tag is pushed.
 #
-# ## Why this workflow exists at all
-#
-# Publishing from a laptop produces a tarball nobody can trace. Publishing from
-# here produces a *provenance attestation*: a signed statement, recorded in a
+# This workflow produces a *provenance attestation*: a signed statement, recorded in a
 # public transparency log, that says which commit of which repository was built
 # by which workflow to make this exact tarball. npm shows it on the package page
-# and `npm audit signatures` verifies it. That is the whole point of moving the
-# repository into the LectureDoc2 organisation, so it is worth being precise.
-#
-# ## Authentication: two stages, and the first version cannot skip stage one
-#
-# The end state is *trusted publishing*: GitHub mints a short-lived OIDC token,
-# npm accepts it, and no long-lived credential exists anywhere. It cannot be
-# used for a package's first release, because a trusted publisher is configured
-# per package on npmjs.com and the package has to exist before there is anything
-# to configure (npm/cli#8544).
-#
-# So: v1.0.0 publishes with an automation token *and* `--provenance`, which
-# gives the first release the attestation that matters. Afterwards, configure
-# the trusted publisher and delete the two marked lines below; the token becomes
-# dead weight and should be revoked.
+# and `npm audit signatures` verifies it. 
 #
 # npm is used for the publish rather than pnpm because OIDC token exchange is
 # implemented in the npm CLI. pnpm still installs the workspace.
@@ -63,16 +46,12 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
-      # Trusted publishing needs npm >= 11.5.1; provenance needs >= 9.5.0.
-      # Pinning to latest keeps this from depending on what the runner shipped.
       - name: Use a current npm
         run: npm install --global npm@latest
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # The classic release mistake is a tag that does not match the manifest,
-      # which publishes a version nobody can find the source of. Refuse early.
       - name: Check the tag matches the package version
         if: github.event_name == 'push'
         run: |
@@ -87,7 +66,4 @@ jobs:
       - name: Publish
         working-directory: packages/ld-quiz
         run: npm publish --provenance ${{ (github.event_name == 'workflow_dispatch' && inputs.dry-run) && '--dry-run' || '' }}
-        env:
-          # BOOTSTRAP ONLY -- delete these two lines once the trusted publisher
-          # is configured on npmjs.com, then revoke the token.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+

@@ -179,7 +179,7 @@
     {
       "type": "multiple-choice",
       "text": "What is the name of the river that flows through Berlin?",
-      "options": ["Rhine", "Spree", "Elbe", "Danube"],
+      "options": ["Rhine", "Spree", "Elbe", "Danube", "Amazonas", "Nil"],
       "correctIndices": [1],
       "timeLimit": 20
     }

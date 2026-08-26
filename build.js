@@ -100,6 +100,7 @@ const COPIES = [
     ["packages/server/web/control.html", "app/control.html"],
     ["packages/server/web/styles", "app/styles"],
     ["packages/server/web/katex", "app/katex"],
+    ["packages/server/web/highlight", "app/highlight"],
 ];
 
 async function copyStaticFiles() {

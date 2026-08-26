@@ -322,7 +322,7 @@ Directory layout after checkout:
 │   └── server/               # Node backend
 │       ├── src/server.js     # entry point (listens on PORT || 3000)
 │       ├── web/              # HTML/CSS/page scripts (build input)
-│       └── package.json      # deps: express, ws, katex
+│       └── package.json      # deps: express, ws, katex, highlight.js
 └── dist/                     # BUILD OUTPUT, served by Caddy (not in git)
 ```
 

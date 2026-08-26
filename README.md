@@ -10,6 +10,7 @@ A real-time, embeddable quiz application designed for integration with any HTML-
 - **Presenter Control**: Separate control window with session management and reconnection support
 - **Participant QR Code Join**: Participants scan a QR code or use a short link to join
 - **Math Formula Support**: Server-based KaTeX rendering for quiz questions and answers
+- **Syntax-highlighted Code**: Server-based highlight.js rendering of fenced code blocks in 14 languages
 - **Minimal Dependencies**: Express.js and `ws` (WebSocket) on the server; the crypto library - part of LectureDoc2 without additional transitive dependencies - is the client's only dependency
 
 ## Supported Question Types
@@ -46,11 +47,12 @@ diagrams: which asset is served by which host, and how a round is played.
 │       ├── src/server.js           #   Express + WebSocket server
 │       ├── src/rooms.js            #   room state management and scoring
 │       ├── src/math-renderer.js    #   server-side KaTeX rendering
+│       ├── src/code-renderer.js    #   server-side syntax highlighting
 │       ├── src/name-validator.js   #   participant name validation
 │       ├── src/network-addresses.js
 │       ├── web/                    #   join/control/demo pages (HTML, CSS, page scripts)
 │       ├── test/
-│       └── package.json            #   deps: express, ws, katex
+│       └── package.json            #   deps: express, ws, katex, highlight.js
 │
 ├── tools/encrypt-quiz.js           # CLI utility to encrypt quiz JSON
 ├── tools/validate-quiz.js          # CLI utility to check a quiz file
@@ -74,6 +76,7 @@ and assembles `dist/` so that its layout matches the public URLs one-to-one:
 | `packages/server/web/*.html` | `/*.html` |
 | `packages/server/web/styles/` | `/styles/` |
 | `packages/server/web/katex/` | `/katex/` |
+| `packages/server/web/highlight/` | `/highlight/` |
 
 Consumers that use a bundler themselves can instead import the component's sources
 directly and let their own bundler resolve the dependency.
@@ -290,11 +293,65 @@ TLS is required because the Web Crypto API (used for hashing and decryption) onl
 }
 ```
 
-- `text`: Question text (supports KaTeX math with `\(...\)` and `\[...\]` delimiters)
+- `text`: Question text. Rendered as HTML, and preprocessed on the server for
+  KaTeX math (`\(...\)`, `\[...\]`, `$...$`, `$$...$$`) and for fenced code
+  blocks — see [Code blocks](#code-blocks) below.
 - `options`: Array of strings (for multiple-choice)
 - `correctIndices`: Array of zero-based indices of correct options (for multiple-choice). Single-answer questions use a one-element array, e.g. `[0]`. Multi-select questions use multiple indices, e.g. `[0, 2]`.
 - `correctAnswer`: Numeric value (for estimation)
 - `timeLimit`: Optional countdown timer in seconds
+
+### Code blocks
+
+Code in a question or an option is written as a Markdown fence, and highlighted
+on the server before anything is sent to a participant:
+
+```json
+{
+  "type": "multiple-choice",
+  "text": "What does this print?\n```java\nSystem.out.println(1 / 2);\n```",
+  "options": ["0", "0.5", "It does not compile"],
+  "correctIndices": [0]
+}
+```
+
+Supported languages, by the name you write after the opening fence:
+
+| Language | Write | Also accepted |
+|---|---|---|
+| Bash / shell | `bash` | `sh`, `shell`, `zsh`, `console` |
+| C | `c` | `h` |
+| C++ | `cpp` | `c++`, `cxx`, `cc`, `hpp` |
+| CSS | `css` | |
+| Go | `go` | `golang` |
+| HTML / XML | `html` | `xml`, `xhtml`, `svg` |
+| Java | `java` | |
+| JavaScript | `javascript` | `js`, `mjs`, `jsx`, `node` |
+| JSON | `json` | `jsonc` |
+| Markdown | `markdown` | `md` |
+| Python | `python` | `py`, `python3` |
+| Rust | `rust` | `rs` |
+| TypeScript | `typescript` | `ts`, `tsx` |
+| YAML | `yaml` | `yml` |
+
+HTML and XML share one grammar; `html` is an alias of `xml`, not a separate
+language.
+
+Three rules are worth knowing before a lecture rather than during one:
+
+- **The opening fence must start a line.** A ``` inside a sentence is a
+  backtick, not the start of a code block.
+- **The language is never guessed.** A fence with no language — or with
+  `text`/`plain` — is shown as unhighlighted code. An *unrecognised* language is
+  also shown unhighlighted, and the presenter is told which one it was. Nothing
+  is ever dropped.
+- **A longer fence carries a shorter one**, so a Markdown example containing a
+  three-backtick block is written with four backticks.
+
+Code is escaped before anything else looks at it, so a sample containing
+`<script>`, an `onclick=` attribute or a `$` is shown as written — the markup
+safety net and the math renderer both leave code blocks alone. See
+`packages/server/src/code-renderer.js` for the ordering and why it matters.
 
 ## `<ld-quiz>` Element Attributes
 
@@ -388,7 +445,7 @@ if both copies genuinely need to be live.
 |-------------|-----|
 | A secure context (`https`, or `localhost`) | Web Crypto is used for hashing and decryption |
 | `script-src` allowing the quiz host | the module is loaded from there |
-| `style-src` allowing the quiz host | the KaTeX stylesheet is linked into the shadow root |
+| `style-src` allowing the quiz host | the KaTeX and highlighting stylesheets are linked into the shadow root |
 | `connect-src` allowing `wss://<quiz-host>` | the game runs over a WebSocket |
 | `img-src data:` | the join QR code is drawn to a canvas |
 
@@ -420,16 +477,21 @@ GET /api/config
   "ws": "/ws",
   "join": "/join.html",
   "control": "/control.html",
-  "katexCss": "/katex/katex.min.css"
+  "katexCss": "/katex/katex.min.css",
+  "highlightCss": "/highlight/highlight.min.css"
 }
 ```
 
 Paths are relative to the URL used to reach the endpoint, so nothing has to know
 the public origin — which, behind a reverse proxy, it generally does not. Each
 can be overridden with an environment variable (`PUBLIC_WS_PATH`,
-`PUBLIC_JOIN_PATH`, `PUBLIC_CONTROL_PATH`, `PUBLIC_KATEX_CSS_PATH`) or with
-absolute URLs, which is what lets the quiz server live under a path prefix rather
-than owning a domain root.
+`PUBLIC_JOIN_PATH`, `PUBLIC_CONTROL_PATH`, `PUBLIC_KATEX_CSS_PATH`,
+`PUBLIC_HIGHLIGHT_CSS_PATH`) or with absolute URLs, which is what lets the quiz
+server live under a path prefix rather than owning a domain root.
+
+Every key listed above is **required**. A component that does not find one of
+them refuses to start rather than falling back to a hardcoded layout: a silently
+wrong path is the failure mode this endpoint exists to remove.
 
 There is deliberately no fallback to a hardcoded layout: a server that cannot
 answer this is a server the component cannot talk to, and saying so immediately
@@ -549,7 +611,8 @@ pnpm --filter ld-quiz-server test:watch
 
 Tests cover:
 - **Room state management**: Participant lifecycle, game flow, scoring logic
-- **Math rendering**, **name validation** and **network address discovery**
+- **Math rendering**, **syntax highlighting** and the order the two run in
+- **Name validation** and **network address discovery**
 - **Server integration**: CORS headers, HTTP API, WebSocket message flow
 - **The integration contract**: `/api/config` and the protocol handshake
 
@@ -593,20 +656,31 @@ CADDY_HOST=localhost TLS_CONFIG=caddy/tls-mkcert.txt caddy run --config Caddyfil
 
 Go to, e.g.,: https://192.168.178.161/demo.html to open the application.
 
-### KaTeX Integration
+### KaTeX and syntax-highlighting stylesheets
 
-Math formulas in quiz questions and answers are rendered to HTML on the server before they are sent to clients. The client only needs the KaTeX stylesheet to display the rendered math correctly.
+Math formulas and code blocks are both rendered to HTML **on the server**, before
+anything is sent to a client. Neither KaTeX nor highlight.js is shipped to a
+participant's browser; each needs only a stylesheet to display the result.
 
-When using the `ld-quiz` web component, the stylesheet is fetched automatically from the configured `server-url` and injected into the shadow DOM, so no manual setup is required.
+When using the `ld-quiz` web component, both stylesheets are fetched
+automatically from the configured `server-url` and linked into the shadow DOM, so
+no manual setup is required.
 
-For standalone pages (such as `demo.html`), include the stylesheet in the host page:
+For standalone pages (such as `demo.html`), include them in the host page:
 
 ```html
 <link rel="stylesheet" href="/katex/katex.min.css">
+<link rel="stylesheet" href="/highlight/highlight.min.css">
 ```
 
-The KaTeX distribution is vendored in `packages/server/web/katex/` and copied to
-`dist/katex/` by the build.
+Both are vendored under `packages/server/web/` and copied to `dist/app/` by the
+build. The highlighting theme is highlight.js's **`1c-light`**, kept under a
+theme-neutral filename on purpose: `/api/config` publishes it as `highlightCss`,
+so a deployment swaps the theme by replacing that one file (or by pointing
+`PUBLIC_HIGHLIGHT_CSS_PATH` elsewhere) without touching the component, the
+`<link>` tags, or any embedder's cached configuration.
+
+A dark theme is deliberately not shipped yet.
 
 ## Browser Support
 

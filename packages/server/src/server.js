@@ -4,6 +4,7 @@ import { createServer } from 'http';
 import { pathToFileURL } from 'url';
 import { RoomManager } from './rooms.js';
 import { renderQuiz } from './math-renderer.js';
+import { renderCodeInQuiz } from './code-renderer.js';
 import { sanitizeQuiz } from './quiz-sanitizer.js';
 import { validateQuiz } from './quiz-validator.js';
 import { validateName } from './name-validator.js';
@@ -240,6 +241,7 @@ function createQuizServer(options = {}) {
     join: process.env.PUBLIC_JOIN_PATH || '/join.html',
     control: process.env.PUBLIC_CONTROL_PATH || '/control.html',
     katexCss: process.env.PUBLIC_KATEX_CSS_PATH || '/katex/katex.min.css',
+    highlightCss: process.env.PUBLIC_HIGHLIGHT_CSS_PATH || '/highlight/highlight.min.css',
     ...(options.publicPaths || {})
   };
 
@@ -518,10 +520,6 @@ function createQuizServer(options = {}) {
               return;
             }
 
-            // Quiz markup is authored by the lecturer and rendered as HTML, so it
-            // is scrubbed (not escaped) before KaTeX runs: the author is trusted,
-            // but should not be able to break their own quiz by accident. See
-            // quiz-sanitizer.js for the exact threat model.
             /* Shape first, markup second. A quiz that is not shaped like a
                quiz must never reach a room: the assumptions it would break are
                checked in scoring and in the auto-end timer, and the timer runs
@@ -536,10 +534,30 @@ function createQuizServer(options = {}) {
               return;
             }
 
-            const sanitized = sanitizeQuiz(quiz);
-            warnings = sanitized.warnings;
+            /* Quiz markup is authored by the lecturer and rendered as HTML, so it
+               is scrubbed (not escaped): the author is trusted, but should not be
+               able to break their own quiz by accident. See quiz-sanitizer.js for
+               the exact threat model.
+
+               The three passes run in this order, and the order is load-bearing:
+
+                 1. code   -- fenced blocks become <pre><code>, with every `&`,
+                              `<` and `>` inside them escaped.
+                 2. markup -- the sanitizer scrubs what the author wrote *around*
+                              the code. It runs second precisely because step 1
+                              has already escaped the code: a Java sample
+                              containing <script>, or an HTML snippet being
+                              taught, would otherwise be swallowed by the
+                              blocklist.
+                 3. math   -- KaTeX runs last and skips the code regions step 1
+                              produced, so `echo $PATH` is not read as a formula.
+
+               Steps 1 and 2 both report to the presenter through `warnings`. */
+            const highlighted = renderCodeInQuiz(quiz);
+            const sanitized = sanitizeQuiz(highlighted.quiz);
+            warnings = [...highlighted.warnings, ...sanitized.warnings];
             if (warnings.length > 0) {
-              console.warn(`Quiz "${sanitized.quiz.title}" contained markup that was removed:`);
+              console.warn(`Quiz "${sanitized.quiz.title}" needed changes before it could be shown:`);
               for (const warning of warnings) console.warn(`  - ${warning}`);
             }
 

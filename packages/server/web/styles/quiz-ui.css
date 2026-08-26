@@ -173,6 +173,10 @@
 
     .question {
         text-align: center;
+
+        pre {
+            text-align: left;
+        }
     }
     &.question__counter {
         color: var(--quiz-text-secondary);

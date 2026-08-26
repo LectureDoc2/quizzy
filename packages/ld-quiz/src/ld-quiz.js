@@ -68,7 +68,7 @@ async function fetchConfig(base) {
     throw new Error(`The quiz server at ${base} returned an unusable configuration.`);
   }
 
-  const required = ["ws", "join", "control", "katexCss"];
+  const required = ["ws", "join", "control", "katexCss", "highlightCss"];
   const missing = required.filter((key) => typeof raw[key] !== "string" || raw[key] === "");
   if (missing.length > 0) {
     throw new Error(
@@ -83,6 +83,7 @@ async function fetchConfig(base) {
     joinUrl: new URL(raw.join, base).href,
     controlUrl: new URL(raw.control, base).href,
     katexCssUrl: new URL(raw.katexCss, base).href,
+    highlightCssUrl: new URL(raw.highlightCss, base).href,
     maxQuizSize: raw.maxQuizSize,
   };
 }
@@ -118,16 +119,22 @@ function applyStyles(shadowRoot, cssText) {
 /**
  * Link an external stylesheet into a shadow root.
  *
- * Used for KaTeX, which is linked rather than inlined on purpose: its @font-face
- * rules carry relative URLs, and a copy of the text would resolve those against
- * the embedding page instead of the quiz server -- silently replacing every
- * formula with a fallback font in precisely the cross-origin setup this
- * component exists to support. A <link> keeps the stylesheet's own URL as the
- * base, and asks the host page for `style-src <quiz-host>` instead of
- * 'unsafe-inline'.
+ * Used for KaTeX and for the syntax-highlighting theme -- both linked rather
+ * than inlined on purpose. KaTeX has the hard requirement: its @font-face rules
+ * carry relative URLs, and a copy of the text would resolve those against the
+ * embedding page instead of the quiz server -- silently replacing every formula
+ * with a fallback font in precisely the cross-origin setup this component exists
+ * to support. A <link> keeps the stylesheet's own URL as the base, and asks the
+ * host page for `style-src <quiz-host>` instead of 'unsafe-inline'.
  *
- * Resolves either way: missing math CSS makes formulas ugly, which is no reason
- * to refuse to run the quiz.
+ * The highlighting theme has no font of its own, but is linked for the second
+ * reason: it is a *choice*, and a deployment that swaps the theme should not
+ * have to rebuild and republish every embedded copy of this component to be
+ * followed. The server says which file to load; the component does not know
+ * which theme it is.
+ *
+ * Resolves either way: a missing stylesheet makes formulas or code ugly, which
+ * is no reason to refuse to run the quiz.
  */
 function linkStylesheet(shadowRoot, href) {
   return new Promise((resolve) => {
@@ -138,7 +145,7 @@ function linkStylesheet(shadowRoot, href) {
     link.addEventListener(
       "error",
       () => {
-        console.warn(`loading the math stylesheet failed: ${href}`);
+        console.warn(`loading a quiz stylesheet failed: ${href}`);
         resolve(false);
       },
       { once: true },
@@ -214,9 +221,10 @@ class QuizHost extends HTMLElement {
       return;
     }
 
-    if (this.config.katexCssUrl) {
-      linkStylesheet(this.shadowRoot, this.config.katexCssUrl);
-    }
+    /* Unguarded: fetchConfig() rejects a configuration that does not carry
+       both of these, so neither can be empty here. */
+    linkStylesheet(this.shadowRoot, this.config.katexCssUrl);
+    linkStylesheet(this.shadowRoot, this.config.highlightCssUrl);
 
     if (this.isEncrypted) {
       // Encrypted inline quiz

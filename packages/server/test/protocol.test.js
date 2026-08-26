@@ -14,6 +14,12 @@ import { createHash } from 'crypto';
 import { createQuizServer } from '../src/server.js';
 import { PROTOCOL_VERSION, PROTOCOL_MISMATCH } from '../../ld-quiz/src/protocol.js';
 import { loopbackHost, originFor } from './loopback.js';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const WEB_ROOT = join(REPO_ROOT, 'packages', 'server', 'web');
 
 const QUIZ = {
   title: 'Protocol Quiz',
@@ -82,9 +88,56 @@ describe('Integration contract', () => {
       assert.strictEqual(config.protocolVersion, PROTOCOL_VERSION);
       assert.strictEqual(typeof config.serverVersion, 'string');
       assert.ok(config.maxQuizSize > 0);
-      for (const key of ['ws', 'join', 'control', 'katexCss']) {
+      for (const key of ['ws', 'join', 'control', 'katexCss', 'highlightCss']) {
         assert.strictEqual(typeof config[key], 'string', `${key} must be published`);
         assert.ok(config[key].length > 0, `${key} must not be empty`);
+      }
+    });
+
+    it('publishes stylesheet paths that a built deployment actually serves', async () => {
+      /* Both stylesheets fail silently: a 404 leaves formulas in a fallback
+         font and code in no colour at all, on a projector, mid-lecture. Two
+         things have to line up for them not to -- the file exists under web/,
+         and build.js copies its directory into dist/app -- and neither is
+         checked anywhere else. */
+      const res = await fetch(`${originFor('http', host, port)}/api/config`);
+      const config = await res.json();
+      const build = readFileSync(join(REPO_ROOT, 'build.js'), 'utf8');
+
+      for (const key of ['katexCss', 'highlightCss']) {
+        const path = config[key];
+        assert.ok(path.startsWith('/'), `${key} default should be a server-relative path`);
+        assert.ok(
+          existsSync(join(WEB_ROOT, path)),
+          `${key} is published as ${path}, but packages/server/web${path} does not exist`
+        );
+        const directory = path.split('/')[1];
+        assert.ok(
+          build.includes(`"packages/server/web/${directory}"`),
+          `build.js does not copy packages/server/web/${directory}, so ${path} would 404 in dist/`
+        );
+      }
+    });
+
+    it('lets a deployment swap the stylesheets it serves', async () => {
+      /* Both are a deployment's choice, not the component's: the highlighting
+         theme especially, which an institution may want to match to its own
+         slide template without rebuilding every embedded <ld-quiz>. */
+      const relocated = createQuizServer({
+        heartbeatIntervalMs: 60_000,
+        publicPaths: {
+          katexCss: 'https://cdn.example.com/katex.min.css',
+          highlightCss: '/assets/github-dark.min.css'
+        }
+      });
+      const relocatedPort = await relocated.listen(0, host);
+      try {
+        const url = `${originFor('http', host, relocatedPort)}/api/config`;
+        const config = await (await fetch(url)).json();
+        assert.strictEqual(config.katexCss, 'https://cdn.example.com/katex.min.css');
+        assert.strictEqual(config.highlightCss, '/assets/github-dark.min.css');
+      } finally {
+        await relocated.close();
       }
     });
 

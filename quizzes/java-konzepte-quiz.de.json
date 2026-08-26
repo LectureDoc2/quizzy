@@ -1,0 +1,294 @@
+{
+  "title": "Java-Konzepte als Grundlage für modernes JavaScript",
+  "secret": "jzi9hnfn6cqO/h7HklslsI9/ijrGVJKm",
+  "questions": [
+    {
+      "type": "multiple-choice",
+      "text": "<p>Auf welche Felder kann eine Klasse in einem <em>anderen</em> Paket zugreifen, die <em>nicht</em> von <code>Konto</code> erbt?</p><pre style='text-align:left;'><code>package bank;\n\npublic class Konto {\n    public    int nummer;\n    protected int filiale;\n              int intern;\n    private   int pin;\n}</code></pre>",
+      "options": [
+        "<code>nummer</code> und <code>filiale</code>",
+        "nur <code>nummer</code>",
+        "<code>nummer</code>, <code>filiale</code> und <code>intern</code>",
+        "alle vier Felder"
+      ],
+      "correctIndices": [1],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Wozu dient Kapselung (private Felder, öffentliche Methoden) in erster Linie?</p>",
+      "options": [
+        "Sie beschleunigt den Feldzugriff zur Laufzeit.",
+        "Sie stellt sicher, dass der interne Zustand nur über kontrollierte Operationen verändert wird und die Implementierung austauschbar bleibt.",
+        "Sie verhindert, dass Objekte vom Garbage Collector eingesammelt werden.",
+        "Sie ist Voraussetzung dafür, dass eine Klasse Unterklassen haben darf."
+      ],
+      "correctIndices": [1],
+      "timeLimit": 30
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Welche Aussagen zu diesem Code sind korrekt? (Mehrfachauswahl)</p><pre  style='text-align:left;'><code>public class Punkt {\n    private final int x, y;\n\n    public Punkt(int x, int y) { this.x = x; this.y = y; }\n    public Punkt(int x)        { this(x, 0); }\n}</code></pre>",
+      "options": [
+        "<code>this(x, 0)</code> ruft einen anderen Konstruktor derselben Klasse auf.",
+        "<code>this.x = x</code> unterscheidet das Feld vom gleichnamigen Parameter.",
+        "Da kein parameterloser Konstruktor deklariert ist, erzeugt der Compiler zusätzlich einen.",
+        "Nach der Konstruktion können <code>x</code> und <code>y</code> nicht mehr verändert werden."
+      ],
+      "correctIndices": [0, 1, 3],
+      "timeLimit": 60
+    },
+    {
+      "type": "estimation",
+      "text": "<p>Welchen Wert hat <code>Zaehler.gesamt</code> am Ende?</p><pre  style='text-align:left;'><code>class Zaehler {\n    static int gesamt = 0;\n    int eigene = 0;\n\n    void zaehle() { gesamt++; eigene++; }\n}\n\nZaehler a = new Zaehler();\nZaehler b = new Zaehler();\na.zaehle();\na.zaehle();\nb.zaehle();</code></pre>",
+      "correctAnswer": 3,
+      "timeLimit": 180
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Was gibt dieser Code aus?</p><pre style='text-align:left;'><code>class Tier {\n    String laut()  { return \"...\"; }\n    void sprich()  { IO.println(laut()); }\n}\n\nclass Hund extends Tier {\n    @Override String laut() { return \"Wuff\"; }\n}\n\nTier t = new Hund();\nt.sprich();</code></pre>",
+      "options": [
+        "<code>Wuff</code> – die überschriebene Methode wird dynamisch gebunden.",
+        "<code>...</code> – <code>sprich()</code> steht in <code>Tier</code> und sieht nur <code>Tier.laut()</code>.",
+        "Compilerfehler: <code>laut()</code> ist in <code>Tier</code> nicht öffentlich.",
+        "Nichts, da <code>Hund</code> kein <code>sprich()</code> besitzt."
+      ],
+      "correctIndices": [0],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Was gibt <code>new Ab().f(1);</code> aus?</p><pre style='text-align:left;'><code>class Basis {\n    void f(int x) { IO.println(\"Basis int\"); }\n}\n\nclass Ab extends Basis {\n    void f(double x)        { IO.println(\"Ab double\"); }\n    @Override void f(int x) { IO.println(\"Ab int\"); }\n}</code></pre>",
+      "options": [
+        "<code>Ab double</code>",
+        "<code>Ab int</code>",
+        "<code>Basis int</code>",
+        "Compilerfehler: <code>f</code> ist mehrfach deklariert."
+      ],
+      "correctIndices": [1],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Was bewirkt die Annotation <code>@Override</code>?</p>",
+      "options": [
+        "Sie ist zwingend nötig, damit eine Methode überhaupt überschrieben wird.",
+        "Sie verhindert, dass die Methode ihrerseits noch einmal überschrieben wird.",
+        "Sie lässt den Compiler prüfen, dass tatsächlich eine geerbte Methode überschrieben wird (Schutz vor Tippfehlern in Signatur oder Name).",
+        "Sie beschleunigt den Methodenaufruf zur Laufzeit."
+      ],
+      "correctIndices": [2],
+      "timeLimit": 30
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Welche Aussagen über abstrakte Klassen und Interfaces treffen zu? (Mehrfachauswahl)</p>",
+      "options": [
+        "Eine Klasse kann mehrere Interfaces implementieren, aber nur von einer Klasse erben.",
+        "Ein Interface darf grundsätzlich keine Methodenimplementierung enthalten.",
+        "Von einer abstrakten Klasse kann kein Objekt erzeugt werden.",
+        "Eine abstrakte Klasse kann Instanzfelder (Zustand) besitzen, ein Interface nicht."
+      ],
+      "correctIndices": [0, 2, 3],
+      "timeLimit": 60
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Welche Aussage trifft auf dieses Interface zu?</p><pre style='text-align:left;'><code>interface Begruesser {\n  String name();\n\n  default String gruss() { return \"Hallo, \" + name(); }\n}</code></pre>",
+      "options": [
+        "Jede implementierende Klasse muss <code>name()</code> <em>und</em> <code>gruss()</code> implementieren.",
+        "Eine implementierende Klasse muss nur <code>name()</code> implementieren, erbt <code>gruss()</code> und darf es überschreiben.",
+        "<code>default</code> bedeutet hier, dass die Methode nur im selben Paket sichtbar ist.",
+        "Der Code ist ungültig, da Interfaces keine Methodenrümpfe enthalten dürfen."
+      ],
+      "correctIndices": [1],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Was passiert bei <code>a.nurB();</code>?</p><pre style='text-align:left;'><code>class A { void m() { IO.println(\"A\"); } }\n\nclass B extends A {\n    @Override void m() { IO.println(\"B\"); }\n    void nurB()        { IO.println(\"nur B\"); }\n}\n\nA a = new B();\na.m();\na.nurB();</code></pre>",
+      "options": [
+        "Es wird <code>nur B</code> ausgegeben, da <code>a</code> zur Laufzeit ein <code>B</code> ist.",
+        "Laufzeitfehler: <code>NoSuchMethodError</code>.",
+        "Compilerfehler: der statische Typ <code>A</code> kennt <code>nurB()</code> nicht.",
+        "Die Methode wird stillschweigend ignoriert."
+      ],
+      "correctIndices": [2],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Welche Aussagen über <code>final</code> treffen zu? (Mehrfachauswahl)</p>",
+      "options": [
+        "<code>final int x = 5;</code> – <code>x</code> kann nicht neu zugewiesen werden.",
+        "<code>final class C { }</code> – von <code>C</code> kann nicht geerbt werden.",
+        "Ein <code>final</code>-Feld vom Referenztyp macht auch das referenzierte Objekt unveränderlich.",
+        "<code>final void m() { }</code> – <code>m</code> kann in Unterklassen nicht überschrieben werden."
+      ],
+      "correctIndices": [0, 1, 3],
+      "timeLimit": 60
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Was erzeugt der Compiler für diese Deklaration? (Mehrfachauswahl)</p><pre style='text-align:left;'><code>public record Punkt(int x, int y) { }</code></pre>",
+      "options": [
+        "einen Konstruktor <code>Punkt(int, int)</code>",
+        "Zugriffsmethoden <code>x()</code> und <code>y()</code>",
+        "<code>equals</code>, <code>hashCode</code> und <code>toString</code>",
+        "Setter <code>setX(int)</code> und <code>setY(int)</code>"
+      ],
+      "correctIndices": [0, 1, 2],
+      "timeLimit": 60
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Welche Aussagen treffen zu? (Mehrfachauswahl)</p><pre style='text-align:left;'><code>public sealed interface Form permits Kreis, Rechteck { }</code></pre>",
+      "options": [
+        "<code>Form</code> darf keine Methoden deklarieren.",
+        "Nur die Typen <code>Kreis</code> und <code>Rechteck</code> dürfen <code>Form</code> implementieren.",
+        "Objekte vom Typ <code>Form</code> sind automatisch unveränderlich.",
+        "Ein <code>switch</code> über einen Wert vom Typ <code>Form</code> kann vom Compiler auf Vollständigkeit geprüft werden."
+      ],
+      "correctIndices": [1, 3],
+      "timeLimit": 60
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Welche Aussage über <code>var</code> ist richtig?</p><pre style='text-align:left;'><code>var namen = new ArrayList&lt;String&gt;();\nvar i = 0;</code></pre>",
+      "options": [
+        "<code>var</code> macht die Variable dynamisch typisiert – wie <code>let</code> in JavaScript.",
+        "Der Typ wird vom Compiler aus dem Initialisierer abgeleitet und steht danach unveränderlich fest.",
+        "Eine <code>var</code>-Variable kann später Werte beliebigen Typs aufnehmen.",
+        "<code>var</code> ist nur für Felder einer Klasse erlaubt."
+      ],
+      "correctIndices": [1],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Was gibt dieser Code aus?</p><pre style='text-align:left;'><code>String a = new String(\"hi\");\nString b = \"hi\";\n\nIO.println(a == b);\nIO.println(a.equals(b));</code></pre>",
+      "options": [
+        "<code>false</code>, dann <code>true</code>",
+        "<code>true</code>, dann <code>true</code>",
+        "<code>false</code>, dann <code>false</code>",
+        "<code>true</code>, dann <code>false</code>"
+      ],
+      "correctIndices": [0],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Warum muss man <code>hashCode()</code> überschreiben, wenn man <code>equals()</code> überschreibt?</p>",
+      "options": [
+        "Sonst lässt sich das Objekt nicht in eine <code>List</code> einfügen.",
+        "Weil der Compiler beides gemeinsam erzwingt.",
+        "Weil <code>equals</code> intern <code>hashCode</code> aufruft.",
+        "Weil <code>HashMap</code> und <code>HashSet</code> gleiche Objekte sonst in verschiedenen Buckets ablegen und nicht wiederfinden."
+      ],
+      "correctIndices": [3],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Was passiert mit diesem Code?</p><pre style='text-align:left;'><code>List&lt;String&gt; namen = new ArrayList&lt;&gt;();\nnamen.add(\"Ada\");\nnamen.add(42);</code></pre>",
+      "options": [
+        "Compilerfehler in der letzten Zeile: <code>42</code> ist kein <code>String</code>.",
+        "Er übersetzt, wirft aber beim Auslesen eine <code>ClassCastException</code>.",
+        "Er funktioniert; <code>42</code> wird automatisch in <code>\"42\"</code> umgewandelt.",
+        "Er übersetzt mit einer Warnung; die Liste enthält danach zwei Elemente."
+      ],
+      "correctIndices": [0],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Welche Aussagen treffen zu? (Mehrfachauswahl)</p><pre style='text-align:left;'><code>Predicate&lt;String&gt; istLang = s -&gt; s.length() &gt; 5;\nboolean b = istLang.test(\"JavaScript\");</code></pre>",
+      "options": [
+        "Der Typ des Parameters <code>s</code> muss explizit angegeben werden.",
+        "Ein Lambda kann in Java jedem beliebigen Interface zugewiesen werden.",
+        "<code>Predicate&lt;String&gt;</code> ist ein funktionales Interface: es hat genau eine abstrakte Methode.",
+        "Das Lambda ist eine Kurzschreibweise für eine Implementierung genau dieser einen Methode."
+      ],
+      "correctIndices": [2, 3],
+      "timeLimit": 60
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Warum ist <code>map</code> eine Funktion höherer Ordnung?</p><pre style='text-align:left;'><code>static &lt;T, R&gt; List&lt;R&gt; map(List&lt;T&gt; ls, Function&lt;T, R&gt; f) {\n    List&lt;R&gt; ergebnis = new ArrayList&lt;&gt;();\n    for (T t : ls) ergebnis.add(f.apply(t));\n    return ergebnis;\n}</code></pre>",
+      "options": [
+        "Weil sie generisch über <code>T</code> und <code>R</code> ist.",
+        "Weil sie eine Funktion als Parameter entgegennimmt (und Funktionen so zu Werten werden).",
+        "Weil sie <code>static</code> ist und deshalb ohne Objekt aufgerufen werden kann.",
+        "Weil sie eine Collection zurückgibt."
+      ],
+      "correctIndices": [1],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Welchem Lambda entspricht die Methodenreferenz <code>String::toUpperCase</code>, verwendet als <code>Function&lt;String, String&gt;</code>?</p>",
+      "options": [
+        "<code>s -&gt; s.toUpperCase()</code>",
+        "<code>s -&gt; String.toUpperCase(s)</code>",
+        "<code>() -&gt; String.toUpperCase()</code>",
+        "<code>(a, b) -&gt; a.toUpperCase(b)</code>"
+      ],
+      "correctIndices": [0],
+      "timeLimit": 45
+    },
+    {
+      "type": "estimation",
+      "text": "<p>Welchen Wert hat <code>summe</code>?</p><pre style='text-align:left;'><code>int summe = Stream.of(1, 2, 3, 4, 5, 6)\n                  .filter(n -&gt; n % 2 == 0)\n                  .map(n -&gt; n * n)\n                  .reduce(0, Integer::sum);</code></pre>",
+      "correctAnswer": 56,
+      "timeLimit": 180
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Warum lässt sich dieser Code nicht übersetzen?</p><pre style='text-align:left;'><code>int zaehler = 0;\nList&lt;Runnable&gt; aufgaben = new ArrayList&lt;&gt;();\n\naufgaben.add(() -&gt; IO.println(zaehler));\nzaehler++;</code></pre>",
+      "options": [
+        "Lambdas dürfen überhaupt keine lokalen Variablen der umgebenden Methode verwenden.",
+        "Eine im Lambda verwendete lokale Variable muss <code>final</code> oder <em>effektiv final</em> sein – <code>zaehler++</code> verletzt das.",
+        "<code>IO.println</code> darf in einem Lambda nicht aufgerufen werden.",
+        "<code>Runnable</code> ist kein funktionales Interface."
+      ],
+      "correctIndices": [1],
+      "timeLimit": 60
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Wozu dient <code>Optional&lt;T&gt;</code>?</p>",
+      "options": [
+        "Um Werte speichereffizienter abzulegen.",
+        "Um optionale Methodenparameter zu deklarieren, die beim Aufruf weggelassen werden dürfen.",
+        "Um bereits im Typ sichtbar zu machen, dass ein Wert fehlen kann, statt <code>null</code> zurückzugeben.",
+        "Um <code>null</code> in der gesamten Anwendung zur Laufzeit zu verbieten."
+      ],
+      "correctIndices": [2],
+      "timeLimit": 30
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Welche Aussagen über Ausnahmen in Java treffen zu? (Mehrfachauswahl)</p>",
+      "options": [
+        "Der Compiler prüft Ausnahmen grundsätzlich nicht; das Fangen ist immer freiwillig.",
+        "Eine <em>checked exception</em> wie <code>IOException</code> muss gefangen oder mit <code>throws</code> deklariert werden.",
+        "<code>RuntimeException</code> und ihre Unterklassen sind <em>unchecked</em>.",
+        "Ein <code>finally</code>-Block wird auch dann ausgeführt, wenn im <code>try</code>-Block eine Ausnahme auftritt."
+      ],
+      "correctIndices": [1, 2, 3],
+      "timeLimit": 60
+    },
+    {
+      "type": "multiple-choice",
+      "text": "<p>Wie sieht die Liste nach dem Sortieren aus?</p><pre style='text-align:left;'><code>var namen =\n    List.of(\"Ada\", \"Bob\", \"Cäcilia\");\n\nnamen.sort(\n    Comparator.comparingInt(String::length).reversed()\n);</code></pre>",
+      "options": [
+        "<code>[Ada, Bob, Cäcilia]</code>",
+        "<code>[Cäcilia, Bob, Ada]</code>",
+        "<code>[Bob, Ada, Cäcilia]</code>",
+        "<code>[Cäcilia, Ada, Bob]</code>"
+      ],
+      "correctIndices": [3],
+      "timeLimit": 60
+    }
+  ]
+}

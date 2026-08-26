@@ -8,12 +8,25 @@ const DELIMITERS = [
 ];
 
 /**
- * Render all math in a text string using KaTeX.
- * Replaces math delimiters with rendered HTML.
+ * Regions this module must not touch.
+ *
+ * `$` is a math delimiter here and a variable sigil in half the languages a
+ * lecture ever shows: `echo $PATH` in bash, `${x}` in a template literal, `$_`
+ * in Perl. Before code blocks were rendered server-side nobody noticed, because
+ * a `$` in prose is almost always math. Now that code-renderer.js runs first and
+ * wraps every sample in `<pre><code>`, those regions are recognisable, and math
+ * rendering skips them: a bash snippet must survive being next to a formula.
+ *
+ * The backreference keeps `<pre>` matching to its own `</pre>` rather than to
+ * the `</code>` nested inside it. The attribute alternation tolerates a quoted
+ * attribute value containing `>`, the same way quiz-sanitizer.js does.
  */
-function renderMath(text) {
-  if (!text) return text;
+const CODE_REGION = /<(pre|code)\b(?:"[^"]*"|'[^']*'|[^>"'])*>[\s\S]*?<\/\1\s*>/gi;
 
+/**
+ * Render all math in a fragment that is known to contain no code region.
+ */
+function renderMathFragment(text) {
   let result = '';
   let i = 0;
 
@@ -49,6 +62,27 @@ function renderMath(text) {
   }
 
   return result;
+}
+
+/**
+ * Render all math in a text string using KaTeX.
+ * Replaces math delimiters with rendered HTML, leaving code blocks alone.
+ */
+function renderMath(text) {
+  if (!text) return text;
+
+  let result = '';
+  let cursor = 0;
+  let match;
+
+  CODE_REGION.lastIndex = 0;
+  while ((match = CODE_REGION.exec(text)) !== null) {
+    result += renderMathFragment(text.slice(cursor, match.index));
+    result += match[0]; // verbatim: already-rendered code
+    cursor = match.index + match[0].length;
+  }
+
+  return result + renderMathFragment(text.slice(cursor));
 }
 
 /**

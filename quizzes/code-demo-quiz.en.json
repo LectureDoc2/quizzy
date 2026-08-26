@@ -1,0 +1,187 @@
+{
+  "title": "Code Demo Quiz",
+  "questions": [
+    {
+      "type": "multiple-choice",
+      "text": "What does this print?\n```java\nSystem.out.println(1 / 2);\n```",
+      "options": [
+        "<code>0</code>",
+        "<code>0.5</code>",
+        "It does not compile"
+      ],
+      "correctIndices": [
+        0
+      ],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Which value does <code>x</code> hold?\n```python\nx = [n * n for n in range(4)][-1]\n```",
+      "options": [
+        "9",
+        "16",
+        "3"
+      ],
+      "correctIndices": [
+        0
+      ],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "This shell snippet prints the path twice. Why does the second line still work?\n```bash\necho \"$PATH\"\nPATH=\"$PATH\" bash -c 'echo \"$PATH\"'\n```",
+      "options": [
+        "The assignment is exported for that command only",
+        "<code>bash -c</code> re-reads the profile",
+        "It does not — the second line prints nothing"
+      ],
+      "correctIndices": [
+        0
+      ],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "What is the zero value of <code>Counter</code>?\n```go\ntype Counter struct {\n\tn   int\n\tseen map[string]bool\n}\n```",
+      "options": [
+        "<code>n == 0</code> and <code>seen == nil</code>",
+        "<code>n == 0</code> and <code>seen</code> an empty map",
+        "A compile error — maps need initialisation"
+      ],
+      "correctIndices": [
+        0
+      ],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Does this compile?\n```rust\nfn main() {\n    let v = vec![1, 2, 3];\n    let first = &v[0];\n    v.push(4);\n    println!(\"{first}\");\n}\n```",
+      "options": [
+        "No — <code>v</code> is borrowed while it is mutated",
+        "Yes, and it prints <code>1</code>",
+        "Yes, but it panics at runtime"
+      ],
+      "correctIndices": [
+        0
+      ],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Which selector wins?\n```css\na.link { color: red; }\n#nav a { color: blue; }\n```",
+      "options": [
+        "<code>#nav a</code> — an id outweighs a class",
+        "<code>a.link</code> — it is more specific about the element",
+        "Whichever comes last"
+      ],
+      "correctIndices": [
+        0
+      ],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "What is <code>total</code> after this runs?\n```typescript\nconst prices: number[] = [1.10, 2.20];\nconst total = prices.reduce((a, b) => a + b, 0);\n```",
+      "options": [
+        "<code>3.3000000000000003</code>",
+        "<code>3.3</code>",
+        "<code>3.30</code>"
+      ],
+      "correctIndices": [
+        0
+      ],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "This YAML does not mean what it looks like. What is <code>version</code>?\n```yaml\nversion: 1.10\nports:\n  - 8080\n  - 8081\n```",
+      "options": [
+        "The number <code>1.1</code>",
+        "The string <code>\"1.10\"</code>",
+        "A syntax error"
+      ],
+      "correctIndices": [
+        0
+      ],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Given $f(x) = x^2$, what does this compute — and note that the <code>$</code> below is a shell variable, not math:\n```bash\nfor i in 1 2 3; do echo $((i * i)); done\n```",
+      "options": [
+        "$f(1), f(2), f(3)$",
+        "$1 + 2 + 3$",
+        "Nothing — <code>$((...))</code> is not valid"
+      ],
+      "correctIndices": [
+        0
+      ],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "What does this HTML snippet render?\n```html\n<p onclick=\"alert(1)\">Click <b>me</b></p>\n```",
+      "options": [
+        "A paragraph with a bold word and a click handler",
+        "Nothing — the handler is stripped",
+        "A script error"
+      ],
+      "correctIndices": [
+        0
+      ],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Which of these is valid JSON?\n```json\n{\n  \"a\": 1,\n  \"b\": [true, null],\n}\n```",
+      "options": [
+        "None — the trailing comma is not allowed",
+        "This one, JSON allows trailing commas",
+        "Only if it is parsed as JSON5"
+      ],
+      "correctIndices": [
+        0
+      ],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "How is a fenced code block written *inside* a Markdown example?\n````markdown\n# Example\n\n```js\nlet a = 1;\n```\n````",
+      "options": [
+        "With a longer outer fence",
+        "With a backslash before each backtick",
+        "It cannot be done"
+      ],
+      "correctIndices": [
+        0
+      ],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "What does this C snippet print?\n```c\n#include <stdio.h>\n\nint main(void) {\n    int a[] = {1, 2, 3};\n    printf(\"%zu\\n\", sizeof(a) / sizeof(a[0]));\n    return 0;\n}\n```",
+      "options": [
+        "3",
+        "12",
+        "1"
+      ],
+      "correctIndices": [
+        0
+      ],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Why is the copy constructor deleted here?\n```cpp\nstruct Handle {\n    Handle(const Handle&) = delete;\n    Handle& operator=(const Handle&) = delete;\n    Handle(Handle&&) noexcept = default;\n};\n```",
+      "options": [
+        "To make the type move-only",
+        "Because it holds a reference member",
+        "It is a compiler error to delete both"
+      ],
+      "correctIndices": [
+        0
+      ],
+      "timeLimit": 45
+    }
+  ]
+}

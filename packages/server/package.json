@@ -17,6 +17,7 @@
   "dependencies": {
     "@lecturedoc2/libcrypto": "^1.1.0",
     "express": "^5.2.1",
+    "highlight.js": "^11.12.0",
     "katex": "^0.17.0",
     "ws": "^8.21.0"
   },

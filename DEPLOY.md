@@ -664,6 +664,15 @@ which case repeat 10a first and then `sudo systemctl reload caddy`.
 - **`ENDED_ROOM_RETENTION_MINUTES`** (default 15) controls how long a finished room
   is kept so its results can still be exported. Set it on the backend service if you
   want longer.
+- **`DETACHED_RETENTION_MINUTES`** (default 15) controls how long a participant whose
+  connection dropped can come back with the same name and score. **This is a
+  data-protection setting, not only a memory one:** for this long after a student's
+  connection closes, their name, answers and score stay in the backend's RAM. Keep the
+  window short; nothing is ever written to disk, and a restart still discards
+  everything. The participant's browser keeps a random resume key in `sessionStorage`
+  for the same purpose — per tab, never sent anywhere else, and deleted when the quiz
+  ends or the tab is closed. Mention both in your privacy notice
+  (Datenschutzerklärung); see `PARTICIPANT-REATTACH.md` for the reasoning.
 ### Sizing the abuse limits for your audience
 
 **Read this before the first large lecture.** Every "per IP" limit in the backend

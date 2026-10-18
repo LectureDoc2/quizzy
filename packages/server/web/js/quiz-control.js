@@ -29,6 +29,9 @@ class QuizControl {
     this.roomState = null;
     this.currentQuestion = null;
     this.statistics = null;
+    // Ids of participants whose connection dropped and who may still come
+    // back. They keep their place on the leaderboard, marked as reconnecting.
+    this.reconnectingIds = new Set();
   }
 
   async init() {
@@ -104,9 +107,13 @@ class QuizControl {
     switch (msg.type) {
       case "control_connected":
         this.roomState = msg;
+        this.roomState.reconnectingCount = msg.reconnectingCount || 0;
         this.currentQuestion = msg.question || null;
         this.state = "control";
         this.renderControl();
+        // Which of the people on the board are away right now; the board
+        // itself does not say, because participants receive it too.
+        this.ws.send(JSON.stringify({ type: "get_participants" }));
         // Reopening the control view after the quiz finished should still
         // offer the export.
         if (msg.state === "ended") {
@@ -143,8 +150,27 @@ class QuizControl {
 
       case "participant_joined":
       case "participant_left":
+        // `detached` marks a dropped connection that may come back; a
+        // participant_left without it (a kick) is final, and a
+        // participant_joined -- first join or rejoin -- means present.
+        if (msg.type === "participant_left" && msg.detached) {
+          this.reconnectingIds.add(msg.participantId);
+        } else {
+          this.reconnectingIds.delete(msg.participantId);
+        }
         this.roomState.participantCount = msg.count;
-        this.updateParticipantCount(msg.count);
+        if (typeof msg.reconnecting === "number") this.roomState.reconnectingCount = msg.reconnecting;
+        this.updateParticipantCount();
+        this.renderLeaderboard();
+        break;
+
+      case "participants_list":
+        this.reconnectingIds = new Set(
+          (msg.participants || []).filter((p) => p.connected === false).map((p) => p.id),
+        );
+        this.roomState.reconnectingCount = this.reconnectingIds.size;
+        this.updateParticipantCount();
+        this.renderLeaderboard();
         break;
 
       case "game_ended":
@@ -178,7 +204,7 @@ class QuizControl {
           <h2 id="quiz-title"></h2>
           <div class="room-info">
             <span id="room-label"></span>
-            <span class="participant-count">Participants: <span id="participants"></span></span>
+            <span class="participant-count">Participants: <span id="participants"></span><span id="participants-reconnecting" class="participant-count__reconnecting"></span></span>
           </div>
         </div>
 
@@ -242,7 +268,7 @@ class QuizControl {
 
     document.getElementById("quiz-title").textContent = this.roomState.quizTitle || "Quiz";
     document.getElementById("room-label").textContent = `Room: ${this.roomState.roomId}`;
-    document.getElementById("participants").textContent = this.roomState.participantCount;
+    this.updateParticipantCount();
 
     this.updateControlUI();
     this.renderLeaderboard();
@@ -314,9 +340,21 @@ class QuizControl {
     }
   }
 
-  updateParticipantCount(count) {
-    const el = document.getElementById("participants");
-    if (el) el.textContent = count;
+  /**
+   * "38 connected · 2 reconnecting". The first number is who is here now --
+   * the people a question waits for; the second is who dropped and may still
+   * come back with their score.
+   */
+  updateParticipantCount() {
+    const connected = document.getElementById("participants");
+    const reconnecting = document.getElementById("participants-reconnecting");
+    const away = this.roomState.reconnectingCount || 0;
+    if (connected) {
+      connected.textContent = away > 0
+        ? `${this.roomState.participantCount} connected`
+        : this.roomState.participantCount;
+    }
+    if (reconnecting) reconnecting.textContent = away > 0 ? ` \u00b7 ${away} reconnecting` : "";
   }
 
   updateAnswerCount(count, total) {
@@ -428,9 +466,12 @@ class QuizControl {
 
     const board = el("div", "leaderboard");
     list.forEach((entry, i) => {
-      const item = el("div", "leaderboard__item");
+      const away = this.reconnectingIds.has(entry.id);
+      const item = el("div", away ? "leaderboard__item leaderboard__item--away" : "leaderboard__item");
       item.append(el("span", "leaderboard__rank", i + 1));
-      item.append(el("span", "leaderboard__name", entry.name));
+      const name = el("span", "leaderboard__name", entry.name);
+      if (away) name.append(el("span", "leaderboard__away", "reconnecting"));
+      item.append(name);
       item.append(el("span", "leaderboard__score", Number(entry.score) || 0));
       board.append(item);
     });

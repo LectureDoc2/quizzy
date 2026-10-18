@@ -96,6 +96,11 @@ const MALFORMED_MESSAGES = [
   JSON.stringify({ type: 'create_room', presenterToken: 'short', quiz: VALID_QUIZ }),
   JSON.stringify({ type: 'join_room', roomId: null, name: null }),
   JSON.stringify({ type: 'join_room', roomId: {}, name: [] }),
+  '{"type":"rejoin_room"}',
+  JSON.stringify({ type: 'rejoin_room', protocolVersion: PROTOCOL_VERSION, roomId: null, resumeToken: null }),
+  JSON.stringify({ type: 'rejoin_room', protocolVersion: PROTOCOL_VERSION, roomId: {}, resumeToken: { length: 43 } }),
+  JSON.stringify({ type: 'rejoin_room', protocolVersion: PROTOCOL_VERSION, roomId: '__proto__', resumeToken: '__proto__' }),
+  JSON.stringify({ type: 'rejoin_room', protocolVersion: PROTOCOL_VERSION, roomId: 'ABCDEF', resumeToken: 'x'.repeat(10000) }),
   '{"type":"create_room","quiz":{"a":' + '['.repeat(200) + '}}'
 ];
 

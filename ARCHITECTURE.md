@@ -247,6 +247,15 @@ sequenceDiagram
     A-->>K: results_export
 ```
 
+Participants can resume, like the presenter. A dropped participant socket
+*detaches* the participant rather than deleting them: they keep their score and
+their place on the leaderboard, and stay out of everything that is about who is
+present, such as the count that auto-ends a question. The join page reconnects with
+backoff and jitter and presents the resume token it received in `joined`
+(`rejoin_room`). The token lives in memory and, for a reload, in the tab's
+`sessionStorage`. Detached participants are forgotten after
+`DETACHED_RETENTION_MINUTES`. See `PARTICIPANT-REATTACH.md`.
+
 Room state lives only in the API server's memory. Nothing is persisted, so a
 restart ends every running game — which is also why the room TTLs in `rooms.js`
 matter, and why a malformed quiz must never be able to end the process: it would

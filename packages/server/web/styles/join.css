@@ -37,6 +37,43 @@
     margin: var(--quiz-space-xs) 0;
   }
 
+  /* The closed question on a participant's results screen. Left-aligned
+     like the question itself, inside the otherwise centred results. */
+  .feedback {
+    text-align: left;
+    margin: var(--quiz-space-sm) 0 var(--quiz-space-lg);
+  }
+
+  .feedback__verdict {
+    font-weight: 600;
+    font-size: 1.125rem;
+    text-align: center;
+    margin-top: var(--quiz-space-md);
+  }
+
+  .feedback__verdict--correct {
+    color: var(--quiz-success-dark);
+  }
+
+  .feedback__verdict--wrong {
+    color: var(--quiz-danger-dark);
+  }
+
+  .feedback__verdict--none {
+    color: var(--quiz-text-secondary);
+  }
+
+  /* Not interactive any more: no pointer, no hover. */
+  .feedback__option {
+    cursor: default;
+    pointer-events: none;
+  }
+
+  .feedback__estimate {
+    margin-top: var(--quiz-space-md);
+    text-align: center;
+  }
+
   .waiting-text {
     color: var(--quiz-text-secondary);
     margin-top: var(--quiz-space-md);
@@ -56,6 +93,43 @@
   .room-state__detail {
     font-size: 0.875rem;
     color: var(--quiz-text-secondary);
+  }
+
+  /* Shown while the page is reconnecting. The screen underneath stays, dimmed
+     and inert, so the student keeps their place. */
+  .connection-banner {
+    text-align: center;
+    font-weight: 500;
+    color: var(--quiz-text);
+    background: color-mix(in srgb, var(--quiz-warning) 15%, var(--quiz-surface));
+    border: 1px solid var(--quiz-warning);
+    border-radius: var(--quiz-radius-sm);
+    padding: var(--quiz-space-sm);
+    margin-bottom: var(--quiz-space-md);
+  }
+
+  .content--stale {
+    opacity: 0.45;
+    transition: opacity 0.2s;
+  }
+
+  /* What happened while the page was away: a question that closed, a session
+     that expired. Survives the next render, unlike anything in #content. */
+  .notice {
+    font-size: 0.875rem;
+    color: var(--quiz-text);
+    background: var(--quiz-primary-alpha-5);
+    border: 1px solid var(--quiz-primary);
+    border-radius: var(--quiz-radius-sm);
+    padding: var(--quiz-space-sm);
+    margin-bottom: var(--quiz-space-md);
+  }
+
+  .join-privacy {
+    font-size: 0.75rem;
+    color: var(--quiz-text-secondary);
+    margin-top: var(--quiz-space-md);
+    text-align: center;
   }
 
   /* A late arrival needs to notice that the quiz is already running. */

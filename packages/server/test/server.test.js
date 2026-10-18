@@ -11,7 +11,10 @@ import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert';
 import { WebSocket } from 'ws';
 import { createHash } from 'crypto';
-import { createQuizServer, limitsFromEnv, DEFAULT_LIMITS, GENERIC_REJECTION, QUIZ_FINISHED } from '../src/server.js';
+import {
+  createQuizServer, limitsFromEnv, DEFAULT_LIMITS, GENERIC_REJECTION, QUIZ_FINISHED,
+  REJOIN_FAILED, SUPERSEDED_CLOSE_CODE
+} from '../src/server.js';
 import { PROTOCOL_VERSION } from '../../ld-quiz/src/protocol.js';
 import { loopbackHost, originFor } from './loopback.js';
 
@@ -22,7 +25,7 @@ import { loopbackHost, originFor } from './loopback.js';
  * how a real client speaks, not part of what any individual test is about, and a
  * test that forgets it would fail for a reason unrelated to its subject.
  */
-const HANDSHAKE_TYPES = new Set(['create_room', 'join_room', 'control_connect', 'room_status']);
+const HANDSHAKE_TYPES = new Set(['create_room', 'join_room', 'rejoin_room', 'control_connect', 'room_status']);
 
 function withProtocolVersion(msg) {
   return HANDSHAKE_TYPES.has(msg.type) && msg.protocolVersion === undefined
@@ -420,6 +423,122 @@ describe('Server integration', () => {
     });
   });
 
+  describe('feedback on the results screen', () => {
+    async function twoPlayers() {
+      const presenter = await openRoom();
+      const roomId = presenter.created.roomId;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      const bob = await joinRoom(roomId, 'Bob Brown');
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(alice.ws, 'question');
+      await waitFor(bob.ws, 'question');
+      return { presenter, roomId, alice, bob };
+    }
+
+    async function onEstimationQuestion() {
+      const game = await twoPlayers();
+      send(game.presenter.ws, { type: 'end_question' });
+      await waitFor(game.alice.ws, 'results');
+      await waitFor(game.bob.ws, 'results');
+      send(game.presenter.ws, { type: 'next_question' });
+      await waitFor(game.alice.ws, 'question');
+      await waitFor(game.bob.ws, 'question');
+      return game;
+    }
+
+    it('tells each participant whether their own choice was correct, and nothing more', async () => {
+      const { alice, bob } = await twoPlayers();
+      send(alice.ws, { type: 'submit_answer', answer: [2, 0] });
+      send(bob.ws, { type: 'submit_answer', answer: [1] });
+
+      const mine = (await waitFor(alice.ws, 'results')).feedback;
+      assert.deepStrictEqual(mine, {
+        question: { type: 'multiple-choice', text: QUIZ.questions[0].text, options: QUIZ.questions[0].options },
+        answered: true,
+        answer: [0, 2],
+        isCorrect: true
+      });
+
+      const theirs = (await waitFor(bob.ws, 'results')).feedback;
+      assert.deepStrictEqual(theirs.answer, [1], 'each participant sees only their own answer');
+      assert.strictEqual(theirs.isCorrect, false);
+      assert.ok(!('correctIndices' in theirs), 'the correct options are the presenter\'s to reveal');
+    });
+
+    it('ranks an estimate against the others without revealing the truth or their values', async () => {
+      const { alice, bob } = await onEstimationQuestion();
+      send(alice.ws, { type: 'submit_answer', answer: 100 });
+      send(bob.ws, { type: 'submit_answer', answer: 130 });
+
+      const bobs = (await waitFor(bob.ws, 'results')).feedback;
+      assert.deepStrictEqual(bobs, {
+        question: { type: 'estimation', text: QUIZ.questions[1].text },
+        answered: true,
+        answer: 130,
+        answerCount: 2,
+        rank: 1
+      });
+
+      const alices = (await waitFor(alice.ws, 'results')).feedback;
+      assert.strictEqual(alices.rank, 2);
+      assert.strictEqual(alices.answer, 100);
+    });
+
+    it('passes on none of the quiz author\'s other question fields', async () => {
+      const quiz = {
+        ...QUIZ,
+        questions: [{ ...QUIZ.questions[0], explanation: 'TCP and SCTP set up a connection.' }]
+      };
+      const presenter = await openRoom(tokenFor('michael', quiz), quiz);
+      const alice = await joinRoom(presenter.created.roomId, 'Alice Adams');
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(alice.ws, 'question');
+      send(alice.ws, { type: 'submit_answer', answer: [0] });
+
+      const results = await waitFor(alice.ws, 'results');
+      assert.deepStrictEqual(Object.keys(results.feedback.question).sort(), ['options', 'text', 'type']);
+      assert.ok(!JSON.stringify(results).includes('set up a connection'));
+    });
+
+    it('says so when a participant did not answer', async () => {
+      const { presenter, alice, bob } = await twoPlayers();
+      send(alice.ws, { type: 'submit_answer', answer: [0, 2] });
+      send(presenter.ws, { type: 'end_question' });
+
+      const feedback = (await waitFor(bob.ws, 'results')).feedback;
+      assert.strictEqual(feedback.answered, false);
+      assert.strictEqual(feedback.answer, null);
+      assert.strictEqual(feedback.isCorrect, false);
+    });
+
+    it('gives no rank to somebody who did not estimate', async () => {
+      const { presenter, alice, bob } = await onEstimationQuestion();
+      send(alice.ws, { type: 'submit_answer', answer: 100 });
+      send(presenter.ws, { type: 'end_question' });
+
+      const feedback = (await waitFor(bob.ws, 'results')).feedback;
+      assert.strictEqual(feedback.answered, false);
+      assert.strictEqual(feedback.rank, null);
+      assert.strictEqual(feedback.answerCount, 1);
+    });
+
+    it('is shown again to a participant who rejoins on the results screen', async () => {
+      const { roomId, alice, bob } = await twoPlayers();
+      send(alice.ws, { type: 'submit_answer', answer: [0, 2] });
+      send(bob.ws, { type: 'submit_answer', answer: [1] });
+      await waitFor(alice.ws, 'results');
+      alice.ws.terminate();
+      await new Promise((r) => setTimeout(r, 50));
+
+      const ws = await connect();
+      send(ws, { type: 'rejoin_room', roomId, resumeToken: alice.reply.resumeToken });
+      assert.strictEqual((await next(ws)).type, 'rejoined');
+      const replay = await waitFor(ws, 'results');
+      assert.strictEqual(replay.feedback.isCorrect, true);
+      assert.deepStrictEqual(replay.feedback.answer, [0, 2]);
+    });
+  });
+
   describe('one socket, one participant', () => {
     it('refuses a second join_room on a connection that has already joined', async () => {
       const presenter = await openRoom();
@@ -466,6 +585,282 @@ describe('Server integration', () => {
         'the presenter must never be shown a row it cannot name');
       assert.strictEqual(msg.answers.filter((a) => a.name === 'Alice Adams').length, 1);
       assert.strictEqual(msg.leaderboard.find((p) => p.name === 'Alice Adams').score, 100);
+    });
+  });
+
+  describe('rejoining after a dropped connection', () => {
+    const settle = (ms = 50) => new Promise((r) => setTimeout(r, ms));
+    const closed = (ws) => new Promise((resolve) => {
+      if (ws.readyState === WebSocket.CLOSED) resolve({ code: null });
+      else ws.once('close', (code) => resolve({ code }));
+    });
+
+    async function rejoin(roomId, resumeToken) {
+      const ws = await connect();
+      send(ws, { type: 'rejoin_room', roomId, resumeToken });
+      return { ws, reply: await next(ws) };
+    }
+
+    /** Drop a participant's socket the way a wifi handover does, and wait for the server to notice. */
+    async function drop(ws, presenterWs) {
+      const left = presenterWs ? waitFor(presenterWs, 'participant_left') : null;
+      ws.terminate();
+      return left ? left : settle();
+    }
+
+    it('hands the joining participant a resume token, and nobody else', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      const token = alice.reply.resumeToken;
+      assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+
+      const bob = await joinRoom(roomId, 'Bob Brown');
+      const joinedNote = await waitFor(presenter.ws, 'participant_joined');
+      send(presenter.ws, { type: 'get_participants' });
+      const list = await waitFor(presenter.ws, 'participants_list');
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(bob.ws, 'question');
+      send(bob.ws, { type: 'submit_answer', answer: [0] });
+      send(alice.ws, { type: 'submit_answer', answer: [0] });
+      const results = await waitFor(bob.ws, 'results');
+
+      for (const msg of [joinedNote, list, results, bob.reply]) {
+        assert.ok(!JSON.stringify(msg).includes(token), `token leaked in ${msg.type}`);
+      }
+    });
+
+    it('brings a dropped participant back with their id and score', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      const bob = await joinRoom(roomId, 'Bob Brown');
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(alice.ws, 'question');
+      await waitFor(bob.ws, 'question');
+      send(alice.ws, { type: 'submit_answer', answer: [0, 2] });
+      send(bob.ws, { type: 'submit_answer', answer: [1] });
+      await waitFor(alice.ws, 'results');
+      await waitFor(presenter.ws, 'question_results');
+      presenter.ws.inbox.length = 0;
+
+      const left = await drop(alice.ws, presenter.ws);
+      assert.strictEqual(left.detached, true);
+      assert.strictEqual(left.count, 1, 'count stays "connected right now"');
+      assert.strictEqual(left.reconnecting, 1);
+      const room = quizServer.roomManager.getRoom(roomId);
+      assert.strictEqual(room.getLeaderboard().find((e) => e.name === 'Alice Adams').score, 100,
+        'still on the board while away');
+
+      const back = await rejoin(roomId, alice.reply.resumeToken);
+      assert.strictEqual(back.reply.type, 'rejoined');
+      assert.strictEqual(back.reply.participantId, alice.reply.participantId);
+      assert.strictEqual(back.reply.state, 'results');
+      assert.deepStrictEqual(back.reply.answeredQuestions, [0]);
+
+      const replay = await waitFor(back.ws, 'results');
+      assert.strictEqual(replay.leaderboard.find((e) => e.id === alice.reply.participantId).score, 100);
+
+      const note = await waitFor(presenter.ws, 'participant_joined');
+      assert.strictEqual(note.rejoined, true);
+      assert.strictEqual(note.count, 2);
+      assert.strictEqual(note.reconnecting, 0);
+      assert.strictEqual(room.getLeaderboard().length, 2, 'a rejoin must not mint a second participant');
+    });
+
+    it('scores an answer given just before the drop', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      const bob = await joinRoom(roomId, 'Bob Brown');
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(alice.ws, 'question');
+      send(alice.ws, { type: 'submit_answer', answer: [0, 2] });
+      await waitFor(alice.ws, 'answer_accepted');
+      await drop(alice.ws, presenter.ws);
+
+      send(bob.ws, { type: 'submit_answer', answer: [1] });
+      const results = await waitFor(presenter.ws, 'question_results');
+      assert.strictEqual(results.answers.find((a) => a.name === 'Alice Adams').points, 100);
+      assert.strictEqual(results.leaderboard.find((e) => e.name === 'Alice Adams').score, 100);
+    });
+
+    it('lands an answered-then-dropped participant on "waiting", and refuses a second answer', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      const bob = await joinRoom(roomId, 'Bob Brown');
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(alice.ws, 'question');
+      send(alice.ws, { type: 'submit_answer', answer: [1] });
+      await waitFor(alice.ws, 'answer_accepted');
+      await drop(alice.ws, presenter.ws);
+
+      const back = await rejoin(roomId, alice.reply.resumeToken);
+      const question = await waitFor(back.ws, 'question');
+      assert.strictEqual(question.alreadyAnswered, true);
+      assert.strictEqual(question.questionIndex, 0);
+
+      send(back.ws, { type: 'submit_answer', answer: [0, 2] });
+      await settle();
+      assert.ok(!back.ws.inbox.some((m) => m.type === 'answer_accepted'), 'a second answer was accepted');
+
+      const results = waitFor(presenter.ws, 'question_results');
+      send(bob.ws, { type: 'submit_answer', answer: [1] });
+      const msg = await results;
+      assert.deepStrictEqual(msg.answers.find((a) => a.name === 'Alice Adams').answer, [1],
+        'the first answer must stand');
+      assert.strictEqual(msg.answers.length, 2);
+    });
+
+    it('offers the open question again to somebody who had not answered yet', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(alice.ws, 'question');
+      await drop(alice.ws, presenter.ws);
+
+      const back = await rejoin(roomId, alice.reply.resumeToken);
+      const question = await waitFor(back.ws, 'question');
+      assert.strictEqual(question.alreadyAnswered, false);
+      send(back.ws, { type: 'submit_answer', answer: [0, 2] });
+      // Alice is the only one present, so her answer closes the question.
+      const results = await waitFor(back.ws, 'results');
+      assert.strictEqual(results.leaderboard[0].score, 100);
+    });
+
+    it('refuses an unknown token and an unknown room alike, without spending the failure budget', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const ws = await connect();
+
+      // The budget in this suite is 3; a whole hall's tokens can expire at
+      // once, and that must not lock the hall's one address out.
+      const replies = [];
+      for (let i = 0; i < 6; i++) {
+        send(ws, { type: 'rejoin_room', roomId: i % 2 ? roomId : 'ZZZZZZ', resumeToken: `bogus-${i}` });
+        replies.push(await next(ws));
+      }
+      for (const reply of replies) {
+        assert.deepStrictEqual(reply, { type: 'rejoin_failed', message: REJOIN_FAILED },
+          'an unknown room and a wrong token must look the same');
+      }
+      assert.strictEqual(ws.readyState, WebSocket.OPEN);
+
+      // ...and the same socket can then join as somebody new.
+      send(ws, { type: 'join_room', roomId, name: 'Carol Clark' });
+      assert.strictEqual((await next(ws)).type, 'joined');
+    });
+
+    it('refuses a token whose retention window has passed', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      await drop(alice.ws, presenter.ws);
+
+      const room = quizServer.roomManager.getRoom(roomId);
+      room.detached.get(alice.reply.participantId).detachedAt = 0; // long ago
+
+      const back = await rejoin(roomId, alice.reply.resumeToken);
+      assert.strictEqual(back.reply.type, 'rejoin_failed');
+      assert.strictEqual(room.getLeaderboard().length, 0, 'and the record is gone');
+    });
+
+    it('closes the socket it supersedes, and frees its quota at once', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      const oldClosed = closed(alice.ws);
+
+      const quota = () => [...quizServer.ipState.values()].reduce((n, s) => n + s.sockets, 0);
+      const fresh = await connect();
+      const before = quota();
+      send(fresh, { type: 'rejoin_room', roomId, resumeToken: alice.reply.resumeToken });
+      assert.strictEqual((await next(fresh)).type, 'rejoined');
+      assert.strictEqual(quota(), before - 1, 'the superseded socket still counts against the address');
+
+      const { code } = await oldClosed;
+      assert.strictEqual(code, SUPERSEDED_CLOSE_CODE);
+      await settle();
+      assert.strictEqual(quota(), before - 1, 'released twice');
+
+      const room = quizServer.roomManager.getRoom(roomId);
+      assert.strictEqual(room.getParticipantCount(), 1,
+        'the old socket closing must not detach the participant who just came back');
+      assert.strictEqual(room.getReconnectingCount(), 0);
+    });
+
+    it('does not let a kick be undone by reconnecting', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      await waitFor(presenter.ws, 'participant_joined');
+
+      send(presenter.ws, { type: 'kick_participant', participantId: alice.reply.participantId });
+      await waitFor(alice.ws, 'kicked');
+      const left = await waitFor(presenter.ws, 'participant_left');
+      assert.strictEqual(left.count, 0);
+      assert.strictEqual(left.reconnecting, 0);
+
+      const back = await rejoin(roomId, alice.reply.resumeToken);
+      assert.strictEqual(back.reply.type, 'rejoin_failed');
+    });
+
+    it('refuses a rejoin on a socket that already speaks for somebody', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      const bob = await joinRoom(roomId, 'Bob Brown');
+
+      send(bob.ws, { type: 'rejoin_room', roomId, resumeToken: alice.reply.resumeToken });
+      assert.match((await waitFor(bob.ws, 'error')).message, /already joined/i);
+      assert.strictEqual(alice.ws.readyState, WebSocket.OPEN, 'Alice must not have been superseded');
+    });
+
+    it('shows a participant who returns after the end their final result', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      await drop(alice.ws, presenter.ws);
+      send(presenter.ws, { type: 'end_game' });
+      await waitFor(presenter.ws, 'game_ended');
+
+      const back = await rejoin(roomId, alice.reply.resumeToken);
+      assert.strictEqual(back.reply.type, 'rejoined');
+      assert.strictEqual(back.reply.state, 'ended');
+      const final = await waitFor(back.ws, 'game_ended');
+      assert.strictEqual(final.leaderboard[0].name, 'Alice Adams');
+    });
+
+    it('lists reconnecting participants to the presenter, flagged as such', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      await joinRoom(roomId, 'Bob Brown');
+      await drop(alice.ws, presenter.ws);
+
+      send(presenter.ws, { type: 'get_participants' });
+      const { participants } = await waitFor(presenter.ws, 'participants_list');
+      const byName = Object.fromEntries(participants.map((p) => [p.name, p.connected]));
+      assert.deepStrictEqual(byName, { 'Alice Adams': false, 'Bob Brown': true });
+
+      const control = await connect();
+      send(control, { type: 'control_connect', presenterToken: tokenFor('michael'), roomId });
+      const connected = await waitFor(control, 'control_connected');
+      assert.strictEqual(connected.participantCount, 1);
+      assert.strictEqual(connected.reconnectingCount, 1);
+    });
+
+    it('keeps room_status about who is actually there', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      await drop(alice.ws, presenter.ws);
+
+      const ws = await connect();
+      send(ws, { type: 'room_status', roomId });
+      assert.strictEqual((await next(ws)).participantCount, 0);
     });
   });
 

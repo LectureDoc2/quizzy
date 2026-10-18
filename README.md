@@ -9,6 +9,7 @@ A real-time, embeddable quiz application designed for integration with any HTML-
 - **Secure Quiz Content**: Client-side AES-GCM encryption with PBKDF2 key derivation ([`@lecturedoc2/libcrypto`](https://www.npmjs.com/package/@lecturedoc2/libcrypto))
 - **Presenter Control**: Separate control window with session management and reconnection support
 - **Participant QR Code Join**: Participants scan a QR code or use a short link to join
+- **Participant Reconnect**: A participant whose connection drops, or who reloads the page, carries on with the same name and score
 - **Math Formula Support**: Server-based KaTeX rendering for quiz questions and answers
 - **Syntax-highlighted Code**: Server-based highlight.js rendering of fenced code blocks in 14 languages
 - **Minimal Dependencies**: Express.js and `ws` (WebSocket) on the server; the crypto library - part of LectureDoc2 without additional transitive dependencies - is the client's only dependency
@@ -570,25 +571,37 @@ Messages that open a conversation (`create_room`, `join_room`, `control_connect`
 - `join_room`: Join a room with a name
   - `roomId`: Room to join
   - `name`: Participant display name
+- `rejoin_room`: Come back as an existing participant after a dropped connection or a reload
+  - `roomId`: Room to rejoin
+  - `resumeToken`: The token received in `joined`
 - `submit_answer`: Submit an answer
   - `answer`: Selected option index, array of indices, or estimation value
 
 **Server → Presenter (`ld-quiz` component):**
 - `room_created`: Room was created; includes `roomId`, `quizTitle`, `totalQuestions`
-- `participant_joined` / `participant_left`: Lobby participant count updates
+- `participant_joined` / `participant_left`: Lobby participant count updates. `count` is
+  the number connected right now; `reconnecting` is the number whose connection dropped
+  and who may still come back. `participant_left` carries `detached: true` for a dropped
+  connection, `participant_joined` carries `rejoined: true` for a return.
 
 **Server → Control Window (`quiz-control.js`):**
-- `control_connected`: Initial state after connecting; includes `roomId`, `state`, `quizTitle`, `totalQuestions`, `currentQuestionIndex`, `question`, `participantCount`, `leaderboard`
+- `control_connected`: Initial state after connecting; includes `roomId`, `state`, `quizTitle`, `totalQuestions`, `currentQuestionIndex`, `question`, `participantCount`, `reconnectingCount`, `leaderboard`
 - `sessions_list`: List of active sessions when no `roomId` was provided
 - `game_started`: Quiz started; includes `questionIndex` and `question`
 - `question_started`: Next question is active; includes `questionIndex` and `question`
 - `question_results`: Question ended; includes `questionIndex`, `answers`, and `leaderboard`
 - `answer_count`: Live count of submitted answers during a question
-- `participant_joined` / `participant_left`: Participant count updates
+- `participant_joined` / `participant_left`: Participant count updates, as above
+- `participants_list`: Reply to `get_participants`; each entry has `id`, `name`, `score` and `connected`
 
 **Server → Participant (`quiz-client.js`):**
-- `joined`: Successfully joined; includes `participantId` and `quizTitle`
-- `question`: New question available; includes `questionIndex`, `totalQuestions`, `question`, `startTime`
+- `joined`: Successfully joined; includes `participantId`, `quizTitle` and `resumeToken` (a secret
+  sent only to this participant, kept in the tab's `sessionStorage`, and used by `rejoin_room`)
+- `rejoined`: Reply to a successful `rejoin_room`; includes `participantId`, `quizTitle`, `state`
+  and `answeredQuestions`, followed by the current `question`, `results` or `game_ended`
+- `rejoin_failed`: The token is unknown or expired, or the room is gone. Join again as a new participant
+- `question`: New question available; includes `questionIndex`, `totalQuestions`, `question`, `startTime`,
+  and `alreadyAnswered` when it is replayed to somebody who has already answered
 - `results`: Round results with `leaderboard`, `questionIndex`, and `waiting`
 - `game_ended`: Final results; includes `leaderboard`
 
@@ -597,6 +610,9 @@ Messages that open a conversation (`create_room`, `join_room`, `control_connect`
 
 **Server → Any Client:**
 - `error`: Error message from the server
+
+A participant socket that another connection takes over with the same resume token is
+closed with code `4000`; the join page does not reconnect after it.
 
 ## Development
 

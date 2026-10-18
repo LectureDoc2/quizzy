@@ -6,6 +6,8 @@ import {
   EMPTY_ROOM_TTL_MS,
   ENDED_ROOM_TTL_MS,
   ABSOLUTE_ROOM_TTL_MS,
+  DETACHED_TTL_MS,
+  DETACHED_CAP_MIN,
   MAX_ROOMS
 } from '../src/rooms.js';
 
@@ -788,5 +790,265 @@ describe('Question statistics (post-game export)', () => {
     const stats = room.getStatistics();
     assert.strictEqual(stats.totalQuestions, 2);
     assert.strictEqual(stats.questions.length, 1);
+  });
+});
+
+describe('Participant reattach', () => {
+  const QUIZ = { title: 'Reattach', questions: [
+    { type: 'multiple-choice', text: 'Q1', options: ['A', 'B'], correctIndices: [0] },
+    { type: 'multiple-choice', text: 'Q2', options: ['A', 'B'], correctIndices: [1] }
+  ] };
+  const socket = () => ({ readyState: 1 });
+
+  it('hands every participant a distinct, unguessable resume token', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const a = room.addParticipant(socket(), 'Alice');
+    const b = room.addParticipant(socket(), 'Bob');
+    const ta = room.resumeTokenFor(a.id);
+    const tb = room.resumeTokenFor(b.id);
+    assert.match(ta, /^[A-Za-z0-9_-]{43}$/, '32 random bytes, base64url');
+    assert.notStrictEqual(ta, tb);
+    assert.notStrictEqual(ta, a.id, 'the public id must not be the credential');
+  });
+
+  it('never puts the token anywhere that is broadcast', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const ws = socket();
+    const p = room.addParticipant(ws, 'Alice');
+    room.addParticipant(socket(), 'Bob');
+    const token = room.resumeTokenFor(p.id);
+    room.detachParticipant(ws);
+
+    for (const [what, value] of [
+      ['the participant record', p],
+      ['the leaderboard', room.getLeaderboard()],
+      ['the participant list', room.getParticipantList()],
+      ['the summary', room.getSummary()],
+      ['the statistics', room.getStatistics()]
+    ]) {
+      assert.ok(!JSON.stringify(value).includes(token), `the token leaked into ${what}`);
+    }
+  });
+
+  it('keeps a dropped participant, score and all, instead of deleting them', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const ws = socket();
+    const p = room.addParticipant(ws, 'Alice');
+    room.addParticipant(socket(), 'Bob');
+    room.startGame();
+    room.submitAnswer(p.id, [0]);
+    room.endQuestion();
+    assert.strictEqual(p.score, 100);
+
+    room.detachParticipant(ws);
+    assert.strictEqual(room.getParticipantCount(), 1, 'detached is not connected');
+    assert.strictEqual(room.getReconnectingCount(), 1);
+
+    const fresh = socket();
+    const { participant, supersededWs } = room.reattachParticipant(room.resumeTokenFor(p.id), fresh);
+    assert.strictEqual(participant, p, 'the very same record comes back');
+    assert.strictEqual(participant.score, 100);
+    assert.strictEqual(supersededWs, null);
+    assert.strictEqual(room.participants.get(fresh), p);
+    assert.strictEqual(room.getParticipantCount(), 2);
+    assert.strictEqual(room.getReconnectingCount(), 0);
+  });
+
+  it('scores an answer given before the drop', () => {
+    // endQuestion() credits points via getParticipantById(), which used to
+    // look only at connected participants -- an answer followed by a dropped
+    // connection was silently worth nothing.
+    const room = new Room('ABC123', 'token', QUIZ);
+    const ws = socket();
+    const p = room.addParticipant(ws, 'Alice');
+    room.addParticipant(socket(), 'Bob');
+    room.startGame();
+    room.submitAnswer(p.id, [0]);
+    room.detachParticipant(ws);
+    const results = room.endQuestion();
+
+    assert.strictEqual(p.score, 100);
+    assert.strictEqual(p.answers.length, 1);
+    assert.strictEqual(results.leaderboard.find((e) => e.id === p.id).score, 100);
+  });
+
+  it('keeps reconnecting participants on the leaderboard, without saying so', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const ws = socket();
+    const p = room.addParticipant(ws, 'Alice');
+    room.addParticipant(socket(), 'Bob');
+    room.detachParticipant(ws);
+
+    const board = room.getLeaderboard();
+    assert.deepStrictEqual(board.map((e) => e.name).sort(), ['Alice', 'Bob']);
+    assert.deepStrictEqual(Object.keys(board.find((e) => e.id === p.id)).sort(), ['id', 'name', 'score'],
+      'the board goes to every participant, so it must not say who is offline');
+
+    const list = room.getParticipantList();
+    assert.strictEqual(list.find((e) => e.id === p.id).connected, false);
+  });
+
+  it('does not wait for a detached participant before auto-ending', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    let ended = false;
+    room.onAutoEnd = () => { ended = true; };
+    const ws = socket();
+    room.addParticipant(ws, 'Alice');
+    const bob = room.addParticipant(socket(), 'Bob');
+    room.startGame();
+    room.detachParticipant(ws);
+
+    assert.strictEqual(room.countAwaitedAnswers(), 1);
+    room.submitAnswer(bob.id, [0]);
+    assert.strictEqual(ended, true, 'a phone in a lift must not hold the question open');
+  });
+
+  it('remembers that a returning participant already answered', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const ws = socket();
+    const p = room.addParticipant(ws, 'Alice');
+    room.addParticipant(socket(), 'Bob');
+    room.startGame();
+    room.submitAnswer(p.id, [1]);
+    room.detachParticipant(ws);
+    room.reattachParticipant(room.resumeTokenFor(p.id), socket());
+
+    assert.ok(room.currentAnswers.has(p.id));
+    assert.strictEqual(room.submitAnswer(p.id, [0]), false, 'a second answer must be refused');
+  });
+
+  it('refuses unknown, malformed and expired tokens', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const ws = socket();
+    const p = room.addParticipant(ws, 'Alice');
+    const token = room.resumeTokenFor(p.id);
+    const t0 = 1_000_000;
+    room.detachParticipant(ws, t0);
+
+    for (const bad of ['nope', '', null, undefined, 42, {}, p.id, '__proto__']) {
+      assert.strictEqual(room.reattachParticipant(bad, socket(), t0), null, `accepted ${String(bad)}`);
+    }
+    assert.strictEqual(room.reattachParticipant(token, socket(), t0 + DETACHED_TTL_MS), null,
+      'an expired token must be refused even before the sweep has run');
+    assert.strictEqual(room.getReconnectingCount(), 0, 'and the expired record forgotten');
+    assert.strictEqual(room.resumeTokenFor(p.id), undefined);
+  });
+
+  it('hands over a still-attached participant and names the socket it replaced', () => {
+    // A half-open connection the heartbeat has not yet caught, or a duplicated
+    // tab: the newest connection wins.
+    const room = new Room('ABC123', 'token', QUIZ);
+    const old = socket();
+    const p = room.addParticipant(old, 'Alice');
+    const fresh = socket();
+    const { participant, supersededWs } = room.reattachParticipant(room.resumeTokenFor(p.id), fresh);
+
+    assert.strictEqual(participant, p);
+    assert.strictEqual(supersededWs, old);
+    assert.ok(!room.participants.has(old), 'the old socket must no longer speak for anybody');
+    assert.strictEqual(room.participants.get(fresh), p);
+    assert.strictEqual(room.detachParticipant(old), null,
+      'the old socket closing later must not detach the participant who just came back');
+    assert.strictEqual(room.getParticipantCount(), 1);
+  });
+
+  it('sweeps detached participants once the retention window has passed', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const ws1 = socket();
+    const ws2 = socket();
+    const early = room.addParticipant(ws1, 'Alice');
+    const late = room.addParticipant(ws2, 'Bob');
+    room.detachParticipant(ws1, 0);
+    room.detachParticipant(ws2, 60_000);
+
+    assert.strictEqual(room.sweepDetached(DETACHED_TTL_MS - 1), 0);
+    assert.strictEqual(room.sweepDetached(DETACHED_TTL_MS), 1);
+    assert.strictEqual(room.getParticipantById(early.id), null);
+    assert.ok(room.getParticipantById(late.id));
+    assert.strictEqual(room.resumeTokenFor(early.id), undefined, 'the token goes with the record');
+  });
+
+  it('RoomManager.sweep also sweeps the detached participants of live rooms', () => {
+    const manager = new RoomManager();
+    const { room } = manager.openRoom('presenter', QUIZ);
+    room.addPresenter({ readyState: 1 }); // keeps the room itself alive
+    const ws = socket();
+    room.addParticipant(ws, 'Alice');
+    room.detachParticipant(ws, Date.now());
+
+    manager.sweep(Date.now() + DETACHED_TTL_MS + 1);
+    assert.ok(manager.getRoom(room.roomId), 'the room is still running');
+    assert.strictEqual(room.getReconnectingCount(), 0);
+  });
+
+  it('caps the detached map so a join-drop loop cannot grow it without bound', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const first = [];
+    for (let i = 0; i < DETACHED_CAP_MIN + 10; i++) {
+      const ws = socket();
+      const p = room.addParticipant(ws, `Bot ${i}`);
+      if (i < 10) first.push(p);
+      room.detachParticipant(ws, i);
+    }
+    assert.strictEqual(room.getReconnectingCount(), DETACHED_CAP_MIN);
+    for (const p of first) {
+      assert.strictEqual(room.getParticipantById(p.id), null, 'the oldest are evicted first');
+    }
+  });
+
+  it('never evicts anybody when a whole hall drops at once', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const sockets = [];
+    for (let i = 0; i < 300; i++) {
+      const ws = socket();
+      room.addParticipant(ws, `Student ${i}`);
+      sockets.push(ws);
+    }
+    for (const ws of sockets) room.detachParticipant(ws);
+    assert.strictEqual(room.getReconnectingCount(), 300);
+  });
+
+  it('a purge cannot be undone by reconnecting', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const ws = socket();
+    const p = room.addParticipant(ws, 'Alice');
+    const token = room.resumeTokenFor(p.id);
+
+    assert.strictEqual(room.purgeParticipant(p.id), true);
+    assert.strictEqual(room.detachParticipant(ws), null, 'the kicked socket closing detaches nobody');
+    assert.strictEqual(room.reattachParticipant(token, socket()), null);
+    assert.strictEqual(room.getLeaderboard().length, 0);
+    assert.strictEqual(room.purgeParticipant(p.id), false);
+  });
+
+  it('a purge also reaches a participant who is currently detached', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const ws = socket();
+    const p = room.addParticipant(ws, 'Alice');
+    const token = room.resumeTokenFor(p.id);
+    room.detachParticipant(ws);
+
+    assert.strictEqual(room.purgeParticipant(p.id), true);
+    assert.strictEqual(room.reattachParticipant(token, socket()), null);
+  });
+
+  it('removeParticipant is final: it takes the token with it', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const ws = socket();
+    const p = room.addParticipant(ws, 'Alice');
+    const token = room.resumeTokenFor(p.id);
+    room.removeParticipant(ws);
+    assert.strictEqual(room.reattachParticipant(token, socket()), null);
+  });
+
+  it('a room with only detached participants counts as empty for expiry', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const ws = socket();
+    room.addParticipant(ws, 'Alice');
+    assert.strictEqual(room.emptySince, null);
+    room.detachParticipant(ws, 5000);
+    assert.strictEqual(room.emptySince, 5000);
+    room.reattachParticipant(room.resumeTokenFor(room.getLeaderboard()[0].id), socket(), 6000);
+    assert.strictEqual(room.emptySince, null);
   });
 });

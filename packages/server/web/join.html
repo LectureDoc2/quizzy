@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Join Quiz</title>
+  <title>Quizzy26 - Join Room</title>
   <link rel="stylesheet" href="/styles/quiz-ui.css">
   <link rel="stylesheet" href="/styles/join.css">
   <link rel="stylesheet" href="/katex/katex.min.css">
@@ -13,6 +13,9 @@
   <div class="container card">
     <h1 id="page-title">Join Quiz</h1>
     <div class="room-code">Room: <span id="room-id">-</span></div>
+    <!-- Outside #content, so that no render* call wipes them. -->
+    <div id="connection-banner" class="connection-banner" role="status" hidden>Connection lost &mdash; reconnecting&hellip;</div>
+    <div id="notice" class="notice" role="status" hidden></div>
     <div id="content"></div>
   </div>
   <script type="module" src="/js/quiz-client.js"></script>

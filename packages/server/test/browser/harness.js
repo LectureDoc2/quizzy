@@ -17,7 +17,7 @@ import { loopbackHost, hostForUrl, originFor } from '../loopback.js';
 import { PROTOCOL_VERSION } from '../../../ld-quiz/src/protocol.js';
 
 /** Handshake messages carry a version; see packages/ld-quiz/src/protocol.js. */
-const HANDSHAKE_TYPES = new Set(['create_room', 'join_room', 'control_connect', 'room_status']);
+const HANDSHAKE_TYPES = new Set(['create_room', 'join_room', 'rejoin_room', 'control_connect', 'room_status']);
 
 export const WEB_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'web');
 

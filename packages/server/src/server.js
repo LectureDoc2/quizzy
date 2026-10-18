@@ -35,7 +35,19 @@ const SERVER_VERSION = JSON.parse(
  * comparison per answer to re-establish something that cannot have changed since
  * the socket was accepted.
  */
-const HANDSHAKE_TYPES = new Set(['create_room', 'join_room', 'control_connect', 'room_status']);
+const HANDSHAKE_TYPES = new Set(['create_room', 'join_room', 'rejoin_room', 'control_connect', 'room_status']);
+
+/**
+ * WebSocket close code for a participant socket that another connection has
+ * taken over with the same resume token -- the same student on a newer socket,
+ * or a duplicated tab. The join page treats it as final and does not
+ * reconnect: two tabs sharing one identity would otherwise take it from each
+ * other forever. Mirrored in web/js/quiz-client.js.
+ */
+const SUPERSEDED_CLOSE_CODE = 4000;
+
+/** Said when a resume token is unknown, expired, or for an unknown room. */
+const REJOIN_FAILED = 'Your previous session has expired. Please join again.';
 
 // There is deliberately no endpoint that lists rooms. This application has no
 // administrator role and no way to enumerate sessions: a room can only be
@@ -379,6 +391,21 @@ function createQuizServer(options = {}) {
     return false;
   }
 
+  /**
+   * Stop counting `ws` against its address's socket quota. Idempotent, because
+   * a superseded socket is released the moment it is superseded -- not when the
+   * heartbeat eventually notices it is dead -- and then closes later.
+   */
+  function releaseSocketQuota(ws) {
+    if (!ws.clientKey || ws.quotaReleased) return;
+    ws.quotaReleased = true;
+    const state = ipState.get(ws.clientKey);
+    if (state) {
+      state.sockets = Math.max(0, state.sockets - 1);
+      releaseKeyState(ws.clientKey);
+    }
+  }
+
   function rejectAndMaybeClose(ws, message = GENERIC_REJECTION) {
     ws.send(JSON.stringify({ type: 'error', message }));
     if (recordFailure(ws)) {
@@ -576,29 +603,7 @@ function createQuizServer(options = {}) {
           ws.roomId = room.roomId;
           ws.role = 'presenter';
 
-          room.onAutoEnd = (results) => {
-            room.broadcastToParticipants({
-              type: 'results',
-              questionIndex: room.currentQuestionIndex,
-              leaderboard: results.leaderboard,
-              waiting: room.currentQuestionIndex < room.quiz.questions.length - 1
-            });
-            room.sendToPresenter({
-              type: 'question_results',
-              questionIndex: room.currentQuestionIndex,
-              answers: Array.from(room.currentAnswers.entries()).map(([pid, data]) => {
-                const p = room.getParticipantById(pid);
-                return {
-                  participantId: pid,
-                  name: p?.name || 'Unknown',
-                  answer: data.answer,
-                  points: results.scores.get(pid) || 0,
-                  timestamp: data.timestamp
-                };
-              }),
-              leaderboard: results.leaderboard
-            });
-          };
+          room.onAutoEnd = (results) => announceResults(room, results);
         
           ws.send(JSON.stringify({
             type: 'room_created',
@@ -699,7 +704,10 @@ function createQuizServer(options = {}) {
             type: 'joined',
             participantId: participant.id,
             roomId: roomId,
-            quizTitle: room.quiz.title
+            quizTitle: room.quiz.title,
+            // The only time the token is sent. It goes to its owner alone and
+            // is never logged; see Room.resumeTokenFor().
+            resumeToken: room.resumeTokenFor(participant.id)
           }));
 
           // Notify presenter
@@ -707,29 +715,87 @@ function createQuizServer(options = {}) {
             type: 'participant_joined',
             participantId: participant.id,
             name: participant.name,
-            count: room.getParticipantCount()
+            count: room.getParticipantCount(),
+            reconnecting: room.getReconnectingCount()
           });
 
-          // Send current question if game is in progress
-          if (room.state === 'question') {
-            const question = room.getPublicQuestion();
+          sendRoomState(ws, room, participant.id);
+          break;
+        }
+
+        /**
+         * Come back as an existing participant after a dropped connection or a
+         * reload, by presenting the resume token handed out in `joined`.
+         *
+         * Every failure -- unknown room, unknown token, expired token -- gets
+         * the same reply, so this is no better an oracle for room ids than
+         * `room_status`. It is deliberately *not* charged to the failure
+         * budget: tokens are 256 bits, so there is nothing to guess, and the
+         * moment a whole hall's tokens expire together (an outage longer than
+         * the retention window) is the moment every phone behind the hall's one
+         * address presents a dead token at once. Charging those would burn the
+         * budget and lock the hall out of joining again. The socket stays open,
+         * so the page can fall back to `room_status` and a fresh join on it.
+         */
+        case 'rejoin_room': {
+          if (ws.role) {
             ws.send(JSON.stringify({
-              type: 'question',
-              questionIndex: room.currentQuestionIndex,
-              totalQuestions: room.quiz.questions.length,
-              question: question,
-              startTime: room.currentQuestionStartTime
+              type: 'error',
+              message: 'This connection has already joined a quiz. Reload the page to join again.'
             }));
-          } else if (room.state === 'results') {
-            // Send results
-            const results = room.getLeaderboard();
-            ws.send(JSON.stringify({
-              type: 'results',
-              questionIndex: room.currentQuestionIndex,
-              leaderboard: results,
-              waiting: room.currentQuestionIndex < room.quiz.questions.length - 1
-            }));
+            return;
           }
+
+          const room = roomManager.getRoom(msg.roomId);
+          const reattached = room ? room.reattachParticipant(msg.resumeToken, ws) : null;
+          if (!reattached) {
+            ws.send(JSON.stringify({ type: 'rejoin_failed', message: REJOIN_FAILED }));
+            return;
+          }
+
+          const { participant, supersededWs } = reattached;
+          ws.roomId = room.roomId;
+          ws.role = 'participant';
+          ws.participantId = participant.id;
+
+          if (supersededWs) {
+            // The participant record has already moved to `ws`, and the old
+            // socket is stripped of its role here, so its eventual close event
+            // finds nothing to detach. Its quota is released now rather than
+            // when it closes: a half-open socket can take the heartbeat a full
+            // minute to notice, and a hall reconnecting at once would otherwise
+            // be refused with "Too many connections" by its own dead sockets.
+            supersededWs.roomId = undefined;
+            supersededWs.role = undefined;
+            supersededWs.participantId = undefined;
+            releaseSocketQuota(supersededWs);
+            try {
+              supersededWs.close(SUPERSEDED_CLOSE_CODE, 'Continued on another connection');
+            } catch { /* already gone */ }
+          }
+
+          ws.send(JSON.stringify({
+            type: 'rejoined',
+            participantId: participant.id,
+            roomId: room.roomId,
+            quizTitle: room.quiz.title,
+            state: room.state,
+            // The participant's own history, so the page can say which
+            // questions closed while it was away rather than silently skipping
+            // ahead. Only ever sent to its owner.
+            answeredQuestions: participant.answers.map((a) => a.questionIndex)
+          }));
+
+          room.sendToPresenter({
+            type: 'participant_joined',
+            participantId: participant.id,
+            name: participant.name,
+            count: room.getParticipantCount(),
+            reconnecting: room.getReconnectingCount(),
+            rejoined: true
+          });
+
+          sendRoomState(ws, room, participant.id);
           break;
         }
 
@@ -763,6 +829,7 @@ function createQuizServer(options = {}) {
             currentQuestionIndex: room.currentQuestionIndex,
             question: room.getCurrentQuestion(),
             participantCount: room.getParticipantCount(),
+            reconnectingCount: room.getReconnectingCount(),
             leaderboard: room.getLeaderboard()
           }));
           break;
@@ -796,30 +863,7 @@ function createQuizServer(options = {}) {
           const room = getRoomForPresenter(ws);
           if (!room) return;
         
-          const results = room.endQuestion();
-        
-          room.broadcastToParticipants({
-            type: 'results',
-            questionIndex: room.currentQuestionIndex,
-            leaderboard: results.leaderboard,
-            waiting: room.currentQuestionIndex < room.quiz.questions.length - 1
-          });
-        
-          room.sendToPresenter({
-            type: 'question_results',
-            questionIndex: room.currentQuestionIndex,
-            answers: Array.from(room.currentAnswers.entries()).map(([pid, data]) => {
-              const p = room.getParticipantById(pid);
-              return {
-                participantId: pid,
-                name: p?.name || 'Unknown',
-                answer: data.answer,
-                points: results.scores.get(pid) || 0,
-                timestamp: data.timestamp
-              };
-            }),
-            leaderboard: results.leaderboard
-          });
+          announceResults(room, room.endQuestion());
           break;
         }
 
@@ -865,7 +909,10 @@ function createQuizServer(options = {}) {
 
         case 'submit_answer': {
           const room = roomManager.getRoom(ws.roomId);
-          if (!room || ws.role !== 'participant') return;
+          // `participants.has(ws)` as well as the role: a socket that has just
+          // been kicked or superseded may still deliver a message or two before
+          // it finishes closing, and it no longer speaks for anybody.
+          if (!room || ws.role !== 'participant' || !room.participants.has(ws)) return;
 
           // Participants are untrusted; reject anything that is not a well-formed
           // answer for the current question rather than storing it and letting it
@@ -911,11 +958,8 @@ function createQuizServer(options = {}) {
         
           ws.send(JSON.stringify({
             type: 'participants_list',
-            participants: Array.from(room.participants.values()).map(p => ({
-              id: p.id,
-              name: p.name,
-              score: p.score
-            }))
+            // Reconnecting participants included, flagged `connected: false`.
+            participants: room.getParticipantList()
           }));
           break;
         }
@@ -923,18 +967,31 @@ function createQuizServer(options = {}) {
         case 'kick_participant': {
           const room = getRoomForPresenter(ws);
           if (!room) return;
-        
-          const participant = room.getParticipantById(msg.participantId);
-          if (participant) {
-            // Find the websocket
-            for (const [pws, p] of room.participants) {
-              if (p.id === msg.participantId) {
-                pws.send(JSON.stringify({ type: 'kicked' }));
-                pws.close();
-                break;
-              }
+
+          let target = null;
+          for (const [pws, p] of room.participants) {
+            if (p.id === msg.participantId) {
+              target = pws;
+              break;
             }
           }
+
+          // Purged -- record and resume token both -- before the socket is
+          // closed. Closing alone would now merely detach them, and a kick would
+          // be undone by the page's own automatic reconnect.
+          if (!room.purgeParticipant(msg.participantId)) break;
+
+          if (target) {
+            safeSend(target, { type: 'kicked' });
+            target.close();
+          }
+
+          room.sendToPresenter({
+            type: 'participant_left',
+            participantId: msg.participantId,
+            count: room.getParticipantCount(),
+            reconnecting: room.getReconnectingCount()
+          });
           break;
         }
 
@@ -953,6 +1010,76 @@ function createQuizServer(options = {}) {
   function getRoomForPresenter(ws) {
     if (ws.role !== 'presenter') return null;
     return roomManager.getRoom(ws.roomId);
+  }
+
+  /**
+   * Bring a participant's page up to where the room is: the open question,
+   * the latest results, or the final board. Shared by a first join (a
+   * latecomer) and a rejoin.
+   *
+   * `alreadyAnswered` is what keeps a student who answered, dropped and came
+   * back from being shown a question they can no longer answer -- the server
+   * would refuse a second answer, so the page must not invite one.
+   */
+  function sendRoomState(ws, room, participantId) {
+    if (room.state === 'question') {
+      safeSend(ws, {
+        type: 'question',
+        questionIndex: room.currentQuestionIndex,
+        totalQuestions: room.quiz.questions.length,
+        question: room.getPublicQuestion(),
+        startTime: room.currentQuestionStartTime,
+        alreadyAnswered: room.currentAnswers.has(participantId)
+      });
+    } else if (room.state === 'results') {
+      const results = room.scoreQuestion(room.getCurrentQuestion());
+      safeSend(ws, resultsMessage(room, participantId, results, room.getLeaderboard()));
+    } else if (room.state === 'ended') {
+      // Only reachable by a rejoin: a first join to a finished room is refused.
+      safeSend(ws, { type: 'game_ended', leaderboard: room.getLeaderboard() });
+    }
+  }
+
+  /**
+   * A participant's view of a closed question: the shared leaderboard plus
+   * their own answer feedback (see Room.getAnswerFeedback()).
+   */
+  function resultsMessage(room, participantId, results, leaderboard) {
+    return {
+      type: 'results',
+      questionIndex: room.currentQuestionIndex,
+      leaderboard,
+      waiting: room.currentQuestionIndex < room.quiz.questions.length - 1,
+      feedback: room.getAnswerFeedback(participantId, results)
+    };
+  }
+
+  /**
+   * Tell everybody that the current question has closed. Shared by the
+   * presenter's End Question and by the room closing a question by itself
+   * (timer, or everybody answered). Each participant gets a message of their
+   * own, since the feedback in it is about their answer.
+   */
+  function announceResults(room, results) {
+    for (const [ws, participant] of room.participants) {
+      safeSend(ws, resultsMessage(room, participant.id, results, results.leaderboard));
+    }
+
+    room.sendToPresenter({
+      type: 'question_results',
+      questionIndex: room.currentQuestionIndex,
+      answers: Array.from(room.currentAnswers.entries()).map(([pid, data]) => {
+        const p = room.getParticipantById(pid);
+        return {
+          participantId: pid,
+          name: p?.name || 'Unknown',
+          answer: data.answer,
+          points: results.scores.get(pid) || 0,
+          timestamp: data.timestamp
+        };
+      }),
+      leaderboard: results.leaderboard
+    });
   }
 
   /**
@@ -991,13 +1118,20 @@ function createQuizServer(options = {}) {
       const room = roomManager.getRoom(ws.roomId);
       if (room) {
         if (ws.role === 'participant') {
-          const participant = room.removeParticipant(ws);
+          // Detached, not removed: the participant may come back with their
+          // resume token. See Room.detachParticipant().
+          const participant = room.detachParticipant(ws);
           if (participant) {
+            // Still `participant_left`, not a new message type: decks in the
+            // wild bundle a component that updates its lobby count on exactly
+            // this message, and `count` keeps meaning "connected right now".
             room.sendToPresenter({
               type: 'participant_left',
               participantId: participant.id,
               name: participant.name,
-              count: room.getParticipantCount()
+              count: room.getParticipantCount(),
+              reconnecting: room.getReconnectingCount(),
+              detached: true
             });
           }
         } else if (ws.role === 'presenter') {
@@ -1012,13 +1146,7 @@ function createQuizServer(options = {}) {
       }
     }
 
-    if (ws.clientKey) {
-      const state = ipState.get(ws.clientKey);
-      if (state) {
-        state.sockets = Math.max(0, state.sockets - 1);
-        releaseKeyState(ws.clientKey);
-      }
-    }
+    releaseSocketQuota(ws);
   }
 
   roomManager.onRoomRemoved = (room) => {
@@ -1152,6 +1280,8 @@ export {
   limitsFromEnv,
   GENERIC_REJECTION,
   QUIZ_FINISHED,
+  REJOIN_FAILED,
+  SUPERSEDED_CLOSE_CODE,
   DEFAULT_LIMITS,
   MAX_QUIZ_SIZE,
   SERVER_VERSION,

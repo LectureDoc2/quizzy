@@ -31,12 +31,48 @@ const ENDED_ROOM_TTL_MS =
 /** Backstop: no room outlives this, whatever its state or connections. */
 const ABSOLUTE_ROOM_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 
+/**
+ * How long a participant whose connection dropped can still come back as
+ * themselves -- same name, same score, same answers -- by presenting their
+ * resume token.
+ *
+ * This is a data-protection knob as much as a memory one: for this long after
+ * a socket closes, the name and score of somebody who is no longer connected
+ * are still held in RAM. Fifteen minutes is enough to walk out of a wifi
+ * shadow, reload a tab, or have an iOS tab discarded and restored, and it is
+ * the same shape and default as ENDED_ROOM_RETENTION_MINUTES. The room's own
+ * TTLs above remain the outer bound.
+ */
+const DETACHED_TTL_MS =
+  Number(process.env.DETACHED_RETENTION_MINUTES || 15) * 60 * 1000;
+
+/**
+ * Detached participants are capped, so that a join-drop-join loop cannot grow
+ * the map without bound inside the retention window. Sized relative to the
+ * room's peak attendance -- a hall-wide wifi drop detaches everybody at once
+ * and must not evict anybody -- with a floor for small rooms.
+ */
+const DETACHED_CAP_FACTOR = 3;
+const DETACHED_CAP_MIN = 30;
+
 class Room {
   constructor(roomId, presenterToken, quiz) {
     this.roomId = roomId;
     this.presenterToken = presenterToken;
     this.quiz = quiz;
     this.participants = new Map(); // ws -> { name, id, answers: [], score }
+    // Participants whose socket closed, kept for DETACHED_TTL_MS so that they
+    // can come back as themselves. Insertion order is detach order, which is
+    // what the cap evicts by. See detachParticipant().
+    this.detached = new Map(); // participantId -> { participant, detachedAt }
+    // The resume credential. Kept here rather than on the participant record,
+    // because that record is what leaderboards and participant lists are built
+    // from -- a token stored on it would be one careless spread away from being
+    // broadcast to the whole room. participantId cannot double as the
+    // credential for exactly that reason: it *is* broadcast.
+    this.resumeTokens = new Map(); // resumeToken -> participantId
+    this.resumeTokenById = new Map(); // participantId -> resumeToken
+    this.peakParticipants = 0;
     this.state = 'lobby'; // lobby, question, results, ended
     this.currentQuestionIndex = -1;
     this.currentQuestionStartTime = null;
@@ -81,30 +117,198 @@ class Room {
   addParticipant(ws, name) {
     const id = `p_${Date.now()}_${randomBytes(9).toString('base64url')}`;
     const participant = { id, name, score: 0, answers: [] };
+    const resumeToken = randomBytes(32).toString('base64url');
     this.participants.set(ws, participant);
+    this.resumeTokens.set(resumeToken, id);
+    this.resumeTokenById.set(id, resumeToken);
+    this.peakParticipants = Math.max(this.peakParticipants, this.participants.size);
     this.updateEmptySince();
     return participant;
   }
 
+  /**
+   * The secret that lets this participant reattach after a dropped connection.
+   * Sent once, to its owner, in `joined`; never broadcast and never logged.
+   */
+  resumeTokenFor(participantId) {
+    return this.resumeTokenById.get(participantId);
+  }
+
+  /**
+   * Remove a participant for good: no record, no resume token, no way back.
+   * For a deliberate exit; a dropped connection goes through
+   * detachParticipant() instead.
+   */
   removeParticipant(ws) {
     const participant = this.participants.get(ws);
     if (participant) {
       this.participants.delete(ws);
+      this.forgetResumeToken(participant.id);
       this.updateEmptySince();
       return participant;
     }
     return null;
   }
 
+  /**
+   * A participant's socket closed: keep them, unconnected, so they can come
+   * back with their score intact.
+   *
+   * Deleting the record here -- which is what used to happen -- made every
+   * wifi hiccup cost the student their place in the quiz, irreversibly, even
+   * though the page that could have reconnected was still loaded.
+   *
+   * Detached participants are deliberately absent from `participants`, so
+   * everything that is about who is *present* -- the awaited-answer count that
+   * auto-ends a question, the connection count that drives room expiry --
+   * ignores them without further code. A question must never be held open for
+   * somebody whose phone is in a lift.
+   *
+   * @returns {object|null} The participant, or null if `ws` was not one.
+   */
+  detachParticipant(ws, now = Date.now()) {
+    const participant = this.participants.get(ws);
+    if (!participant) return null;
+    this.participants.delete(ws);
+    this.detached.set(participant.id, { participant, detachedAt: now });
+    this.enforceDetachedCap();
+    this.updateEmptySince(now);
+    return participant;
+  }
+
+  /**
+   * Put the participant holding `resumeToken` back in the room, on `ws`.
+   *
+   * Normally they are found among the detached. They may instead still be
+   * attached to an old socket that the server has not yet noticed is dead --
+   * the heartbeat takes up to two intervals to give up on a half-open
+   * connection -- or to another tab that holds the same token. Either way the
+   * newest connection wins, and the caller is handed the superseded socket so
+   * it can be closed.
+   *
+   * The record moves to the new socket *before* the caller closes the old one,
+   * which matters: the old socket's close would otherwise detach the
+   * participant who has just come back.
+   *
+   * @returns {{participant: object, supersededWs: object|null}|null} null when
+   *   the token is unknown, expired, or not a string.
+   */
+  reattachParticipant(resumeToken, ws, now = Date.now()) {
+    if (typeof resumeToken !== 'string') return null;
+    const id = this.resumeTokens.get(resumeToken);
+    if (id === undefined) return null;
+
+    let participant = null;
+    let supersededWs = null;
+    const entry = this.detached.get(id);
+    if (entry) {
+      // Checked here as well as in the sweep, which runs only every few minutes.
+      if (now - entry.detachedAt >= DETACHED_TTL_MS) {
+        this.purgeParticipant(id);
+        return null;
+      }
+      this.detached.delete(id);
+      participant = entry.participant;
+    } else {
+      for (const [oldWs, p] of this.participants) {
+        if (p.id === id) {
+          supersededWs = oldWs;
+          participant = p;
+          break;
+        }
+      }
+      if (!participant) return null;
+      this.participants.delete(supersededWs);
+    }
+
+    this.participants.set(ws, participant);
+    this.peakParticipants = Math.max(this.peakParticipants, this.participants.size);
+    this.updateEmptySince(now);
+    return { participant, supersededWs };
+  }
+
+  /**
+   * Forget a participant entirely, connected or not. A kick goes through here,
+   * so that it cannot be undone by reconnecting.
+   *
+   * @returns {boolean} whether there was anybody to forget.
+   */
+  purgeParticipant(id) {
+    let found = this.detached.delete(id);
+    for (const [ws, p] of this.participants) {
+      if (p.id === id) {
+        this.participants.delete(ws);
+        found = true;
+        break;
+      }
+    }
+    this.forgetResumeToken(id);
+    this.updateEmptySince();
+    return found;
+  }
+
+  forgetResumeToken(id) {
+    const token = this.resumeTokenById.get(id);
+    if (token === undefined) return;
+    this.resumeTokenById.delete(id);
+    this.resumeTokens.delete(token);
+  }
+
+  /** Drop detached participants who have been gone longer than the TTL. */
+  sweepDetached(now = Date.now()) {
+    const expired = [];
+    for (const [id, entry] of this.detached) {
+      if (now - entry.detachedAt >= DETACHED_TTL_MS) expired.push(id);
+    }
+    for (const id of expired) this.purgeParticipant(id);
+    return expired.length;
+  }
+
+  detachedCap() {
+    return Math.max(DETACHED_CAP_MIN, DETACHED_CAP_FACTOR * this.peakParticipants);
+  }
+
+  enforceDetachedCap() {
+    const cap = this.detachedCap();
+    while (this.detached.size > cap) {
+      const oldest = this.detached.keys().next().value;
+      this.purgeParticipant(oldest);
+    }
+  }
+
   getParticipantById(id) {
     for (const [, p] of this.participants) {
       if (p.id === id) return p;
     }
-    return null;
+    // Somebody who answered and then dropped must still be scored for that
+    // answer: endQuestion() credits points through this lookup.
+    const entry = this.detached.get(id);
+    return entry ? entry.participant : null;
   }
 
+  /** Participants currently connected. Detached ones are not counted. */
   getParticipantCount() {
     return this.participants.size;
+  }
+
+  /** Participants whose connection dropped and who may still come back. */
+  getReconnectingCount() {
+    return this.detached.size;
+  }
+
+  /**
+   * Everybody the presenter should know about, with whether they are
+   * connected right now. Never includes the resume token.
+   */
+  getParticipantList() {
+    const list = [];
+    for (const [, p] of this.participants) {
+      list.push({ id: p.id, name: p.name, score: p.score, connected: true });
+    }
+    for (const [, { participant: p }] of this.detached) {
+      list.push({ id: p.id, name: p.name, score: p.score, connected: false });
+    }
+    return list;
   }
 
   addPresenter(ws) {
@@ -216,9 +420,9 @@ class Room {
 
     // Close the question as soon as nobody who is still in the room is being
     // waited for. Comparing currentAnswers.size against participants.size was
-    // wrong in one direction that never healed: a participant is dropped from
-    // the room the instant their socket closes, but their answer stays in
-    // currentAnswers, so after any mid-question disconnect the two counts
+    // wrong in one direction that never healed: a participant leaves
+    // `participants` the instant their socket closes (they are detached, see
+    // detachParticipant()), but their answer stays in currentAnswers, so after any mid-question disconnect the two counts
     // could not become equal again and the presenter had to end every
     // remaining question by hand. Counting who has *not* answered instead
     // ignores answers from people who have left, which is the intent.
@@ -287,8 +491,9 @@ class Room {
    * Snapshot how a question was answered, for the post-game export.
    *
    * Recorded when the question closes rather than derived from participants at
-   * the end, because participants are removed from the room the moment their
-   * socket drops: anyone who shuts their laptop before the last question would
+   * the end, because participants do not stay in the room forever once their
+   * socket drops -- a detached participant is purged after DETACHED_TTL_MS:
+   * anyone who shuts their laptop before the last question would
    * otherwise silently vanish from the statistics, quietly biasing exactly the
    * numbers the lecturer is trying to read.
    *
@@ -376,6 +581,7 @@ class Room {
   scoreQuestion(question) {
     const scores = new Map();
     const rankings = [];
+    const ranks = new Map(); // estimation only: participantId -> 1-based place
 
     if (question.type === 'multiple-choice') {
       /* Guarded like the identical read in getQuestionStatistics. Validation
@@ -419,6 +625,8 @@ class Room {
         scores.set(entry.participantId, points);
       });
 
+      entries.forEach((entry, index) => ranks.set(entry.participantId, index + 1));
+
       rankings.push(...entries.map((e, i) => ({
         participantId: e.participantId,
         points: scores.get(e.participantId),
@@ -429,7 +637,54 @@ class Room {
     // Get leaderboard after this question
     const leaderboard = this.getLeaderboard();
 
-    return { scores, rankings, leaderboard };
+    return { scores, rankings, ranks, leaderboard };
+  }
+
+  /**
+   * How one participant did on the question that just closed, for their own
+   * results screen.
+   *
+   * Deliberately the minimum: the question itself (so it can be shown again),
+   * the participant's own answer, and a verdict -- right or wrong, or for an
+   * estimate how it ranked among everybody's. It never carries the correct
+   * answer (revealing it is the presenter's call, on the projector), the
+   * distance to it (which together with one's own answer *is* the correct
+   * answer), or anything about another participant beyond a count.
+   *
+   * @param {string} participantId
+   * @param {{scores: Map, ranks: Map}} results scoreQuestion()'s result for the
+   *   current question; passed in so a room full of participants is scored
+   *   once, not once per participant.
+   */
+  getAnswerFeedback(participantId, results) {
+    const question = this.getCurrentQuestion();
+    if (!question) return null;
+
+    const submitted = this.currentAnswers.get(participantId);
+    const feedback = {
+      // Whitelisted rather than getPublicQuestion(): that one passes through
+      // whatever else the quiz author put on the question.
+      question: {
+        type: question.type,
+        text: question.text,
+        options: Array.isArray(question.options) ? question.options : undefined
+      },
+      answered: submitted !== undefined,
+      answer: submitted?.answer ?? null
+    };
+
+    if (question.type === 'multiple-choice') {
+      feedback.isCorrect = feedback.answered && (results.scores.get(participantId) || 0) > 0;
+    } else if (question.type === 'estimation') {
+      feedback.answerCount = results.ranks.size;
+      // A meaningless rank when the quiz's correct answer is unusable; see
+      // scoreQuestion().
+      feedback.rank = feedback.answered && Number.isFinite(Number(question.correctAnswer))
+        ? results.ranks.get(participantId) ?? null
+        : null;
+    }
+
+    return feedback;
   }
 
   nextQuestion() {
@@ -441,9 +696,21 @@ class Room {
     return false;
   }
 
+  /**
+   * Everybody's score, including participants who are reconnecting.
+   *
+   * Including them is deliberate, and the same argument as the one made for
+   * recordQuestionStatistics(): otherwise somebody whose phone drops for ten
+   * seconds vanishes from the board and every rank below theirs jumps, then
+   * jumps back when they return. Nothing here says who is offline -- this list
+   * goes to every participant.
+   */
   getLeaderboard() {
     const list = [];
     for (const [, p] of this.participants) {
+      list.push({ id: p.id, name: p.name, score: p.score });
+    }
+    for (const [, { participant: p }] of this.detached) {
       list.push({ id: p.id, name: p.name, score: p.score });
     }
     list.sort((a, b) => b.score - a.score);
@@ -605,6 +872,8 @@ class RoomManager {
     for (const [roomId, room] of this.rooms) {
       if (room.isExpired(now)) {
         removed.push(roomId);
+      } else {
+        room.sweepDetached(now);
       }
     }
     for (const roomId of removed) this.removeRoom(roomId);
@@ -646,5 +915,7 @@ export {
   EMPTY_ROOM_TTL_MS,
   ENDED_ROOM_TTL_MS,
   ABSOLUTE_ROOM_TTL_MS,
+  DETACHED_TTL_MS,
+  DETACHED_CAP_MIN,
   MAX_ROOMS
 };

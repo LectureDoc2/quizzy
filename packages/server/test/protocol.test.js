@@ -213,7 +213,7 @@ describe('Integration contract', () => {
     });
 
     it('checks participants and control windows too, not only presenters', async () => {
-      for (const type of ['join_room', 'control_connect', 'room_status']) {
+      for (const type of ['join_room', 'rejoin_room', 'control_connect', 'room_status']) {
         const ws = await connect();
         const reply = await replyTo(ws, {
           type,

@@ -171,6 +171,50 @@ describe('Join page (browser, full stack)', () => {
     assert.strictEqual(seen.heading, 'Networking Basics');
   });
 
+  it('shows the closed question with the verdict on the student\'s answer', async () => {
+    const page = await openJoinPage();
+    await page.waitForSelector('#join-form');
+    await page.fill('#name', 'Curious Student');
+    await page.click('#join-btn');
+    await page.waitForSelector('.waiting');
+
+    presenter.sendJson({ type: 'start_game' });
+    await page.waitForSelector('.option');
+    await page.click('.option[data-index="1"]');
+    await page.click('#submit-btn'); // the only participant: the question closes
+    await page.waitForSelector('.feedback');
+
+    const choice = await page.evaluate(() => ({
+      question: document.querySelector('.feedback__question').textContent.trim(),
+      verdict: document.querySelector('.feedback__verdict').textContent.trim(),
+      selected: [...document.querySelectorAll('.feedback__option')]
+        .map((o) => o.classList.contains('option--selected')),
+      verdictBelowOptions: !!document.querySelector('.feedback__options + .feedback__verdict'),
+      verdictColor: getComputedStyle(document.querySelector('.feedback__verdict')).color
+    }));
+    assert.strictEqual(choice.question, 'Pick one');
+    assert.strictEqual(choice.verdict, 'Not quite.');
+    assert.deepStrictEqual(choice.selected, [false, true],
+      'only the student\'s own choice is marked, never the correct one');
+    assert.ok(choice.verdictBelowOptions, 'the verdict goes below the options');
+    assert.strictEqual(choice.verdictColor, 'rgb(185, 28, 28)', '"Not quite." is red');
+
+    presenter.sendJson({ type: 'next_question' });
+    await page.waitForSelector('#answer');
+    await page.fill('#answer', '120');
+    await page.click('#answer-form button');
+    await page.waitForSelector('.feedback__estimate');
+
+    const estimate = await page.evaluate(() => ({
+      verdict: document.querySelector('.feedback__verdict').textContent.trim(),
+      detail: document.querySelector('.feedback__estimate').textContent.trim(),
+      verdictColor: getComputedStyle(document.querySelector('.feedback__verdict')).color
+    }));
+    assert.strictEqual(estimate.verdict, 'Yours was the only estimate.');
+    assert.strictEqual(estimate.verdictColor, 'rgb(21, 128, 61)', 'a scoring estimate is green');
+    assert.strictEqual(estimate.detail, 'Your answer: 120');
+  });
+
   it('tells a student the quiz has finished rather than blaming the room code', async () => {
     presenter.sendJson({ type: 'start_game' });
     await presenter.take('game_started');

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quizzy26 - Practice</title>
+  <link rel="stylesheet" href="/styles/quiz-ui.css">
+  <link rel="stylesheet" href="/styles/join.css">
+</head>
+<body>
+  <div class="container container--wide card">
+    <h1>Practice on your own</h1>
+    <p class="practice__intro">
+      Pick a quiz and play it by yourself. Each question runs on its own timer;
+      after every answer you see how you did, and the next question follows
+      on its own.
+    </p>
+    <div id="practice-list" class="practice__list">
+      <div class="waiting">
+        <div class="spinner"></div>
+        <p>Loading quizzes&hellip;</p>
+      </div>
+    </div>
+    <p class="join-privacy">
+      So that you can carry on if your connection drops, a game keeps a random
+      session key in its tab. Nothing else is stored, and the key is deleted
+      when the quiz ends or the tab is closed.
+    </p>
+  </div>
+  <script type="module" src="/js/practice-list.js"></script>
+</body>
+</html>

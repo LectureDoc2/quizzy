@@ -7,7 +7,7 @@
  * HTML parser and a real policy engine.
  */
 import { chromium } from 'playwright';
-import { createServer } from 'http';
+import { createServer, request } from 'http';
 import { readFileSync } from 'fs';
 import { extname, join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -17,7 +17,9 @@ import { loopbackHost, hostForUrl, originFor } from '../loopback.js';
 import { PROTOCOL_VERSION } from '../../../ld-quiz/src/protocol.js';
 
 /** Handshake messages carry a version; see packages/ld-quiz/src/protocol.js. */
-const HANDSHAKE_TYPES = new Set(['create_room', 'join_room', 'rejoin_room', 'control_connect', 'room_status']);
+const HANDSHAKE_TYPES = new Set([
+  'create_room', 'join_room', 'rejoin_room', 'control_connect', 'room_status', 'start_practice'
+]);
 
 export const WEB_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'web');
 
@@ -44,13 +46,25 @@ const CONTENT_TYPES = {
 /**
  * Serve packages/server/web the way Caddy does in production: the application
  * at the root with its page scripts under /js/, the embeddable component under
- * /component/, and /ws proxied to the backend.
+ * /component/, and /ws and /api/* proxied to the backend.
  *
  * @param {number|null} backendPort Port to proxy /ws to, or null for no proxy.
  */
 export async function startStaticServer(backendPort = null) {
   const server = createServer((req, res) => {
     let path = req.url.split('?')[0];
+    if (backendPort !== null && path.startsWith('/api/')) {
+      const upstream = request(
+        { host: loopbackHost(), port: backendPort, path: req.url, method: req.method, headers: req.headers },
+        (reply) => {
+          res.writeHead(reply.statusCode, reply.headers);
+          reply.pipe(res);
+        }
+      );
+      upstream.on('error', () => res.writeHead(502).end('backend unavailable'));
+      req.pipe(upstream);
+      return;
+    }
     let root = WEB_ROOT;
     if (path.startsWith('/component/')) {
       // The component is bundled into dist/component/ in production; the tests

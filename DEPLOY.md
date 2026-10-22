@@ -493,6 +493,8 @@ After=network.target
 Type=simple
 WorkingDirectory=/srv/quizzy
 ExecStart=/usr/bin/node packages/server/src/server.js
+# Re-reads the practice catalog without ending running lectures.
+ExecReload=/bin/kill -HUP $MAINPID
 Environment=NODE_ENV=production
 Environment=PORT=3000
 User=quizzy
@@ -632,6 +634,21 @@ sudo systemctl restart quizzy-backend
 Caddy only needs restarting if you changed the `Caddyfile` or a TLS snippet, in
 which case repeat 10a first and then `sudo systemctl reload caddy`.
 
+### 13a. Changing the practice quizzes
+
+The practice catalog (`quizzes/practice.json`, or the file `PRACTICE_CATALOG`
+names) and the quiz files it lists are read when the backend starts and again on
+reload. A reload, unlike a restart, leaves every running lecture alone:
+
+```bash
+sudo systemctl reload quizzy-backend
+sudo journalctl -u quizzy-backend -n 20   # "Practice catalog …: N quiz(zes) available."
+```
+
+An entry that cannot be loaded is skipped and named in the log; the rest of the
+catalog still loads. Games already in progress finish with the quiz they started
+with.
+
 ---
 
 ## 14. Troubleshooting quick reference
@@ -673,6 +690,12 @@ which case repeat 10a first and then `sudo systemctl reload caddy`.
   for the same purpose — per tab, never sent anywhere else, and deleted when the quiz
   ends or the tab is closed. Mention both in your privacy notice
   (Datenschutzerklärung); see `PARTICIPANT-REATTACH.md` for the reasoning.
+- **`PRACTICE_CATALOG`** (default `quizzes/practice.json` in the checkout) names the
+  practice catalog; see "Practice Mode" in the README. A missing file just turns
+  practice mode off. Practice is anonymous — no names are collected — and a game is
+  dropped as soon as it ends. List only quizzes meant for practice: students can
+  replay a quiz as often as they like, and with a right/wrong verdict after each
+  answer a determined one can work out the multiple-choice answers by trial.
 ### Sizing the abuse limits for your audience
 
 **Read this before the first large lecture.** Every "per IP" limit in the backend
@@ -692,6 +715,7 @@ thing to lower if it is a single classroom exposed to the open internet.
 |---|---|---|
 | `MAX_SOCKETS_PER_IP` | 500 | Concurrent connections per address: one per participant, plus presenter and control window |
 | `MAX_ROOMS_PER_IP` | 25 | Concurrent rooms per address: one per lecture in progress |
+| `MAX_PRACTICE_GAMES_PER_IP` | 300 | Concurrent practice games per address, counted apart from `MAX_ROOMS_PER_IP` so that practising never stops a lecture from starting. A game a student abandons counts for `DETACHED_RETENTION_MINUTES` |
 | `MAX_FAILED_ATTEMPTS_PER_WINDOW` | 50 | Wrong room ids per address per minute — a six-character code invites typos, and they all come from the same address |
 | `FAILED_ATTEMPT_WINDOW_MS` | 60000 | The window for the above |
 | `MAX_MESSAGES_PER_WINDOW` | 60 | Messages per **socket** per window; this one is genuinely per client |

@@ -6,7 +6,7 @@
  * embedding pages are unchanged:
  *
  *   dist/
- *   ├── index.html, demo.html, join.html, control.html, tools.html
+ *   ├── index.html, demo.html, join.html, practice.html, control.html, tools.html
  *   ├── client/         bundled ES modules (moving "latest" alias)
  *   ├── client/<ver>/   the same bundles, immutable and safe to pin
  *   ├── styles/         stylesheets of the join/control pages
@@ -88,6 +88,8 @@ const APP_ENTRIES = [
        meant a second copy of the validator on its way out of sync with the one
        the server enforces. */
     ["packages/server/web/js/quiz-tools.js", "js/quiz-tools"],
+    // The practice page's list of quizzes; see web/practice.html.
+    ["packages/server/web/js/practice-list.js", "js/practice-list"],
 ].map(([from, out]) => ({ in: join(ROOT, from), out }));
 
 /** Files and directories copied verbatim: [source, destination]. */
@@ -96,6 +98,7 @@ const COPIES = [
     ["packages/server/web/background.png", "app/background.png"],
     ["packages/server/web/demo.html", "app/demo.html"],
     ["packages/server/web/join.html", "app/join.html"],
+    ["packages/server/web/practice.html", "app/practice.html"],
     ["packages/server/web/tools.html", "app/tools.html"],
     ["packages/server/web/control.html", "app/control.html"],
     ["packages/server/web/styles", "app/styles"],
@@ -168,5 +171,5 @@ if (WATCH) {
     console.log(`Build complete: ${DIST}`);
     console.log(`  component, immutable: /component/${CLIENT_VERSION}/ld-quiz.js`);
     console.log(`  component, moving:    /component/ld-quiz.js`);
-    console.log(`  application:          / (index, demo, join, control, tools)`);
+    console.log(`  application:          / (index, demo, join, practice, control, tools)`);
 }

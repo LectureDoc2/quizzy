@@ -10,6 +10,7 @@ A real-time, embeddable quiz application designed for integration with any HTML-
 - **Presenter Control**: Separate control window with session management and reconnection support
 - **Participant QR Code Join**: Participants scan a QR code or use a short link to join
 - **Participant Reconnect**: A participant whose connection drops, or who reloads the page, carries on with the same name and score
+- **Practice Mode**: Students play quizzes from a server-side catalog on their own, without a presenter; the server runs the game ([below](#practice-mode))
 - **Math Formula Support**: Server-based KaTeX rendering for quiz questions and answers
 - **Syntax-highlighted Code**: Server-based highlight.js rendering of fenced code blocks in 14 languages
 - **Minimal Dependencies**: Express.js and `ws` (WebSocket) on the server; the crypto library - part of LectureDoc2 without additional transitive dependencies - is the client's only dependency
@@ -22,6 +23,48 @@ A real-time, embeddable quiz application designed for integration with any HTML-
    - 2nd closest: 50 points
    - 3rd closest: 25 points
    - Tie-breaker: earliest submission wins
+
+   In [practice mode](#practice-mode) there is nobody to rank against, so an
+   estimate scores by its relative error instead: within 10 % → 100, within
+   25 % → 50, within 50 % → 25 points.
+
+## Practice Mode
+
+`/practice.html` lists the quizzes the Quizzy server offers for practice,
+grouped by category. A student picks one and plays it alone: each question runs
+on its own `timeLimit` (or until they answer), the results screen shows their
+verdict for 30 seconds with a *Next question* button to skip the wait, and the
+game ends with their score. There is no name to enter, no room code and no
+leaderboard. As in a lecture, the results screen says whether an answer was
+right but never what the correct answer is.
+
+The catalog is a JSON file on the server, `quizzes/practice.json` by default
+(set `PRACTICE_CATALOG` to use another):
+
+```json
+{
+  "resultsSeconds": 30,
+  "quizzes": [
+    { "id": "germany", "category": "Geography", "file": "germany-quiz.en.json",
+      "description": "Capitals, rivers, mountains and states." },
+    { "id": "tor", "category": "IT Security", "file": "tor-quiz.en.json" }
+  ]
+}
+```
+
+- `id` — appears in the link (`join.html?practice=<id>`); lowercase letters,
+  digits and hyphens.
+- `category` — optional; quizzes without one are listed under "Other", last.
+  Categories appear in the order of their first quiz in the file.
+- `file` — a plain (unencrypted) quiz JSON file, relative to the catalog and
+  inside its directory.
+- `description` — optional, shown under the title.
+- `resultsSeconds` — how long each results screen stays up (default 30).
+
+Every quiz is validated and rendered once when the catalog is loaded; an entry
+that fails is skipped and logged. The catalog is read at startup and again on
+`SIGHUP` (`systemctl reload quizzy-backend`), so adding a quiz does not end the
+lectures running on the server.
 
 ## Project Structure
 
@@ -543,6 +586,7 @@ LTI integration and no grade passback, and the server persists nothing.
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/api/config` | Endpoint discovery and protocol version. See [Service discovery](#service-discovery). |
+| `GET` | `/api/practice` | The practice catalog: `{ quizzes: [{ id, category, title, description, questionCount }] }`, in catalog order. No answers. |
 
 There is deliberately no endpoint that lists rooms or sessions: the application
 has no administrator role, and a room can only be reached by knowing its id.
@@ -551,8 +595,8 @@ has no administrator role, and a room can only be reached by knowing its id.
 
 All messages are JSON objects with a `type` field.
 
-Messages that open a conversation (`create_room`, `join_room`, `control_connect`,
-`room_status`) also carry `protocolVersion`; see
+Messages that open a conversation (`create_room`, `join_room`, `rejoin_room`,
+`control_connect`, `room_status`, `start_practice`) also carry `protocolVersion`; see
 [Protocol versioning](#protocol-versioning).
 
 **Presenter → Server:**
@@ -576,6 +620,10 @@ Messages that open a conversation (`create_room`, `join_room`, `control_connect`
   - `resumeToken`: The token received in `joined`
 - `submit_answer`: Submit an answer
   - `answer`: Selected option index, array of indices, or estimation value
+- `start_practice`: Start a [practice game](#practice-mode) on this connection
+  - `protocolVersion`: The wire-format version the client speaks
+  - `quizId`: A catalog `id`
+- `practice_next`: In a practice game, skip the rest of the results countdown
 
 **Server → Presenter (`ld-quiz` component):**
 - `room_created`: Room was created; includes `roomId`, `quizTitle`, `totalQuestions`
@@ -602,8 +650,15 @@ Messages that open a conversation (`create_room`, `join_room`, `control_connect`
 - `rejoin_failed`: The token is unknown or expired, or the room is gone. Join again as a new participant
 - `question`: New question available; includes `questionIndex`, `totalQuestions`, `question`, `startTime`,
   and `alreadyAnswered` when it is replayed to somebody who has already answered
-- `results`: Round results with `leaderboard`, `questionIndex`, and `waiting`
-- `game_ended`: Final results; includes `leaderboard`
+- `results`: Round results with `leaderboard`, `questionIndex`, and `waiting`. In a practice game
+  also `practice: true`, `totalQuestions` and `advanceInMs` (time left on the countdown), and an estimate's
+  `feedback` carries `band` (10, 25, 50 or `null`) and `points` instead of a rank
+- `game_ended`: Final results; includes `leaderboard`, and in a practice game
+  `summary: { score, maxScore, correct, total }`
+
+A practice game answers `start_practice` with `joined` (plus `practice: true` and
+`practiceQuizId`) and then the first `question`; `rejoined` carries the same two fields.
+An unknown quiz id is refused with an `error` whose `code` is `practice_unavailable`.
 
 **Server → Broadcast:**
 - `game_ended`: Sent to all connected clients when the quiz ends

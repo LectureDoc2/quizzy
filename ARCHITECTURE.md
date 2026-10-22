@@ -11,6 +11,7 @@ are avoided, because they can easily be confused.
 | **deck** | The presentation carrying `<ld-quiz>` — an uploaded HTML file, or a LectureDoc2 slide set published elsewhere. |
 | **`server-url`** | The attribute on `<ld-quiz>` naming the Quizzy server the deck talks to. Defaults to the origin the deck itself was served from. |
 | **participant** / **presenter** | The two human roles. The presenter has the deck plus a control window; participants have their phones. |
+| **practice** | A game one participant plays alone, with no presenter, from a quiz in the server's **practice catalog**. The API server moves it on by itself. |
 
 Note that, the component may be bundled
 into the deck by LectureDoc2, installed from npm, or fetched from `/component/`
@@ -125,9 +126,9 @@ anyone embedding the component.
 |---|---|---|
 | `/component/<version>/ld-quiz.js` | `dist/component/` | immutable, one year — pin this |
 | `/component/ld-quiz.js` | `dist/component/` | `no-cache`; tracks the deployment |
-| `/`, `/join.html`, `/control.html`, `/demo.html`, `/tools.html` | `dist/app/` | default |
+| `/`, `/join.html`, `/practice.html`, `/control.html`, `/demo.html`, `/tools.html` | `dist/app/` | default |
 | `/styles/*`, `/katex/*`, `/js/*` | `dist/app/` | default |
-| `/api/config`, `/ws` | API server, via Caddy | — |
+| `/api/config`, `/api/practice`, `/ws` | API server, via Caddy | — |
 
 KaTeX is served by the **Quizzy server** — Caddy, out of `dist/app/katex/` — at
 whatever path `/api/config` reports, and `<link>`ed into the component's shadow
@@ -255,6 +256,56 @@ backoff and jitter and presents the resume token it received in `joined`
 (`rejoin_room`). The token lives in memory and, for a reload, in the tab's
 `sessionStorage`. Detached participants are forgotten after
 `DETACHED_RETENTION_MINUTES`. See `PARTICIPANT-REATTACH.md`.
+
+## Practice: a round with nobody presenting
+
+A practice game is an ordinary room with its presenter taken out. Everything
+that makes a room close a question by itself already existed — the time limit,
+and "every connected participant has answered", which with one participant
+means *as soon as they answer*. What practice adds is the one step a presenter
+used to take: after `practiceResultsMs` (the catalog's `resultsSeconds`) on a
+results screen, the API server sends the next question, or ends the game.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as Student (join page)
+    participant A as API server
+
+    Note over A: practice catalog loaded at start<br/>and on SIGHUP, each quiz through<br/>the same pipeline as create_room
+    S->>A: GET /api/practice (from practice.html)
+    S->>A: start_practice { quizId }
+    A-->>S: joined { practice, resumeToken }
+    A-->>S: question
+    S->>A: submit_answer
+    A-->>S: results { feedback, advanceInMs }
+    Note over A: waits advanceInMs — only<br/>while the student is connected
+    S->>A: practice_next (optional: skip the wait)
+    A-->>S: question … game_ended { summary }
+```
+
+The design points that are not obvious from the diagram:
+
+- **One quiz, many games.** Each catalog quiz is validated and rendered once and
+  frozen; every game of it shares that object. A practice room is therefore
+  small, which is what lets a hall practise at once.
+- **Invisible to everyone else.** `join_room`, `room_status` and
+  `control_connect` answer a practice room's id exactly as they answer an
+  unknown one. Its presenter token is random and never handed out.
+- **Its own quotas.** Practice games are counted apart from lecture rooms
+  (`MAX_PRACTICE_ROOMS`, `maxPracticeGamesPerIp`), so practising can never stop
+  a lecture from opening a room.
+- **It waits for an absent student.** The countdown is only armed while the
+  student is connected; a dropped connection leaves the game on its next results
+  screen, and `rejoin_room` starts the countdown again. A finished game is
+  removed as soon as its socket closes, an abandoned one after
+  `DETACHED_RETENTION_MINUTES`.
+- **Verdicts, not answers.** As in a lecture, a practice results screen says
+  whether an answer was right but not what the right answer was. Estimates,
+  which a lecture ranks against the room, are scored by relative error in bands
+  instead, and the verdict names only the band.
+
+---
 
 Room state lives only in the API server's memory. Nothing is persisted, so a
 restart ends every running game — which is also why the room TTLs in `rooms.js`

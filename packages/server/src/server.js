@@ -3,10 +3,8 @@ import { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 import { pathToFileURL } from 'url';
 import { RoomManager } from './rooms.js';
-import { renderQuiz } from './math-renderer.js';
-import { renderCodeInQuiz } from './code-renderer.js';
-import { sanitizeQuiz } from './quiz-sanitizer.js';
-import { validateQuiz } from './quiz-validator.js';
+import { prepareQuiz } from './quiz-pipeline.js';
+import { loadPracticeCatalog, emptyPracticeCatalog, DEFAULT_PRACTICE_CATALOG_PATH } from './practice-catalog.js';
 import { validateName } from './name-validator.js';
 import { getServerAddresses } from './network-addresses.js';
 import { clientKey, parseForwardedFor, isLoopbackAddress, DEFAULT_IPV6_PREFIX_BITS } from './client-address.js';
@@ -35,7 +33,9 @@ const SERVER_VERSION = JSON.parse(
  * comparison per answer to re-establish something that cannot have changed since
  * the socket was accepted.
  */
-const HANDSHAKE_TYPES = new Set(['create_room', 'join_room', 'rejoin_room', 'control_connect', 'room_status']);
+const HANDSHAKE_TYPES = new Set([
+  'create_room', 'join_room', 'rejoin_room', 'control_connect', 'room_status', 'start_practice'
+]);
 
 /**
  * WebSocket close code for a participant socket that another connection has
@@ -69,6 +69,15 @@ const GENERIC_REJECTION = 'Unable to open that session. Please check the room co
  * late to a finished quiz reads as what it is rather than as a typo.
  */
 const QUIZ_FINISHED = 'This quiz has already finished.';
+
+/** Said for a practice quiz id that is not (or no longer) in the catalog. */
+const PRACTICE_UNAVAILABLE = 'This practice quiz is not available. Please pick one from the list.';
+
+/**
+ * The name a practice player is recorded under. Practice is anonymous -- there
+ * is nobody to show a name to -- but a participant record always has one.
+ */
+const PRACTICE_PLAYER_NAME = 'Practice';
 
 // --- Abuse limits ------------------------------------------------------------
 //
@@ -112,7 +121,12 @@ const DEFAULT_LIMITS = {
   maxRoomsPerIp: 25,
   // Concurrent sockets per address: one per participant, plus the presenter and
   // the control window. Sized for a few hundred people in one hall.
-  maxSocketsPerIp: 500
+  maxSocketsPerIp: 500,
+  // Concurrent practice games per address, counted apart from maxRoomsPerIp so
+  // that practising cannot use up the lectures' allowance. A game lingers for
+  // DETACHED_RETENTION_MINUTES after its student leaves mid-game, so this is
+  // sized for a hall practising at once, behind one address.
+  maxPracticeGamesPerIp: 300
 };
 
 /**
@@ -131,7 +145,8 @@ function limitsFromEnv(env = process.env) {
     MAX_FAILED_ATTEMPTS_PER_WINDOW: 'maxFailedAttemptsPerWindow',
     FAILED_ATTEMPT_WINDOW_MS: 'failedAttemptWindowMs',
     MAX_ROOMS_PER_IP: 'maxRoomsPerIp',
-    MAX_SOCKETS_PER_IP: 'maxSocketsPerIp'
+    MAX_SOCKETS_PER_IP: 'maxSocketsPerIp',
+    MAX_PRACTICE_GAMES_PER_IP: 'maxPracticeGamesPerIp'
   };
 
   const limits = {};
@@ -167,6 +182,12 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
  *   from this machine -- see resolveTrustProxy.
  * @param {object} [options.limits] Overrides for DEFAULT_LIMITS.
  * @param {number} [options.sweepIntervalMs]
+ * @param {import('./practice-catalog.js').PracticeCatalog} [options.practiceCatalog]
+ *   The quizzes offered for practice. Empty unless given: loading it from disk
+ *   is the entry point's job, so that a test server never picks up the
+ *   deployment's catalog.
+ * @param {number} [options.practiceResultsMs] Overrides the catalog's
+ *   `resultsSeconds`, so that tests need not wait thirty seconds.
  */
 /**
  * How much to believe `X-Forwarded-For`, defaulting to the safe useful answer.
@@ -204,6 +225,11 @@ function createQuizServer(options = {}) {
     ipv6PrefixBits = Number(process.env.IPV6_PREFIX_BITS) || DEFAULT_IPV6_PREFIX_BITS,
     heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS
   } = options;
+
+  // Replaced wholesale on reload (see setPracticeCatalog); running games keep
+  // the quiz object they started with.
+  let practiceCatalog = options.practiceCatalog || emptyPracticeCatalog();
+  const practiceResultsMs = () => options.practiceResultsMs ?? practiceCatalog.resultsMs;
 
   const limits = { ...DEFAULT_LIMITS, ...(options.limits || {}) };
 
@@ -272,10 +298,20 @@ function createQuizServer(options = {}) {
     });
   });
 
+  /**
+   * The practice catalog, for the practice page. Public by design -- it lists
+   * what anyone may play -- and free of answers: titles, descriptions and
+   * counts only. Not cached, so a reloaded catalog shows up at once.
+   */
+  app.get('/api/practice', (_req, res) => {
+    res.set('Cache-Control', 'no-cache');
+    res.json({ quizzes: practiceCatalog.publicList() });
+  });
+
   function stateForKey(key) {
     let state = ipState.get(key);
     if (!state) {
-      state = { failures: 0, failureWindowStart: Date.now(), rooms: 0, sockets: 0 };
+      state = { failures: 0, failureWindowStart: Date.now(), rooms: 0, sockets: 0, practiceGames: 0 };
       ipState.set(key, state);
     }
     return state;
@@ -295,7 +331,7 @@ function createQuizServer(options = {}) {
    */
   function releaseKeyState(key) {
     const state = ipState.get(key);
-    if (!state || state.sockets > 0 || state.rooms > 0) return;
+    if (!state || state.sockets > 0 || state.rooms > 0 || state.practiceGames > 0) return;
     if (withinFailureWindow(state)) return;
     ipState.delete(key);
   }
@@ -317,7 +353,7 @@ function createQuizServer(options = {}) {
    */
   function sweepIpState(now = Date.now()) {
     for (const [key, state] of ipState) {
-      if (state.sockets > 0 || state.rooms > 0) continue;
+      if (state.sockets > 0 || state.rooms > 0 || state.practiceGames > 0) continue;
       if (withinFailureWindow(state, now)) continue;
       ipState.delete(key);
     }
@@ -547,49 +583,25 @@ function createQuizServer(options = {}) {
               return;
             }
 
-            /* Shape first, markup second. A quiz that is not shaped like a
-               quiz must never reach a room: the assumptions it would break are
-               checked in scoring and in the auto-end timer, and the timer runs
-               outside every try/catch. See quiz-validator.js. */
-            const structure = validateQuiz(quiz);
-            if (!structure.valid) {
+            // Validated, then code, markup and math -- in that order; see
+            // quiz-pipeline.js. The warnings go back to the presenter.
+            const prepared = prepareQuiz(quiz);
+            if (!prepared.valid) {
               safeSend(ws, {
                 type: 'error',
                 code: 'invalid_quiz',
-                message: 'The quiz was rejected:\n  ' + structure.errors.join('\n  ')
+                message: 'The quiz was rejected:\n  ' + prepared.errors.join('\n  ')
               });
               return;
             }
-
-            /* Quiz markup is authored by the lecturer and rendered as HTML, so it
-               is scrubbed (not escaped): the author is trusted, but should not be
-               able to break their own quiz by accident. See quiz-sanitizer.js for
-               the exact threat model.
-
-               The three passes run in this order, and the order is load-bearing:
-
-                 1. code   -- fenced blocks become <pre><code>, with every `&`,
-                              `<` and `>` inside them escaped.
-                 2. markup -- the sanitizer scrubs what the author wrote *around*
-                              the code. It runs second precisely because step 1
-                              has already escaped the code: a Java sample
-                              containing <script>, or an HTML snippet being
-                              taught, would otherwise be swallowed by the
-                              blocklist.
-                 3. math   -- KaTeX runs last and skips the code regions step 1
-                              produced, so `echo $PATH` is not read as a formula.
-
-               Steps 1 and 2 both report to the presenter through `warnings`. */
-            const highlighted = renderCodeInQuiz(quiz);
-            const sanitized = sanitizeQuiz(highlighted.quiz);
-            warnings = [...highlighted.warnings, ...sanitized.warnings];
+            warnings = prepared.warnings;
             if (warnings.length > 0) {
-              console.warn(`Quiz "${sanitized.quiz.title}" needed changes before it could be shown:`);
+              console.warn(`Quiz "${prepared.quiz.title}" needed changes before it could be shown:`);
               for (const warning of warnings) console.warn(`  - ${warning}`);
             }
 
             try {
-              ({ room } = roomManager.openRoom(presenterToken, renderQuiz(sanitized.quiz)));
+              ({ room } = roomManager.openRoom(presenterToken, prepared.quiz));
             } catch {
               ws.send(JSON.stringify({ type: 'error', message: 'The server is at capacity. Please try again later.' }));
               return;
@@ -632,7 +644,9 @@ function createQuizServer(options = {}) {
          */
         case 'room_status': {
           const room = roomManager.getRoom(msg.roomId);
-          if (!room || room.state === 'ended') {
+          // A practice game belongs to its one student; to anybody else its
+          // id is as unknown as one that was never issued.
+          if (!room || room.practice || room.state === 'ended') {
             rejectAndMaybeClose(ws);
             return;
           }
@@ -679,9 +693,10 @@ function createQuizServer(options = {}) {
           }
         
           const room = roomManager.getRoom(roomId);
-          if (!room) {
+          if (!room || room.practice) {
             // Opaque: a mistyped code and a code that was never issued must
-            // look the same, or room ids become enumerable.
+            // look the same, or room ids become enumerable. A practice game
+            // cannot be joined, so its id answers the same way.
             rejectAndMaybeClose(ws);
             return;
           }
@@ -783,8 +798,18 @@ function createQuizServer(options = {}) {
             // The participant's own history, so the page can say which
             // questions closed while it was away rather than silently skipping
             // ahead. Only ever sent to its owner.
-            answeredQuestions: participant.answers.map((a) => a.questionIndex)
+            answeredQuestions: participant.answers.map((a) => a.questionIndex),
+            ...(room.practice ? { practice: true, practiceQuizId: room.practiceQuizId } : {})
           }));
+
+          // A practice game waits on its results screen while its student is
+          // away (see handleDisconnect); now that they are back, the countdown
+          // starts again. Armed before sendRoomState so that the results it
+          // sends carry the countdown. A timer that is still running -- the
+          // student never actually detached -- is left alone.
+          if (room.practice && room.state === 'results' && !room.advanceTimer) {
+            schedulePracticeAdvance(room);
+          }
 
           room.sendToPresenter({
             type: 'participant_joined',
@@ -808,10 +833,12 @@ function createQuizServer(options = {}) {
           const room = roomId ? roomManager.getRoom(roomId) : undefined;
 
           // One message for "no such room", "wrong token" and "already finished".
+          // A practice game has no presenter: its token is random and never
+          // handed out, and it is refused here before any comparison.
           // timingSafeEqual is not used here on purpose: the token is compared
           // against a value the prober would have to know in the first place, and
           // the rate limit -- not constant time -- is what makes guessing futile.
-          if (!room || room.presenterToken !== presenterToken) {
+          if (!room || room.practice || room.presenterToken !== presenterToken) {
             rejectAndMaybeClose(ws);
             return;
           }
@@ -840,16 +867,8 @@ function createQuizServer(options = {}) {
           if (!room) return;
         
           room.startGame();
-          const question = room.getPublicQuestion();
-        
-          room.broadcastToParticipants({
-            type: 'question',
-            questionIndex: 0,
-            totalQuestions: room.quiz.questions.length,
-            question: question,
-            startTime: room.currentQuestionStartTime
-          });
-        
+          broadcastQuestion(room);
+
           room.sendToPresenter({
             type: 'game_started',
             questionIndex: 0,
@@ -872,16 +891,8 @@ function createQuizServer(options = {}) {
           if (!room) return;
         
           if (room.nextQuestion()) {
-            const question = room.getPublicQuestion();
-          
-            room.broadcastToParticipants({
-              type: 'question',
-              questionIndex: room.currentQuestionIndex,
-              totalQuestions: room.quiz.questions.length,
-              question: question,
-              startTime: room.currentQuestionStartTime
-            });
-          
+            broadcastQuestion(room);
+
             room.sendToPresenter({
               type: 'question_started',
               questionIndex: room.currentQuestionIndex,
@@ -904,6 +915,87 @@ function createQuizServer(options = {}) {
           if (!room) return;
 
           endGame(room);
+          break;
+        }
+
+        /**
+         * Start a practice game: one student, a quiz from the catalog, and no
+         * presenter -- the server runs it (see schedulePracticeAdvance()).
+         *
+         * Anonymous, so there is no name to validate. An unknown quiz id is
+         * not charged to the failure budget: the catalog is public, so there is
+         * nothing to probe for. The game is charged to its address's practice
+         * allowance, never to the lectures' maxRoomsPerIp.
+         */
+        case 'start_practice': {
+          if (ws.role) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: 'This connection has already joined a quiz. Reload the page to join again.'
+            }));
+            return;
+          }
+
+          const entry = practiceCatalog.get(msg.quizId);
+          if (!entry) {
+            safeSend(ws, { type: 'error', code: 'practice_unavailable', message: PRACTICE_UNAVAILABLE });
+            return;
+          }
+
+          const ipLimits = stateForKey(ws.clientKey);
+          if (ipLimits.practiceGames >= limits.maxPracticeGamesPerIp) {
+            noteLimitHit('MAX_PRACTICE_GAMES_PER_IP', limits.maxPracticeGamesPerIp);
+            safeSend(ws, { type: 'error', message: 'Too many practice games from this address. Please try again later.' });
+            return;
+          }
+
+          let room;
+          try {
+            room = roomManager.openPracticeRoom(entry.quiz);
+          } catch {
+            safeSend(ws, { type: 'error', message: 'The server is at capacity. Please try again later.' });
+            return;
+          }
+          ipLimits.practiceGames++;
+          room.creatorKey = ws.clientKey;
+          room.practiceQuizId = entry.id;
+          // Fixed for the game, like its quiz: a catalog reloaded mid-game
+          // does not change how long this game's results stay up.
+          room.practiceResultsMs = practiceResultsMs();
+          // Results first arm the countdown, so that the results message can
+          // carry it.
+          room.onAutoEnd = (results) => {
+            schedulePracticeAdvance(room);
+            announceResults(room, results);
+          };
+
+          const participant = room.addParticipant(ws, PRACTICE_PLAYER_NAME);
+          ws.roomId = room.roomId;
+          ws.role = 'participant';
+          ws.participantId = participant.id;
+
+          safeSend(ws, {
+            type: 'joined',
+            participantId: participant.id,
+            roomId: room.roomId,
+            quizTitle: room.quiz.title,
+            practice: true,
+            practiceQuizId: entry.id,
+            // As for join_room: sent once, to its owner, never logged.
+            resumeToken: room.resumeTokenFor(participant.id)
+          });
+
+          room.startGame();
+          broadcastQuestion(room);
+          break;
+        }
+
+        // The practice student skips the rest of the countdown.
+        case 'practice_next': {
+          const room = roomManager.getRoom(ws.roomId);
+          if (!room || !room.practice || ws.role !== 'participant' || !room.participants.has(ws)) return;
+          if (room.state !== 'results') return;
+          advancePractice(room);
           break;
         }
 
@@ -1012,6 +1104,58 @@ function createQuizServer(options = {}) {
     return roomManager.getRoom(ws.roomId);
   }
 
+  /** Send the room's current question to every participant. */
+  function broadcastQuestion(room) {
+    room.broadcastToParticipants({
+      type: 'question',
+      questionIndex: room.currentQuestionIndex,
+      totalQuestions: room.quiz.questions.length,
+      question: room.getPublicQuestion(),
+      startTime: room.currentQuestionStartTime
+    });
+  }
+
+  /**
+   * Move a practice game on: the next question, or the end.
+   *
+   * Only from a results screen, so that a late timer or a double-pressed
+   * Continue can never skip a question that is still open.
+   */
+  function advancePractice(room) {
+    room.clearAdvanceTimer();
+    if (room.state !== 'results') return;
+    if (room.nextQuestion()) {
+      broadcastQuestion(room);
+    } else {
+      endGame(room);
+    }
+  }
+
+  /**
+   * Leave a practice results screen up for the game's practiceResultsMs, then
+   * move on.
+   *
+   * Only while the student is connected. A game nobody is watching would
+   * otherwise play itself to the end while a phone sits in a pocket, and the
+   * student would come back to a finished quiz. So it waits on the results
+   * screen instead, and `rejoin_room` starts the countdown again.
+   */
+  function schedulePracticeAdvance(room) {
+    room.clearAdvanceTimer();
+    if (room.participants.size === 0) return;
+    const delay = room.practiceResultsMs;
+    room.advanceAt = Date.now() + delay;
+    room.advanceTimer = setTimeout(() => {
+      // Runs with no caller to catch it, like the question timer; see
+      // Room.startQuestion().
+      try {
+        advancePractice(room);
+      } catch (err) {
+        console.error(`advancing practice game ${room.roomId} failed:`, err);
+      }
+    }, delay);
+  }
+
   /**
    * Bring a participant's page up to where the room is: the open question,
    * the latest results, or the final board. Shared by a first join (a
@@ -1036,7 +1180,11 @@ function createQuizServer(options = {}) {
       safeSend(ws, resultsMessage(room, participantId, results, room.getLeaderboard()));
     } else if (room.state === 'ended') {
       // Only reachable by a rejoin: a first join to a finished room is refused.
-      safeSend(ws, { type: 'game_ended', leaderboard: room.getLeaderboard() });
+      safeSend(ws, {
+        type: 'game_ended',
+        leaderboard: room.getLeaderboard(),
+        ...(room.practice ? { summary: room.getPracticeSummary() } : {})
+      });
     }
   }
 
@@ -1045,13 +1193,22 @@ function createQuizServer(options = {}) {
    * their own answer feedback (see Room.getAnswerFeedback()).
    */
   function resultsMessage(room, participantId, results, leaderboard) {
-    return {
+    const message = {
       type: 'results',
       questionIndex: room.currentQuestionIndex,
       leaderboard,
       waiting: room.currentQuestionIndex < room.quiz.questions.length - 1,
       feedback: room.getAnswerFeedback(participantId, results)
     };
+    if (room.practice) {
+      // Relative rather than a timestamp, so that a phone whose clock is off
+      // still counts down the right number of seconds.
+      message.practice = true;
+      // A reload lands on a results screen without having seen a question.
+      message.totalQuestions = room.quiz.questions.length;
+      message.advanceInMs = room.advanceAt === null ? null : Math.max(0, room.advanceAt - Date.now());
+    }
+    return message;
   }
 
   /**
@@ -1095,12 +1252,14 @@ function createQuizServer(options = {}) {
     // question's timer would otherwise sit there waiting to fire on a room
     // that no longer has a question to close.
     room.clearQuestionTimer();
+    room.clearAdvanceTimer();
     room.state = 'ended';
     const finalLeaderboard = room.getLeaderboard();
 
     room.broadcastToParticipants({
       type: 'game_ended',
-      leaderboard: finalLeaderboard
+      leaderboard: finalLeaderboard,
+      ...(room.practice ? { summary: room.getPracticeSummary() } : {})
     });
 
     // The presenter additionally gets the aggregate statistics, so the export
@@ -1121,7 +1280,17 @@ function createQuizServer(options = {}) {
           // Detached, not removed: the participant may come back with their
           // resume token. See Room.detachParticipant().
           const participant = room.detachParticipant(ws);
-          if (participant) {
+          if (participant && room.practice) {
+            // Nobody else can ever reach a practice game. Finished, it is
+            // gone at once; unfinished, it waits on its next results screen
+            // (see schedulePracticeAdvance) until its student comes back or
+            // their resume token expires.
+            if (room.state === 'ended') {
+              roomManager.removeRoom(room.roomId);
+            } else {
+              room.clearAdvanceTimer();
+            }
+          } else if (participant) {
             // Still `participant_left`, not a new message type: decks in the
             // wild bundle a component that updates its lobby count on exactly
             // this message, and `count` keeps meaning "connected right now".
@@ -1153,7 +1322,11 @@ function createQuizServer(options = {}) {
     if (!room.creatorKey) return;
     const state = ipState.get(room.creatorKey);
     if (state) {
-      state.rooms = Math.max(0, state.rooms - 1);
+      if (room.practice) {
+        state.practiceGames = Math.max(0, state.practiceGames - 1);
+      } else {
+        state.rooms = Math.max(0, state.rooms - 1);
+      }
       releaseKeyState(room.creatorKey);
     }
   };
@@ -1206,6 +1379,17 @@ function createQuizServer(options = {}) {
     // across a reconnect and eventually released. Nothing in the running
     // server reads them through here.
     ipState,
+    /** The catalog practice games are started from right now. */
+    get practiceCatalog() {
+      return practiceCatalog;
+    },
+    /**
+     * Swap in a reloaded catalog. Games already running keep the quiz they
+     * started with; only new games see the change.
+     */
+    setPracticeCatalog(catalog) {
+      practiceCatalog = catalog || emptyPracticeCatalog();
+    },
     /** Start listening; resolves with the bound port. */
     listen(port = 0, host) {
       return new Promise((resolve) => {
@@ -1261,7 +1445,31 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
    * that terminates TLS and adds X-Forwarded-For.
    */
   const HOST = process.env.HOST || undefined;
-  const quizServer = createQuizServer({ limits: limitsFromEnv() });
+
+  /*
+   * The practice catalog. Loaded here rather than inside createQuizServer, so
+   * that a test server never picks up the deployment's quizzes, and reloaded on
+   * SIGHUP (`systemctl reload`): restarting instead would end every lecture
+   * running in this process.
+   */
+  const PRACTICE_CATALOG = process.env.PRACTICE_CATALOG || DEFAULT_PRACTICE_CATALOG_PATH;
+  const readPracticeCatalog = () => {
+    const { catalog, errors, warnings, missing } = loadPracticeCatalog(PRACTICE_CATALOG);
+    if (missing) {
+      console.log(`No practice catalog at ${PRACTICE_CATALOG}; practice mode is off.`);
+    } else {
+      console.log(`Practice catalog ${PRACTICE_CATALOG}: ${catalog.size} quiz(zes) available.`);
+    }
+    for (const error of errors) console.error(`  practice catalog: ${error}`);
+    for (const warning of warnings) console.warn(`  practice catalog: ${warning}`);
+    return catalog;
+  };
+
+  const quizServer = createQuizServer({ limits: limitsFromEnv(), practiceCatalog: readPracticeCatalog() });
+  process.on('SIGHUP', () => {
+    console.log('SIGHUP: reloading the practice catalog.');
+    quizServer.setPracticeCatalog(readPracticeCatalog());
+  });
   quizServer.listen(PORT, HOST).then(() => {
     console.log(`Quizzy backend listening on ${HOST ? `${HOST}:${PORT}` : `port ${PORT}`}`);
     console.log('Caddy (or another reverse proxy) should be the public entry point.');
@@ -1281,6 +1489,7 @@ export {
   GENERIC_REJECTION,
   QUIZ_FINISHED,
   REJOIN_FAILED,
+  PRACTICE_UNAVAILABLE,
   SUPERSEDED_CLOSE_CODE,
   DEFAULT_LIMITS,
   MAX_QUIZ_SIZE,

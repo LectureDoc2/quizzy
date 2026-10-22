@@ -55,6 +55,35 @@ const DETACHED_TTL_MS =
 const DETACHED_CAP_FACTOR = 3;
 const DETACHED_CAP_MIN = 30;
 
+/**
+ * How a practice estimate scores. Estimation is normally ranked against the
+ * rest of the room, which alone is meaningless -- the only estimate is always
+ * the closest -- so a practice game scores the relative error instead, on the
+ * same 100/50/25 scale the ranking uses.
+ */
+const PRACTICE_ESTIMATION_BANDS = [
+  { within: 10, points: 100 },
+  { within: 25, points: 50 },
+  { within: 50, points: 25 }
+];
+
+/**
+ * The band a practice estimate falls into, or null when it is further off than
+ * the widest one. A correct answer of zero has no relative error, so only an
+ * exact answer scores there.
+ */
+function practiceEstimationBand(answer, correctAnswer) {
+  const correct = Number(correctAnswer);
+  if (!Number.isFinite(correct) || !Number.isFinite(answer)) return null;
+  if (correct === 0) return answer === 0 ? PRACTICE_ESTIMATION_BANDS[0] : null;
+  const difference = Math.abs(answer - correct);
+  // The tolerance keeps an answer of exactly 10 % off inside the 10 % band;
+  // 92.4 - 84 is 8.400000000000006 in floating point.
+  return PRACTICE_ESTIMATION_BANDS.find(
+    (band) => difference <= Math.abs(correct) * (band.within / 100) * (1 + 1e-9)
+  ) ?? null;
+}
+
 class Room {
   constructor(roomId, presenterToken, quiz) {
     this.roomId = roomId;
@@ -87,6 +116,14 @@ class Room {
     // Aggregate per-question statistics, appended as each question closes.
     // See recordQuestionStatistics() for why this is not derived at the end.
     this.questionStats = [];
+    // A practice game is one student and no presenter: the server moves it on
+    // by itself. See RoomManager.openPracticeRoom().
+    this.practice = false;
+    // Practice only: moves a practice game from a results screen to the next
+    // question. Armed by the transport layer, which knows who is connected;
+    // `advanceAt` is when it fires, for the countdown on the results screen.
+    this.advanceTimer = null;
+    this.advanceAt = null;
   }
 
   /** Number of live sockets attached to this room, presenter included. */
@@ -110,7 +147,12 @@ class Room {
   isExpired(now = Date.now()) {
     if (now - this.createdAt >= ABSOLUTE_ROOM_TTL_MS) return true;
     if (this.emptySince === null) return false;
-    const ttl = this.state === 'ended' ? ENDED_ROOM_TTL_MS : EMPTY_ROOM_TTL_MS;
+    // Nobody but its one student can ever reach a practice game, and their
+    // resume token expires after DETACHED_TTL_MS; past that the room is dead
+    // weight, whatever state it is in.
+    const ttl = this.practice
+      ? DETACHED_TTL_MS
+      : this.state === 'ended' ? ENDED_ROOM_TTL_MS : EMPTY_ROOM_TTL_MS;
     return now - this.emptySince >= ttl;
   }
 
@@ -570,6 +612,14 @@ class Room {
     }
   }
 
+  clearAdvanceTimer() {
+    if (this.advanceTimer) {
+      clearTimeout(this.advanceTimer);
+      this.advanceTimer = null;
+    }
+    this.advanceAt = null;
+  }
+
   autoEndQuestion() {
     if (this.state !== 'question') return;
     const results = this.endQuestion();
@@ -597,6 +647,14 @@ class Room {
             answerSorted.every((val, idx) => val === correctSorted[idx]);
           points = isCorrect ? 100 : 0;
         }
+        scores.set(participantId, points);
+        rankings.push({ participantId, points, timestamp: data.timestamp });
+      }
+    } else if (question.type === 'estimation' && this.practice) {
+      // Nobody to rank against; see PRACTICE_ESTIMATION_BANDS.
+      for (const [participantId, data] of this.currentAnswers) {
+        const band = practiceEstimationBand(data.answer, question.correctAnswer);
+        const points = band ? band.points : 0;
         scores.set(participantId, points);
         rankings.push({ participantId, points, timestamp: data.timestamp });
       }
@@ -646,7 +704,8 @@ class Room {
    *
    * Deliberately the minimum: the question itself (so it can be shown again),
    * the participant's own answer, and a verdict -- right or wrong, or for an
-   * estimate how it ranked among everybody's. It never carries the correct
+   * estimate how it ranked among everybody's (in a practice game, which band
+   * of relative error it fell into and what that scored). It never carries the correct
    * answer (revealing it is the presenter's call, on the projector), the
    * distance to it (which together with one's own answer *is* the correct
    * answer), or anything about another participant beyond a count.
@@ -675,6 +734,14 @@ class Room {
 
     if (question.type === 'multiple-choice') {
       feedback.isCorrect = feedback.answered && (results.scores.get(participantId) || 0) > 0;
+    } else if (question.type === 'estimation' && this.practice) {
+      // The band, never the distance or its direction: either of those, next
+      // to one's own answer, would give the correct answer away.
+      const band = feedback.answered
+        ? practiceEstimationBand(submitted.answer, question.correctAnswer)
+        : null;
+      feedback.band = band ? band.within : null;
+      feedback.points = band ? band.points : 0;
     } else if (question.type === 'estimation') {
       feedback.answerCount = results.ranks.size;
       // A meaningless rank when the quiz's correct answer is unusable; see
@@ -715,6 +782,23 @@ class Room {
     }
     list.sort((a, b) => b.score - a.score);
     return list;
+  }
+
+  /**
+   * A practice game's final tally for its one student. "Correct" means full
+   * points: a right multiple-choice answer, or an estimate within the closest
+   * band.
+   */
+  getPracticeSummary() {
+    const participant = this.participants.values().next().value
+      ?? this.detached.values().next().value?.participant;
+    const answers = participant ? participant.answers : [];
+    return {
+      score: participant ? participant.score : 0,
+      maxScore: this.quiz.questions.length * 100,
+      correct: answers.filter((a) => a.points === 100).length,
+      total: this.quiz.questions.length
+    };
   }
 
   getCurrentQuestion() {
@@ -786,6 +870,13 @@ class Room {
 /** Global ceiling on concurrent rooms; `create_room` is unauthenticated. */
 const MAX_ROOMS = 500;
 
+/**
+ * Global ceiling on concurrent practice games, counted apart from MAX_ROOMS so
+ * that students practising can never stop a lecture from opening a room. Higher
+ * because a practice room is small: its quiz is shared with the catalog.
+ */
+const MAX_PRACTICE_ROOMS = 2000;
+
 class RoomManager {
   constructor() {
     this.rooms = new Map(); // roomId -> Room
@@ -798,6 +889,8 @@ class RoomManager {
     // expiry or explicitly. Lets the transport layer release per-client quotas
     // without this module knowing anything about connections.
     this.onRoomRemoved = null;
+    // How many of `rooms` are practice games; see openPracticeRoom().
+    this.practiceRoomCount = 0;
   }
 
   /**
@@ -837,7 +930,7 @@ class RoomManager {
     const existing = this.openRoomIfPresent(presenterToken);
     if (existing) return { room: existing, resumed: true };
 
-    if (this.rooms.size >= MAX_ROOMS) {
+    if (this.rooms.size - this.practiceRoomCount >= MAX_ROOMS) {
       throw new Error('Server is at capacity');
     }
 
@@ -848,6 +941,27 @@ class RoomManager {
     return { room, resumed: false };
   }
 
+  /**
+   * Open a practice game: a room for one student, with no presenter.
+   *
+   * The presenter token is random and never registered in activeRoomByToken,
+   * so no `control_connect` can match it and no `create_room` can resume it.
+   * `quiz` is the catalog's frozen copy, shared with every other game of it.
+   *
+   * @returns {Room}
+   * @throws {Error} when MAX_PRACTICE_ROOMS games are already running.
+   */
+  openPracticeRoom(quiz) {
+    if (this.practiceRoomCount >= MAX_PRACTICE_ROOMS) {
+      throw new Error('Server is at capacity');
+    }
+    const room = new Room(this.generateRoomId(), randomBytes(32).toString('base64url'), quiz);
+    room.practice = true;
+    this.rooms.set(room.roomId, room);
+    this.practiceRoomCount++;
+    return room;
+  }
+
   getRoom(roomId) {
     return this.rooms.get(roomId);
   }
@@ -856,7 +970,9 @@ class RoomManager {
     const room = this.rooms.get(roomId);
     if (!room) return;
     room.clearQuestionTimer();
+    room.clearAdvanceTimer();
     this.rooms.delete(roomId);
+    if (room.practice) this.practiceRoomCount--;
     if (this.activeRoomByToken.get(room.presenterToken) === roomId) {
       this.activeRoomByToken.delete(room.presenterToken);
     }
@@ -917,5 +1033,8 @@ export {
   ABSOLUTE_ROOM_TTL_MS,
   DETACHED_TTL_MS,
   DETACHED_CAP_MIN,
-  MAX_ROOMS
+  MAX_ROOMS,
+  MAX_PRACTICE_ROOMS,
+  PRACTICE_ESTIMATION_BANDS,
+  practiceEstimationBand
 };

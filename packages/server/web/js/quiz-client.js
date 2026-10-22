@@ -31,6 +31,16 @@ const STORAGE_PREFIX = 'quizzy:resume:';
 /** States after which the page never reconnects. */
 const FINAL_STATES = new Set(['ended', 'kicked', 'superseded', 'fatal']);
 
+/** Where a practice game sends the student to pick another quiz. */
+const PRACTICE_LIST_URL = 'practice.html';
+
+/** What a practice estimate's band (see Room.getAnswerFeedback()) reads as. */
+const PRACTICE_BAND_VERDICTS = {
+  10: 'Within 10 % of the correct answer',
+  25: 'Within 25 % of the correct answer',
+  50: 'Within 50 % of the correct answer'
+};
+
 class QuizClient {
   constructor() {
     this.ws = null;
@@ -52,6 +62,11 @@ class QuizClient {
     this.questionIndex = null;
     this.answerSubmitted = false;
     this.rejoinContext = null;
+    // A practice game: one student, no presenter, the server moves it on.
+    // practiceQuizId comes from `?practice=` and names the catalog entry.
+    this.practice = false;
+    this.practiceQuizId = null;
+    this.totalQuestions = null;
   }
 
   // Client-side validation (must match server-side)
@@ -84,17 +99,26 @@ class QuizClient {
   init() {
     const urlParams = new URLSearchParams(window.location.search);
     this.roomId = urlParams.get('room');
+    this.practiceQuizId = urlParams.get('practice');
 
-    if (!this.roomId) {
+    if (this.practiceQuizId) {
+      this.enterPracticeMode();
+    } else if (!this.roomId) {
       this.showError('No room ID provided');
       return;
+    } else {
+      document.getElementById('room-id').textContent = this.roomId;
     }
 
-    document.getElementById('room-id').textContent = this.roomId;
     // A reload, a restored tab or a re-opened link in the same tab: try to
-    // carry on as the participant this tab already was.
-    this.resumeToken = this.loadResumeToken();
-    this.renderConnecting(this.resumeToken ? 'Reconnecting to the quiz...' : 'Checking the quiz...');
+    // carry on as the participant this tab already was. A practice game that
+    // has not started yet has no room, and so nothing to carry on with.
+    this.resumeToken = this.roomId ? this.loadResumeToken() : null;
+    this.renderConnecting(
+      this.resumeToken ? 'Reconnecting to the quiz...'
+        : this.practiceQuizId ? 'Starting the practice quiz...'
+          : 'Checking the quiz...'
+    );
     // One socket for the whole visit: the room's state is fetched over it
     // before the name is asked for, and the join then reuses it.
     this.connect();
@@ -111,6 +135,17 @@ class QuizClient {
     const heading = document.getElementById('page-title');
     if (heading) heading.textContent = text;
     document.title = text;
+  }
+
+  /**
+   * Switch the page to a practice game. There is no room code to show --
+   * nobody else can join -- and nothing on the page is about other players.
+   */
+  enterPracticeMode() {
+    this.practice = true;
+    const roomCode = document.querySelector('.room-code');
+    if (roomCode) roomCode.hidden = true;
+    if (this.state === 'join') this.setHeading('Practice');
   }
 
   renderConnecting(message = 'Checking the quiz...') {
@@ -136,6 +171,12 @@ class QuizClient {
           protocolVersion: PROTOCOL_VERSION,
           roomId: this.roomId,
           resumeToken: this.resumeToken
+        }));
+      } else if (this.practiceQuizId) {
+        ws.send(JSON.stringify({
+          type: 'start_practice',
+          protocolVersion: PROTOCOL_VERSION,
+          quizId: this.practiceQuizId
         }));
       } else {
         ws.send(JSON.stringify({
@@ -380,6 +421,16 @@ class QuizClient {
   handleMessage(msg) {
     switch (msg.type) {
       case 'joined':
+        if (msg.practice) {
+          // The room exists from now on. Putting it in the URL is what lets a
+          // reload come back to this game rather than start another one; the
+          // resume token below is stored under it.
+          this.roomId = msg.roomId;
+          if (typeof msg.practiceQuizId === 'string') this.practiceQuizId = msg.practiceQuizId;
+          this.enterPracticeMode();
+          const params = new URLSearchParams({ practice: this.practiceQuizId, room: this.roomId });
+          history.replaceState(null, '', `${window.location.pathname}?${params}`);
+        }
         this.participantId = msg.participantId;
         this.resumeToken = typeof msg.resumeToken === 'string' ? msg.resumeToken : null;
         // Written now -- after the student typed a name and pressed Join --
@@ -393,7 +444,8 @@ class QuizClient {
         // "Join Quiz" -- from here on it names the quiz being played.
         this.setHeading(this.quizTitle || 'Quiz');
         this.showNotice(null);
-        this.renderWaiting();
+        // A practice game starts at once; its first question follows.
+        this.renderWaiting(this.practice ? 'Starting...' : undefined);
         break;
 
       case 'rejoined':
@@ -401,6 +453,7 @@ class QuizClient {
         this.reconnectAttempt = 0;
         this.setReconnecting(false);
         this.participantId = msg.participantId;
+        if (msg.practice) this.enterPracticeMode();
         if (msg.quizTitle) this.quizTitle = msg.quizTitle;
         this.setHeading(this.quizTitle || 'Quiz');
         this.rejoinContext = {
@@ -431,6 +484,11 @@ class QuizClient {
         this.rejoinContext = null;
         this.setReconnecting(false);
         this.state = 'join';
+        if (this.practiceQuizId) {
+          // Nothing to fall back to: a practice game cannot be joined.
+          this.renderPracticeProblem('This practice game has expired.', true);
+          break;
+        }
         this.showNotice(msg.message || 'Your previous session has expired. Please join again.');
         this.renderConnecting();
         this.ws.send(JSON.stringify({
@@ -451,6 +509,7 @@ class QuizClient {
         const answerWasLost = sameQuestion && this.answerSubmitted && !msg.alreadyAnswered;
         this.state = 'question';
         this.questionIndex = msg.questionIndex;
+        this.totalQuestions = msg.totalQuestions;
 
         if (msg.alreadyAnswered) {
           // Answered, dropped, came back: the server would refuse a second
@@ -479,7 +538,12 @@ class QuizClient {
         }
         this.state = 'results';
         this.questionIndex = msg.questionIndex;
-        this.renderResults(msg.leaderboard, msg.questionIndex, msg.waiting, msg.feedback);
+        if (this.practice) {
+          if (Number.isInteger(msg.totalQuestions)) this.totalQuestions = msg.totalQuestions;
+          this.renderPracticeResults(msg);
+        } else {
+          this.renderResults(msg.leaderboard, msg.questionIndex, msg.waiting, msg.feedback);
+        }
         break;
 
       case 'game_ended':
@@ -487,7 +551,11 @@ class QuizClient {
         this.rejoinContext = null;
         // Nothing left to come back to.
         this.clearResumeToken();
-        this.renderFinalResults(msg.leaderboard);
+        if (this.practice) {
+          this.renderPracticeFinal(msg.summary);
+        } else {
+          this.renderFinalResults(msg.leaderboard);
+        }
         break;
 
       case 'answer_accepted':
@@ -521,6 +589,13 @@ class QuizClient {
         // reconnects, say -- the server closes the socket next, and the close
         // schedules the next attempt. The screen underneath stays as it is.
         if (this.reconnecting || (this.resumeToken && !this.participantId)) {
+          break;
+        }
+        // A practice game that could not start: an unknown quiz, a full
+        // server. The way on is the list, not this page.
+        if (this.practiceQuizId && !this.participantId) {
+          this.state = 'fatal';
+          this.renderPracticeProblem(msg.message, false);
           break;
         }
         // Before joining, an error belongs next to the form -- the student can
@@ -691,6 +766,16 @@ class QuizClient {
             Number.isFinite(answer) ? answer.toLocaleString() : '-'
           }</strong></div>
         `;
+      }
+      if (feedback.answered && this.practice) {
+        // A practice estimate is scored by how far off it is, in bands; the
+        // verdict names the band, never the distance or the direction.
+        const points = Number(feedback.points) || 0;
+        const band = PRACTICE_BAND_VERDICTS[feedback.band];
+        verdict = band ? `${band}: ${points} points` : 'More than 50 % off: no points';
+        verdictClass = feedback.band === 10 ? 'feedback__verdict--correct'
+          : band ? 'feedback__verdict--partial' : 'feedback__verdict--wrong';
+      } else if (feedback.answered) {
         const rank = Number(feedback.rank);
         const count = Number(feedback.answerCount);
         if (Number.isInteger(rank) && rank > 0 && Number.isInteger(count)) {
@@ -712,6 +797,104 @@ class QuizClient {
         <div class="feedback__verdict ${verdictClass}">${this.escapeHtml(verdict)}</div>
       </div>
     `;
+  }
+
+  /**
+   * A practice results screen: the closed question and the verdict, the score
+   * so far, and the countdown to the next question -- which the student may
+   * cut short. No leaderboard; there is nobody else on it.
+   */
+  renderPracticeResults(msg) {
+    const content = document.getElementById('content');
+    const myEntry = (msg.leaderboard || []).find(e => e.id === this.participantId);
+    const total = Number.isInteger(this.totalQuestions) ? ` of ${this.totalQuestions}` : '';
+
+    content.innerHTML = `
+      <div class="results">
+        <div class="question__counter">Results - Question ${msg.questionIndex + 1}${total}</div>
+        ${this.renderFeedback(msg.feedback)}
+        <div class="my-stats">Score: ${myEntry ? Number(myEntry.score) : 0}</div>
+        <p class="practice-countdown" id="practice-countdown" aria-live="off"></p>
+        <button type="button" class="btn btn--primary btn--full" id="practice-next-btn"></button>
+      </div>
+    `;
+
+    const button = document.getElementById('practice-next-btn');
+    button.textContent = msg.waiting ? 'Next question' : 'Show final score';
+    button.addEventListener('click', () => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      button.disabled = true;
+      this.ws.send(JSON.stringify({ type: 'practice_next' }));
+    });
+
+    const countdown = document.getElementById('practice-countdown');
+    const remainingMs = Number(msg.advanceInMs);
+    if (!Number.isFinite(remainingMs)) return;
+    const deadline = Date.now() + remainingMs;
+    const label = msg.waiting ? 'Next question in' : 'Final score in';
+    const tick = () => {
+      // The next render replaces this element; the interval goes with it.
+      if (!countdown.isConnected) {
+        clearInterval(interval);
+        return;
+      }
+      const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      countdown.textContent = `${label} ${seconds} s`;
+    };
+    const interval = setInterval(tick, 250);
+    tick();
+  }
+
+  /** The end of a practice game: the tally, and where to go next. */
+  renderPracticeFinal(summary) {
+    const content = document.getElementById('content');
+    const score = Number(summary?.score) || 0;
+    const maxScore = Number(summary?.maxScore) || 0;
+    const correct = Number(summary?.correct) || 0;
+    const total = Number(summary?.total) || 0;
+
+    content.innerHTML = `
+      <div class="results">
+        <h2>Final Results</h2>
+        <div class="practice-summary__score">${score} <span>of ${maxScore} points</span></div>
+        <div class="my-stats">${correct} of ${total} question${total === 1 ? '' : 's'} answered correctly</div>
+        <div class="practice-actions" id="practice-actions"></div>
+      </div>
+    `;
+    this.appendPracticeActions(document.getElementById('practice-actions'), true);
+  }
+
+  /**
+   * Something stopped a practice game from starting or continuing. Offers a
+   * fresh start where that makes sense, and the list in any case.
+   */
+  renderPracticeProblem(message, offerRestart) {
+    const content = document.getElementById('content');
+    content.innerHTML = `
+      <div class="error"></div>
+      <div class="practice-actions" id="practice-actions"></div>
+    `;
+    content.querySelector('.error').textContent = message;
+    this.appendPracticeActions(document.getElementById('practice-actions'), offerRestart);
+  }
+
+  /**
+   * "Play again" and "All practice quizzes". Built with the DOM, not markup:
+   * the quiz id comes from the URL, and must never be parsed as HTML.
+   */
+  appendPracticeActions(container, offerRestart) {
+    if (offerRestart && this.practiceQuizId) {
+      const again = document.createElement('a');
+      again.className = 'btn btn--primary btn--full';
+      again.href = `${window.location.pathname}?${new URLSearchParams({ practice: this.practiceQuizId })}`;
+      again.textContent = 'Play again';
+      container.append(again);
+    }
+    const list = document.createElement('a');
+    list.className = 'btn btn--secondary btn--full';
+    list.href = PRACTICE_LIST_URL;
+    list.textContent = 'All practice quizzes';
+    container.append(list);
   }
 
   renderFinalResults(leaderboard) {

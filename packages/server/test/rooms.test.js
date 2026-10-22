@@ -8,7 +8,9 @@ import {
   ABSOLUTE_ROOM_TTL_MS,
   DETACHED_TTL_MS,
   DETACHED_CAP_MIN,
-  MAX_ROOMS
+  MAX_ROOMS,
+  MAX_PRACTICE_ROOMS,
+  practiceEstimationBand
 } from '../src/rooms.js';
 
 describe('Room', () => {
@@ -1050,5 +1052,152 @@ describe('Participant reattach', () => {
     assert.strictEqual(room.emptySince, 5000);
     room.reattachParticipant(room.resumeTokenFor(room.getLeaderboard()[0].id), socket(), 6000);
     assert.strictEqual(room.emptySince, null);
+  });
+});
+
+describe('Practice rooms', () => {
+  const QUIZ = {
+    title: 'Practice',
+    questions: [
+      { type: 'multiple-choice', text: 'Pick', options: ['A', 'B', 'C'], correctIndices: [0, 2] },
+      { type: 'estimation', text: 'How many?', correctAnswer: 84 },
+      { type: 'estimation', text: 'Zero?', correctAnswer: 0 }
+    ]
+  };
+
+  function practiceRoom() {
+    const room = new RoomManager().openPracticeRoom(QUIZ);
+    const participant = room.addParticipant({ readyState: 1 }, 'Practice');
+    room.startGame();
+    return { room, participant };
+  }
+
+  /** Answer the current question and close it, as the auto-end would. */
+  function play(room, participant, answer) {
+    room.submitAnswer(participant.id, answer);
+    if (room.state === 'question') room.endQuestion();
+    return room.scoreQuestion(room.getCurrentQuestion());
+  }
+
+  it('scores an estimate by its relative error, in bands', () => {
+    const points = (answer, correct = 84) => practiceEstimationBand(answer, correct)?.points ?? 0;
+    assert.strictEqual(points(84), 100);
+    assert.strictEqual(points(92.4), 100, 'exactly 10 % off is still within 10 %');
+    assert.strictEqual(points(75.6), 100);
+    assert.strictEqual(points(93), 50);
+    assert.strictEqual(points(105), 50);
+    assert.strictEqual(points(110), 25);
+    assert.strictEqual(points(126), 25);
+    assert.strictEqual(points(127), 0);
+    assert.strictEqual(points(-84), 0);
+    // No relative error around zero: only exact scores.
+    assert.strictEqual(points(0, 0), 100);
+    assert.strictEqual(points(0.001, 0), 0);
+  });
+
+  it('does not rank a lone estimate first -- it scores the distance', () => {
+    const { room, participant } = practiceRoom();
+    play(room, participant, [0, 2]);
+    room.nextQuestion();
+    const results = play(room, participant, 200);
+    assert.strictEqual(results.scores.get(participant.id), 0);
+    assert.strictEqual(participant.score, 100);
+  });
+
+  it('gives a band verdict that never carries the answer, its distance or direction', () => {
+    const { room, participant } = practiceRoom();
+    play(room, participant, [0, 2]);
+    room.nextQuestion();
+    const results = play(room, participant, 100);
+    const feedback = room.getAnswerFeedback(participant.id, results);
+    assert.strictEqual(feedback.band, 25);
+    assert.strictEqual(feedback.points, 50);
+    assert.strictEqual(feedback.answer, 100);
+    for (const leak of ['correctAnswer', 'correctIndices', 'rank', 'answerCount', 'difference']) {
+      assert.ok(!(leak in feedback), `feedback must not carry ${leak}`);
+    }
+  });
+
+  it('keeps multiple-choice feedback a verdict only', () => {
+    const { room, participant } = practiceRoom();
+    const results = play(room, participant, [0]);
+    const feedback = room.getAnswerFeedback(participant.id, results);
+    assert.strictEqual(feedback.isCorrect, false);
+    assert.ok(!('correctIndices' in feedback));
+  });
+
+  it('says "no band" for an unanswered estimate', () => {
+    const { room, participant } = practiceRoom();
+    play(room, participant, [0, 2]);
+    room.nextQuestion();
+    room.endQuestion();
+    const feedback = room.getAnswerFeedback(participant.id, room.scoreQuestion(room.getCurrentQuestion()));
+    assert.strictEqual(feedback.answered, false);
+    assert.strictEqual(feedback.band, null);
+    assert.strictEqual(feedback.points, 0);
+  });
+
+  it('tallies full-point answers as correct in the summary', () => {
+    const { room, participant } = practiceRoom();
+    play(room, participant, [0, 2]);       // 100
+    room.nextQuestion();
+    play(room, participant, 100);          // 50: scored, but not correct
+    room.nextQuestion();
+    play(room, participant, 0);            // 100
+    assert.deepStrictEqual(room.getPracticeSummary(), { score: 250, maxScore: 300, correct: 2, total: 3 });
+  });
+
+  it('still summarises a student who has dropped', () => {
+    const { room, participant } = practiceRoom();
+    const [ws] = room.participants.keys();
+    play(room, participant, [0, 2]);
+    room.detachParticipant(ws);
+    assert.strictEqual(room.getPracticeSummary().score, 100);
+  });
+
+  it('expires an empty practice room after the detached retention, in any state', () => {
+    const { room } = practiceRoom();
+    const [ws] = room.participants.keys();
+    const t0 = Date.now();
+    room.detachParticipant(ws, t0);
+    assert.strictEqual(room.isExpired(t0 + DETACHED_TTL_MS - 1), false);
+    assert.strictEqual(room.isExpired(t0 + DETACHED_TTL_MS), true);
+    assert.ok(DETACHED_TTL_MS < EMPTY_ROOM_TTL_MS, 'shorter than a lecture room waits for its presenter');
+  });
+
+  it('cannot be resumed or controlled through a presenter token', () => {
+    const manager = new RoomManager();
+    const room = manager.openPracticeRoom(QUIZ);
+    assert.strictEqual(room.practice, true);
+    assert.ok(room.presenterToken.length >= 32);
+    assert.strictEqual(manager.activeRoomByToken.size, 0);
+  });
+
+  it('counts practice games apart from lecture rooms', () => {
+    const manager = new RoomManager();
+    for (let i = 0; i < MAX_PRACTICE_ROOMS; i++) manager.openPracticeRoom(QUIZ);
+    assert.throws(() => manager.openPracticeRoom(QUIZ), /capacity/);
+    // A hall full of practice games leaves the lectures their full allowance.
+    assert.doesNotThrow(() => manager.openRoom('t'.repeat(64), QUIZ));
+
+    const [firstId] = manager.rooms.keys();
+    manager.removeRoom(firstId);
+    assert.strictEqual(manager.practiceRoomCount, MAX_PRACTICE_ROOMS - 1);
+    assert.doesNotThrow(() => manager.openPracticeRoom(QUIZ));
+  });
+
+  it('stops its advance timer when the room is removed', () => {
+    const manager = new RoomManager();
+    const room = manager.openPracticeRoom(QUIZ);
+    let fired = false;
+    room.advanceTimer = setTimeout(() => { fired = true; }, 10);
+    room.advanceAt = Date.now() + 10;
+    manager.removeRoom(room.roomId);
+    assert.strictEqual(room.advanceTimer, null);
+    assert.strictEqual(room.advanceAt, null);
+    return new Promise((resolve) => setTimeout(() => {
+      assert.strictEqual(fired, false);
+      resolve();
+    }, 30));
   });
 });

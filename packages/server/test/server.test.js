@@ -25,7 +25,9 @@ import { loopbackHost, originFor } from './loopback.js';
  * how a real client speaks, not part of what any individual test is about, and a
  * test that forgets it would fail for a reason unrelated to its subject.
  */
-const HANDSHAKE_TYPES = new Set(['create_room', 'join_room', 'rejoin_room', 'control_connect', 'room_status']);
+const HANDSHAKE_TYPES = new Set([
+  'create_room', 'join_room', 'rejoin_room', 'control_connect', 'room_status', 'start_practice'
+]);
 
 function withProtocolVersion(msg) {
   return HANDSHAKE_TYPES.has(msg.type) && msg.protocolVersion === undefined
@@ -1261,14 +1263,16 @@ describe('limitsFromEnv', () => {
       MAX_FAILED_ATTEMPTS_PER_WINDOW: '80',
       FAILED_ATTEMPT_WINDOW_MS: '30000',
       MAX_ROOMS_PER_IP: '40',
-      MAX_SOCKETS_PER_IP: '1200'
+      MAX_SOCKETS_PER_IP: '1200',
+      MAX_PRACTICE_GAMES_PER_IP: '600'
     }), {
       maxMessagesPerWindow: 120,
       messageWindowMs: 5000,
       maxFailedAttemptsPerWindow: 80,
       failedAttemptWindowMs: 30000,
       maxRoomsPerIp: 40,
-      maxSocketsPerIp: 1200
+      maxSocketsPerIp: 1200,
+      maxPracticeGamesPerIp: 600
     });
   });
 
@@ -1294,5 +1298,7 @@ describe('limitsFromEnv', () => {
       'a full lecture hall shares one egress address');
     assert.ok(DEFAULT_LIMITS.maxRoomsPerIp >= 10,
       'an institution runs several lectures at once from one address');
+    assert.ok(DEFAULT_LIMITS.maxPracticeGamesPerIp >= 200,
+      'a hall practising before an exam shares one egress address');
   });
 });

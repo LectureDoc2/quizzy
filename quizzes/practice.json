@@ -1,0 +1,51 @@
+{
+  "resultsSeconds": 30,
+  "quizzes": [
+    {
+      "id": "germany",
+      "category": "Geography",
+      "file": "germany-quiz.en.json",
+      "description": "Capitals, rivers, mountains and states."
+    },
+    {
+      "id": "blockciphers",
+      "category": "IT Security",
+      "file": "blockciphers-quiz.en.json",
+      "description": "Block ciphers and their modes of operation."
+    },
+    {
+      "id": "tor",
+      "category": "IT Security",
+      "file": "tor-quiz.en.json",
+      "description": "How onion routing works."
+    },
+    {
+      "id": "sec-tcp",
+      "category": "IT Security",
+      "file": "sec-tcp-quiz.de.json",
+      "description": "TCP und Angriffe darauf."
+    },
+    {
+      "id": "analysis",
+      "category": "Mathematics",
+      "file": "analysis-quiz.de.json",
+      "description": "Funktionen, Differential- und Integralrechnung."
+    },
+    {
+      "id": "lineare-algebra",
+      "category": "Mathematics",
+      "file": "lineare-algebra-quiz.de.json"
+    },
+    {
+      "id": "java-konzepte",
+      "category": "Programming",
+      "file": "java-konzepte-quiz.de.json",
+      "description": "Java-Konzepte als Grundlage für modernes JavaScript."
+    },
+    {
+      "id": "code-demo",
+      "file": "code-demo-quiz.en.json",
+      "description": "Shows how code samples look in a quiz."
+    }
+  ]
+}

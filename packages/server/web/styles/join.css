@@ -132,6 +132,125 @@
     text-align: center;
   }
 
+  /* --- Practice mode ---------------------------------------------------- */
+
+  /* The practice list has more to show than a join form. */
+  .container--wide {
+    max-width: 640px;
+  }
+
+  .practice__intro {
+    color: var(--quiz-text-secondary);
+    text-align: center;
+    margin: 0 0 var(--quiz-space-lg);
+  }
+
+  .practice-category {
+    border: 1px solid var(--quiz-border);
+    border-radius: var(--quiz-radius);
+    background: var(--quiz-surface);
+    margin-bottom: var(--quiz-space-sm);
+  }
+
+  .practice-category__summary {
+    cursor: pointer;
+    padding: var(--quiz-space-sm) var(--quiz-space-md);
+    font-weight: 600;
+  }
+
+  .practice-category[open] > .practice-category__summary {
+    border-bottom: 1px solid var(--quiz-border);
+  }
+
+  .practice-category__count {
+    font-weight: 400;
+    font-size: 0.875rem;
+    color: var(--quiz-text-secondary);
+  }
+
+  .practice-category__count::before {
+    content: " \00B7  ";
+  }
+
+  .practice-category__list {
+    list-style: none;
+    margin: 0;
+    padding: var(--quiz-space-sm);
+    display: grid;
+    gap: var(--quiz-space-xs);
+  }
+
+  .practice-card {
+    display: block;
+    padding: var(--quiz-space-sm) var(--quiz-space-md);
+    border: 1px solid var(--quiz-border);
+    border-radius: var(--quiz-radius);
+    background: var(--quiz-surface-alt);
+    color: var(--quiz-text);
+    text-decoration: none;
+    transition: border-color 0.15s, background 0.15s;
+  }
+
+  .practice-card:hover,
+  .practice-card:focus-visible {
+    border-color: var(--quiz-primary);
+    background: var(--quiz-primary-alpha-5);
+  }
+
+  .practice-card__title {
+    font-weight: 600;
+  }
+
+  .practice-card__description,
+  .practice-card__meta {
+    font-size: 0.875rem;
+    color: var(--quiz-text-secondary);
+    margin-top: 0.25rem;
+  }
+
+  .practice-card__meta {
+    font-size: 0.75rem;
+  }
+
+  .practice-empty {
+    text-align: center;
+    color: var(--quiz-text-secondary);
+  }
+
+  .practice-countdown {
+    color: var(--quiz-text-secondary);
+    margin: var(--quiz-space-md) 0 var(--quiz-space-xs);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .practice-summary__score {
+    font-size: 2.5rem;
+    font-weight: 700;
+    color: var(--quiz-primary);
+    margin: var(--quiz-space-sm) 0;
+
+    & span {
+      font-size: 1rem;
+      font-weight: 400;
+      color: var(--quiz-text-secondary);
+    }
+  }
+
+  .practice-actions {
+    display: grid;
+    gap: var(--quiz-space-xs);
+    margin-top: var(--quiz-space-lg);
+
+    & .btn {
+      text-decoration: none;
+    }
+  }
+
+  /* A practice estimate that scored, but not full points. */
+  .feedback__verdict--partial {
+    color: var(--quiz-warning);
+  }
+
   /* A late arrival needs to notice that the quiz is already running. */
   .room-state__detail--live {
     color: var(--quiz-text);

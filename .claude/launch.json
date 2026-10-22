@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "PORT=3100 node packages/server/src/server.js"],
+      "port": 3100
+    },
+    {
+      "name": "caddy",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "CADDY_HOST=http://localhost:8080 HTTP_PORT=8080 BACKEND_PORT=3100 caddy run --config Caddyfile"],
+      "port": 8080
+    }
+  ]
+}

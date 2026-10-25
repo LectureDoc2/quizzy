@@ -8,13 +8,19 @@
         <link rel="stylesheet" href="/highlight/highlight.min.css" />
         <style>
             body {
-                font-family: system-ui, sans-serif;
-                max-width: 800px;
                 margin: 2rem auto;
                 padding: 1rem;
+                max-width: 800px;
                 min-height: 100vh;
                 background-image: url('background.png');
-                background-size: cover; 
+                background-size: cover;
+                font-family: system-ui, sans-serif;
+                position: relative;
+
+                &::after {
+                    content: "(c) 2026 - Quizzy created by Michael Eichberg using Claude; background image created using ChatGPT.";
+                    color: lightgray;
+                }
             }
             h1 {
                 color: #1e293b;

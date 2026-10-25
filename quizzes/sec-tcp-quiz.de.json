@@ -65,10 +65,17 @@
     },
     {
       "type": "multiple-choice",
-      "text": "Welcher Portbereich ist auf Unix-Systemen privilegiert?",
+      "text": "Welcher Portbereich ist auf Unix-Systemen (nicht macOS) privilegiert?",
       "options": ["0-255", "0-1023", "1024-49151", "49152-65535"],
       "correctIndices": [1],
       "timeLimit": 25
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Port 80 ist welchem Dienst zugeordnet?",
+      "options": ["SSH", "FTP", "HTTP", "SMTP"],
+      "correctIndices": [2],
+      "timeLimit": 20
     },
     {
       "type": "multiple-choice",
@@ -206,18 +213,6 @@
       ],
       "correctIndices": [1],
       "timeLimit": 30
-    },
-    {
-      "type": "estimation",
-      "text": "Wie viele Source-IP-Adressen waren laut dem im Folienmaterial zitierten Cloudflare-Angriff von Mai 2025 an dem DDoS-Angriff beteiligt?",
-      "correctAnswer": 122145,
-      "timeLimit": 45
-    },
-    {
-      "type": "estimation",
-      "text": "Wie viele Millionen Requests pro Sekunde erreichte der im Folienmaterial erwähnte Google-DDoS-Angriff von August 2023 laut Google?",
-      "correctAnswer": 398,
-      "timeLimit": 45
     }
   ]
 }

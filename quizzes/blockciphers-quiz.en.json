@@ -136,7 +136,7 @@
     },
     {
       "type": "multiple-choice",
-      "text": "What is the effective key length of DES?",
+      "text": "What is the <em>effective</em> key length of DES?",
       "options": [
         "64 bits",
         "56 bits",
@@ -152,10 +152,10 @@
       "options": [
         "It is defined as C = E(K3, D(K2, E(K1, P)))",
         "It has an effective key length of 168 bits",
-        "It is backward compatible with DES",
-        "It is vulnerable to the same meet-in-the-middle attack as double encryption"
+        "It is vulnerable to the same meet-in-the-middle attack as double encryption",
+        "It is backward compatible with DES"
       ],
-      "correctIndices": [0, 1, 2],
+      "correctIndices": [0, 1, 3],
       "timeLimit": 35
     },
     {
@@ -175,11 +175,11 @@
       "text": "Which of the following block cipher modes are vulnerable to bit-flipping attacks if the IV is not integrity-protected?",
       "options": [
         "ECB",
-        "CBC",
         "CFB",
-        "OFB"
+        "OFB",
+        "CBC"
       ],
-      "correctIndices": [1],
+      "correctIndices": [3],
       "timeLimit": 30
     },
     {

@@ -10,7 +10,7 @@
 #     xcaddy build --with github.com/caddy-dns/rfc2136
 #
 # TSIG_KEY_NAME and TSIG_SECRET come from the environment file 
-# (see DEPLOY.md step 8c) so the shared secret is never committed. 
+# (see DEPLOY.md §10d) so the shared secret is never committed.
 # The secret grants dynamic-update rights over the whole zone -- 
 # treat it like a password.
 tls {

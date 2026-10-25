@@ -15,7 +15,8 @@ to cut is a routine one and trusted publishing is already configured, only
 - [4. After the publish](#4-after-the-publish)
 - [5. When something fails](#5-when-something-fails)
 
-Server deployment is a separate runbook: see `DEPLOY.md`.
+Server deployment is a separate runbook: see `DEPLOY.md` for installing a server and
+`UPDATE.md` for updating one.
 
 ---
 
@@ -164,7 +165,7 @@ git add -A && git commit -m "release <version>"
 git push
 ```
 
-The pinned example URLs in `README.md` and `packages/ld-quiz/README.md` name a
+The pinned example URL in `packages/ld-quiz/README.md` names a
 version too (`/component/<version>/ld-quiz.js`). They are illustrations rather
 than anything the build reads, but an example pinning a version that predates the
 package it appears in is a bad look; bump them in the same commit.
@@ -207,7 +208,7 @@ exist on the server until you rebuild and deploy:
 pnpm build      # writes dist/component/<version>/ and the moving alias
 ```
 
-Then follow `DEPLOY.md`. `build.js` clears `dist/` before it writes, so the
+Then update the server as described in `UPDATE.md` §1. `build.js` clears `dist/` before it writes, so the
 deployment serves exactly one versioned directory: the new URL cannot be pinned
 until it is served, and the previous one stops resolving once it is.
 

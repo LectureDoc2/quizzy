@@ -62,15 +62,18 @@ The catalog is a JSON file on the server, `quizzes/practice.json` by default
 - `resultsSeconds` — how long each results screen stays up (default 30).
 
 Every quiz is validated and rendered once when the catalog is loaded; an entry
-that fails is skipped and logged. The catalog is read at startup and again on
-`SIGHUP` (`systemctl reload quizzy-backend`), so adding a quiz does not end the
-lectures running on the server.
+that fails is skipped and logged. List only quizzes meant for practice: students
+can replay a quiz as often as they like, and with a right/wrong verdict after each
+answer a determined one can work out the multiple-choice answers by trial.
+Changing the catalog on a running server is described in
+[UPDATE.md §3](UPDATE.md#3-changing-the-practice-quizzes).
 
 ## Project Structure
 
 This is a **pnpm workspace** with two packages: the embeddable web component and the
-backend that hosts a quiz session. [ARCHITECTURE.md](ARCHITECTURE.md) has the
-diagrams: which asset is served by which host, and how a round is played.
+backend that hosts a quiz session. How the build turns them into the files the
+Quizzy server publishes is described in
+[ARCHITECTURE.md](ARCHITECTURE.md#which-files-belong-to-which-part).
 
 ```
 .
@@ -104,77 +107,31 @@ diagrams: which asset is served by which host, and how a round is played.
 └── dist/                           # build output served by Caddy (git-ignored)
 ```
 
-### Why there is a build step
+## Documentation
 
-The browser code imports the crypto library by its **bare specifier**
-(`@lecturedoc2/libcrypto`), which browsers cannot resolve on their own.
-`build.js` uses esbuild to bundle each browser entry point — inlining the library —
-and assembles `dist/` so that its layout matches the public URLs one-to-one:
-
-| Source | URL |
-|--------|-----|
-| `packages/ld-quiz/src/ld-quiz.js` | `/component/ld-quiz.js` and `/component/<version>/ld-quiz.js` |
-| `packages/server/web/js/quiz-client.js` | `/js/quiz-client.js` |
-| `packages/server/web/js/quiz-tools.js` | `/js/quiz-tools.js` |
-| `packages/server/web/js/quiz-control.js` | `/js/quiz-control.js` |
-| `packages/server/web/*.html` | `/*.html` |
-| `packages/server/web/styles/` | `/styles/` |
-| `packages/server/web/katex/` | `/katex/` |
-| `packages/server/web/highlight/` | `/highlight/` |
-
-Consumers that use a bundler themselves can instead import the component's sources
-directly and let their own bundler resolve the dependency.
+| Document | What it covers |
+|---|---|
+| [DEVELOPMENT.md](DEVELOPMENT.md) | Running and testing Quizzy on your own machine |
+| [DEPLOY.md](DEPLOY.md) | Installing a production server, and the reference of all Caddy and backend settings |
+| [UPDATE.md](UPDATE.md) | Keeping a production server up to date |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | How the parts fit together: which file is served by whom, why there is a build step, service discovery, a round of play, practice games |
+| [packages/ld-quiz/README.md](packages/ld-quiz/README.md) | Embedding the `<ld-quiz>` component: as an npm package or a hosted script, its attributes, and what it asks of the host page |
+| [PUBLISH.md](PUBLISH.md) | Releasing the npm package |
+| [PRESENTER-TOKEN.md](PRESENTER-TOKEN.md), [PARTICIPANT-REATTACH.md](PARTICIPANT-REATTACH.md), [LECTUREDOC2-BUILD-STEP.md](LECTUREDOC2-BUILD-STEP.md) | Design notes and decision records |
 
 ## Quick Start
 
-### 1. Install Dependencies
+### 1. Run a Quizzy Server
 
-From the repository root — this installs the workspace and both packages at once:
+Locally, follow [DEVELOPMENT.md](DEVELOPMENT.md) §2–§3: install, build, and start
+the backend and Caddy. For a production server, follow [DEPLOY.md](DEPLOY.md).
 
-```bash
-pnpm install
-```
+### 2. Create a Quiz
 
-### 2. Build the Static Files
+Write the quiz as a JSON file in the format described under
+[Quiz JSON Format](#quiz-json-format).
 
-```bash
-pnpm build            # writes dist/
-pnpm watch            # rebuilds the browser code on change
-pnpm build --minify   # minified output (implied by NODE_ENV=production)
-```
-
-`dist/` is git-ignored and must be rebuilt after every checkout and every deployment.
-
-### 3. Create a Quiz
-
-Create a JSON file with your quiz questions:
-
-```json
-{
-  "title": "Mathematics Quiz",
-  "questions": [
-    {
-      "type": "multiple-choice",
-      "text": "What is the derivative of \\( x^2 \\)?",
-      "options": [
-        "\\( 2x \\)",
-        "\\( x \\)",
-        "\\( x^2 \\)"
-      ],
-      "correctIndices": [0],
-      "timeLimit": 30
-    },
-    {
-      "type": "estimation",
-      "text": "Estimate the value of \\( \\sqrt{2} \\) to 2 decimal places.",
-      "correctAnswer": 1.41,
-      "timeLimit": 45
-    }
-  ]
-}
-```
-
-### 4. Encrypt the Quiz
+### 3. Validate and Encrypt the Quiz
 
 Either on the command line:
 
@@ -186,127 +143,29 @@ QUIZ_PASSWORD='the quiz password' \
 ```
 
 …or in a browser, at **`https://<host>/tools.html`**, which does the same two
-things plus generating a `secret`. Both routes import the same three modules —
-`quiz-validator.js`, `quiz-secret-advice.js` and `quiz-encryption.js` — so a
-quiz gets the same verdict and the same cipher parameters either way; only the
-front end differs. The page is a static file: nothing is uploaded, and the
-password never leaves the tab. It needs HTTPS or `localhost`, because browsers
-withhold `crypto.subtle` outside a secure context.
+things plus generating a `secret`. Both run entirely on the author's machine;
+[ARCHITECTURE.md](ARCHITECTURE.md#authoring-runs-in-the-browser-not-on-the-server)
+explains why, and why the page needs HTTPS or `localhost`.
 
-`pnpm validate` checks the quiz against the *same* rules the server applies —
-it imports `packages/server/src/quiz-validator.js` rather than restating them —
-so a quiz it accepts is a quiz that will start. It additionally warns when the
-quiz has no `secret` field, which the server cannot require but an author almost
-always wants: see [PRESENTER-TOKEN.md](PRESENTER-TOKEN.md). Add `--strict` to
-turn those warnings into a non-zero exit for CI.
+`pnpm validate` applies the same rules as the server, so a quiz it accepts is a
+quiz that will start. It additionally warns when the quiz has no `secret` field,
+which the server cannot require but an author almost always wants: see
+[PRESENTER-TOKEN.md](PRESENTER-TOKEN.md). Add `--strict` to turn those warnings
+into a non-zero exit for CI.
 
 The password may also be given as a third argument, which is handier and leaves
 it in the shell history and in `ps` output — fine for a throwaway, not for the
 password that also gates the presenter token.
 
-### 5. Start the Backend
+### 4. Embed the Quiz
 
-The Node backend exposes only the API and WebSocket endpoint. In production it should sit behind Caddy and not be reached directly from browsers.
+Put an `<ld-quiz>` element into the deck and load the component, either from npm
+or as a script hosted by the Quizzy server.
+[packages/ld-quiz/README.md](packages/ld-quiz/README.md) describes both ways, the
+attributes — encrypted or plain quiz, `server-url`, `presenter-name` — and what the
+component asks of the host page.
 
-```bash
-pnpm start
-# Backend listens on http://localhost:3000
-```
-
-### 6. Start Caddy
-
-Caddy serves the contents of `dist/` and proxies API/WebSocket traffic to the backend. Run it from the repository root:
-
-```bash
-# Local development with HTTPS (uses the mkcert certificate in the repo root)
-CADDY_HOST=localhost TLS_CONFIG=caddy/tls-mkcert.txt caddy run --config Caddyfile
-
-# Local-network development (e.g. for phones on the same Wi-Fi)
-CADDY_HOST=192.168.178.161 TLS_CONFIG=caddy/tls-mkcert.txt caddy run --config Caddyfile
-
-# Production (automatic HTTPS via Let's Encrypt / ZeroSSL)
-CADDY_HOST=quiz.example.com caddy run --config Caddyfile
-```
-
-Open `https://<host>/demo.html` in your browser.
-
-### 7. Embed the Quiz
-
-The `<ld-quiz>` component supports both **encrypted** and **unencrypted** quizzes.
-
-#### Encrypted Quiz (password required)
-
-Add the `encrypted` attribute and provide the encrypted quiz data:
-
-```html
-<ld-quiz encrypted quiz="MTAwMDAw:abc123...encrypted-data..." server-url="https://quiz.example.com"></ld-quiz>
-<script type="module" src="https://quiz.example.com/component/1.0.1/ld-quiz.js"></script>
-```
-
-The presenter will be prompted for a password to decrypt the quiz.
-
-#### Unencrypted Quiz — Inline JSON
-
-Provide the quiz JSON directly via the `quiz` attribute:
-
-```html
-<ld-quiz quiz='{"title":"My Quiz","questions":[...]}' server-url="https://quiz.example.com"></ld-quiz>
-```
-
-The quiz title is shown with a "Start Quiz" button. No password is required.
-
-#### Unencrypted Quiz — File Upload
-
-If no `quiz` attribute is provided, a file picker is shown:
-
-```html
-<ld-quiz server-url="https://quiz.example.com"></ld-quiz>
-```
-
-The presenter selects a `.json` file, and the quiz title is shown with a "Start Quiz" button.
-
-> **Note:** The `server-url` attribute is required when the quiz server is hosted on a different domain than the slide set. If omitted, it defaults to the current page's origin.
-
-### 8. Cross-Origin Deployment
-
-When the slide server and quiz server are on different origins, the quiz server must allow cross-origin requests.
-
-Caddy adds permissive CORS headers (`Access-Control-Allow-Origin: *`) to all static-file responses, so stylesheets and ES modules can be loaded from any origin.
-
-For the API, CORS is handled by the Node backend. It allows all origins by default, but you can restrict it:
-
-```bash
-# Allow any origin (default, for development)
-ALLOWED_ORIGINS="*" pnpm start
-
-# Restrict to specific origins
-ALLOWED_ORIGINS="https://slides.example.com,https://presenter.example.com" pnpm start
-```
-
-### Caddy Configuration
-
-The `Caddyfile` in the repository root is configured through environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CADDY_HOST` | `localhost` | Site address (e.g. `localhost`, `192.168.178.161`, `quiz.example.com`) |
-| `BACKEND_HOST` | `localhost` | Host of the Node backend |
-| `BACKEND_PORT` | `3000` | Port of the Node backend |
-| `TLS_CONFIG` | `caddy/tls-auto.txt` | Path to a TLS snippet file. Empty file = automatic HTTPS. Set to `caddy/tls-mkcert.txt` for local HTTPS. |
-| `ALLOWED_ORIGINS` | `*` | Origins allowed by the Node API CORS middleware |
-
-### 9. Production Deployment
-
-See [DEPLOY.md](DEPLOY.md) for the full walkthrough. In short:
-
-- Caddy is the public entry point: it terminates TLS and serves `dist/`.
-- API requests (`/api/*`) and WebSocket connections (`/ws`) are proxied to the Node backend.
-- The backend runs on `localhost:3000` (configurable via `BACKEND_HOST`/`BACKEND_PORT`).
-- After every `git pull`, run `pnpm install && pnpm build` — `dist/` is not committed.
-
-TLS is required because the Web Crypto API (used for hashing and decryption) only works in a secure context.
-
-### 10. Run the Quiz
+### 5. Run the Quiz
 
 1. Open the page containing the quiz component
 2. Enter your password to decrypt and start the quiz
@@ -397,113 +256,50 @@ Code is escaped before anything else looks at it, so a sample containing
 safety net and the math renderer both leave code blocks alone. See
 `packages/server/src/code-renderer.js` for the ordering and why it matters.
 
-## `<ld-quiz>` Element Attributes
+### Stylesheets for math and code
 
-| Attribute | Required | Description |
-|-----------|----------|-------------|
-| `encrypted` | No | Presence attribute. If set, the `quiz` value is treated as encrypted ciphertext |
-| `quiz` | No | The quiz data: encrypted ciphertext (when `encrypted` is present) or inline JSON string. **Omit it** to get a file picker instead — see [Unencrypted Quiz — File Upload](#unencrypted-quiz--file-upload). Required when `encrypted` is present, since there is nothing to decrypt otherwise |
-| `presenter-name` | No | Prefills the presenter name field. See below |
-| `server-url` | No | The quiz server URL. Defaults to `window.location.origin` |
+Math formulas and code blocks are both rendered to HTML **on the server**, before
+anything is sent to a client. Neither KaTeX nor highlight.js is shipped to a
+participant's browser; each needs only a stylesheet to display the result.
 
-### `presenter-name`
-
-The presenter name is an isolation key, not a secret: it is what separates two
-lecturers running the same quiz file, and reproducing it exactly is what lets a
-presenter reattach to their own running session after a crash or a reload.
-Typing it slightly differently — `Michael` one week, `michael ` the next — is
-therefore the failure this attribute exists to prevent. Since a slide set is
-nearly always presented by the person who wrote it, the slide set is the right
-place to state the name:
+The `<ld-quiz>` component links both stylesheets itself, from the paths
+`/api/config` reports (see [Service discovery](#service-discovery)). A standalone
+page such as `demo.html` includes them directly:
 
 ```html
-<ld-quiz encrypted quiz="..." presenter-name="Michael Eichberg"></ld-quiz>
+<link rel="stylesheet" href="/katex/katex.min.css">
+<link rel="stylesheet" href="/highlight/highlight.min.css">
 ```
 
-It only prefills the field; the presenter can still change it before starting.
-The attribute takes precedence over the name remembered in `localStorage`,
-because it is a deliberate statement about this deck whereas the remembered
-value is whatever the last person at this lectern happened to type.
+Both are vendored under `packages/server/web/`. The highlighting theme is
+highlight.js's **`1c-light`**, kept under a theme-neutral filename on purpose:
+`/api/config` publishes it as `highlightCss`, so a deployment swaps the theme by
+replacing that one file (or by pointing `PUBLIC_HIGHLIGHT_CSS_PATH` elsewhere)
+without touching the component, the `<link>` tags, or any embedder's cached
+configuration.
 
-## Integrating Quizzy into Another Project
+A dark theme is deliberately not shipped yet.
 
-There are two ways to consume the component, and they exist because the two kinds
-of consumer are opposites. (Releasing a new version of the npm package is its own
-runbook: see [PUBLISH.md](PUBLISH.md).)
+## Security Model
 
-### 1. As an npm package (for projects that already have a build)
+- The quiz JSON is encrypted on the client side using the presenter's password
+- The server receives the **decrypted** quiz only after the presenter decrypts it
+- The server never persists quiz data to disk; all data is ephemeral (in-memory only)
+- The presenter is identified by a SHA-256 hash of the quiz; see [PRESENTER-TOKEN.md](PRESENTER-TOKEN.md)
+- Participants require no authentication; they join via a random room code
+- **Cross-origin**: which origins may use the API is set with `ALLOWED_ORIGINS`; see [DEPLOY.md §13](DEPLOY.md#13-backend-configuration)
 
-Use this when the embedding project runs a bundler of its own — LectureDoc2, or
-anything else that can resolve a bare specifier.
+## Server API
 
-```bash
-pnpm add @lecturedoc2/quizzy
-```
+### HTTP API
 
-```js
-import "@lecturedoc2/quizzy";                 // registers <ld-quiz>
-// or, to control the tag name:
-import { defineLdQuiz } from "@lecturedoc2/quizzy";
-defineLdQuiz("my-quiz");
-```
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/config` | Endpoint discovery and protocol version. See [Service discovery](#service-discovery). |
+| `GET` | `/api/practice` | The practice catalog: `{ quizzes: [{ id, category, title, description, questionCount }] }`, in catalog order. No answers. |
 
-No loader configuration is required. The component's stylesheet is authored as a
-plain JavaScript module (`src/quiz-styles.js`), so no CSS import plugin, import
-attribute, or asset pipeline has to be set up by the consumer — and no silent
-`undefined` when one is forgotten.
-
-### 2. As a hosted script tag (for projects that do not build)
-
-Use this when the embedding page is produced by something that cannot run a
-bundler — a Moodle plugin, a CMS, a hand-written HTML page.
-
-```html
-<ld-quiz quiz='{"title":"Demo","questions":[]}'
-         server-url="https://quiz.example.com"></ld-quiz>
-<script type="module"
-        src="https://quiz.example.com/component/1.0.1/ld-quiz.js"></script>
-```
-
-Prefer the **versioned** URL. `/component/<version>/ld-quiz.js` is immutable: it is
-served with a one-year `immutable` cache header and its bytes never change, so it
-can be pinned with Subresource Integrity and will still mean the same thing next
-term. `/component/ld-quiz.js` tracks whatever the quiz server was last deployed
-with, which is convenient for the pages served alongside it and a poor promise to
-make to anyone else.
-
-`/component/version.json` reports the version currently deployed.
-
-### Both at once on one page
-
-`<ld-quiz>` is registered globally, and `customElements.define` throws on a name
-that is already taken — a throw that aborts the module doing the defining. A page
-that combines both integration styles (a LectureDoc2 deck, itself bundling the
-component, embedded in a Moodle course that loads the hosted script) would do
-exactly that. Registration is therefore guarded: the second copy yields with a
-console warning instead of taking the page down. Call `defineLdQuiz("other-tag")`
-if both copies genuinely need to be live.
-
-### What the component asks of the host page
-
-| Requirement | Why |
-|-------------|-----|
-| A secure context (`https`, or `localhost`) | Web Crypto is used for hashing and decryption |
-| `script-src` allowing the quiz host | the module is loaded from there |
-| `style-src` allowing the quiz host | the KaTeX and highlighting stylesheets are linked into the shadow root |
-| `connect-src` allowing `wss://<quiz-host>` | the game runs over a WebSocket |
-| `img-src data:` | the join QR code is drawn to a canvas |
-
-Note what is **not** on that list: `style-src 'unsafe-inline'`. The component's
-own styles are applied as a constructed stylesheet (`adoptedStyleSheets`), which
-is a JavaScript object rather than markup and therefore outside the reach of
-`style-src`. A host with a strict policy — which a Moodle site usually has —
-needs no concession for it. Browsers without constructed stylesheets fall back to
-a `<style>` element, and there the old requirement returns.
-
-KaTeX is linked rather than inlined for a related reason: its `@font-face` rules
-use relative URLs, so a copy of the text would resolve the fonts against the
-embedding page instead of the quiz server, silently replacing every formula with
-a fallback font in precisely the cross-origin setup this component is for.
+There is deliberately no endpoint that lists rooms or sessions: the application
+has no administrator role, and a room can only be reached by knowing its id.
 
 ### Service discovery
 
@@ -537,10 +333,6 @@ Every key listed above is **required**. A component that does not find one of
 them refuses to start rather than falling back to a hardcoded layout: a silently
 wrong path is the failure mode this endpoint exists to remove.
 
-There is deliberately no fallback to a hardcoded layout: a server that cannot
-answer this is a server the component cannot talk to, and saying so immediately
-beats guessing an endpoint and failing later with a broken WebSocket.
-
 ### Protocol versioning
 
 The component and the server ship on different schedules: a slide deck pins a
@@ -562,34 +354,6 @@ pairing from failing obscurely.
 The version describes the wire format, not the release, and is deliberately
 decoupled from the package version so that a UI-only release does not invalidate
 every embedded copy in the wild.
-
-### Moodle
-
-Nothing Moodle-specific is required: a filter or editor plugin that emits the
-`<ld-quiz>` element and the hosted `<script type="module">` above is enough, plus
-the CSP directives listed earlier. Results stay in the quiz session — there is no
-LTI integration and no grade passback, and the server persists nothing.
-
-## Security Model
-
-- The quiz JSON is encrypted on the client side using the presenter's password
-- The server receives the **decrypted** quiz only after the presenter decrypts it
-- The server never persists quiz data to disk; all data is ephemeral (in-memory only)
-- The presenter uses a SHA-256 hash of the quiz to identify himself.
-- Participants require no authentication; they join via a random room code
-- **Cross-origin**: The quiz server allows CORS from any origin by default. For production, restrict with `ALLOWED_ORIGINS`
-
-## Server API
-
-### HTTP API
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `GET` | `/api/config` | Endpoint discovery and protocol version. See [Service discovery](#service-discovery). |
-| `GET` | `/api/practice` | The practice catalog: `{ quizzes: [{ id, category, title, description, questionCount }] }`, in catalog order. No answers. |
-
-There is deliberately no endpoint that lists rooms or sessions: the application
-has no administrator role, and a room can only be reached by knowing its id.
 
 ### WebSocket Messages
 
@@ -668,90 +432,6 @@ An unknown quiz id is refused with an `error` whose `code` is `practice_unavaila
 
 A participant socket that another connection takes over with the same resume token is
 closed with code `4000`; the join page does not reconnect after it.
-
-## Development
-
-### Testing
-
-The server package uses Node.js's built-in test runner:
-
-```bash
-pnpm test                            # from the repository root
-pnpm --filter ld-quiz-server test:watch
-```
-
-Tests cover:
-- **Room state management**: Participant lifecycle, game flow, scoring logic
-- **Math rendering**, **syntax highlighting** and the order the two run in
-- **Name validation** and **network address discovery**
-- **Server integration**: CORS headers, HTTP API, WebSocket message flow
-- **The integration contract**: `/api/config` and the protocol handshake
-
-#### Browser tests
-
-```bash
-pnpm test:browser                    # Playwright, needs a browser (see below)
-pnpm test:all                        # both suites
-```
-
-These need Chromium, which a fresh checkout does **not** have: `pnpm-workspace.yaml`
-blocks Playwright's postinstall so that deploying the server never drags several
-hundred megabytes of browser binaries onto a production host. Install it once,
-explicitly:
-
-```bash
-pnpm --filter ld-quiz-server exec playwright install chromium
-```
-
-Or point the tests at a browser that is already on the machine:
-
-```bash
-PLAYWRIGHT_CHROMIUM_PATH=/path/to/chrome pnpm test:browser
-```
-
-Crypto is no longer tested here; it lives in and is tested by
-[`@lecturedoc2/libcrypto`](https://github.com/LectureDoc2/ld-libcrypto).
-
-### Manual Testing
-
-```bash
-# Terminal 1
-pnpm build && pnpm start
-
-# Terminal 2 (repo root)
-CADDY_HOST=localhost TLS_CONFIG=caddy/tls-mkcert.txt caddy run --config Caddyfile
-
-# Open https://localhost/demo.html
-# Use password: test123
-```
-
-Go to, e.g.,: https://192.168.178.161/demo.html to open the application.
-
-### KaTeX and syntax-highlighting stylesheets
-
-Math formulas and code blocks are both rendered to HTML **on the server**, before
-anything is sent to a client. Neither KaTeX nor highlight.js is shipped to a
-participant's browser; each needs only a stylesheet to display the result.
-
-When using the `ld-quiz` web component, both stylesheets are fetched
-automatically from the configured `server-url` and linked into the shadow DOM, so
-no manual setup is required.
-
-For standalone pages (such as `demo.html`), include them in the host page:
-
-```html
-<link rel="stylesheet" href="/katex/katex.min.css">
-<link rel="stylesheet" href="/highlight/highlight.min.css">
-```
-
-Both are vendored under `packages/server/web/` and copied to `dist/app/` by the
-build. The highlighting theme is highlight.js's **`1c-light`**, kept under a
-theme-neutral filename on purpose: `/api/config` publishes it as `highlightCss`,
-so a deployment swaps the theme by replacing that one file (or by pointing
-`PUBLIC_HIGHLIGHT_CSS_PATH` elsewhere) without touching the component, the
-`<link>` tags, or any embedder's cached configuration.
-
-A dark theme is deliberately not shipped yet.
 
 ## Browser Support
 

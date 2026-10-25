@@ -4,6 +4,10 @@ End-to-end runbook to deploy the `quizzy` project (https://github.com/LectureDoc
 behind Caddy with HTTPS, using the DHBW HARICA ACME endpoint, with the Node backend
 running under a dedicated service user, both managed by systemd.
 
+This document covers the **first installation** only. Keeping a deployed server up to
+date is described in [UPDATE.md](UPDATE.md); running Quizzy on your own machine in
+[DEVELOPMENT.md](DEVELOPMENT.md).
+
 Replace the example values (host name, address, DNS server, TSIG key) with your own.
 Throughout, `<HOST>` means your fully-qualified name, e.g.
 `quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site`.
@@ -59,16 +63,16 @@ question is whether the CA can open a connection *to* your host:
 - **DNS-01** — Caddy publishes a TXT record and the CA only reads DNS. Needs no
   inbound reachability at all.
 
-At the time of writing, `certificates.dhbw.cloud` has **no IPv6 connectivity**, so:
+`certificates.dhbw.cloud` currently has **no IPv6 connectivity**, so:
 
 | host | certificate method | Caddy install (§6) |
 |---|---|---|
 | has a reachable IPv4 address | **HTTP-01** | 6a — apt package |
 | IPv6 only | **DNS-01** | 6b — built with the RFC2136 module |
 
-If issuance later fails with *both* `http-01` "Connection error" **and**
-`tls-alpn-01` "Unable to retrieve server certificate", that is this condition
-appearing at runtime — see the troubleshooting table.
+If issuance fails with *both* `http-01` "Connection error" **and** `tls-alpn-01`
+"Unable to retrieve server certificate", that is this condition appearing at
+runtime — see the troubleshooting table.
 
 ### 1.3 Record your choices
 
@@ -138,7 +142,7 @@ grep '^IPV6=' /etc/default/ufw          # expect IPV6=yes
 sudo ufw status verbose | grep '(v6)'   # expect (v6) entries for 22/80/443
 ```
 
-If it read `IPV6=no`, set it to `yes` and run `sudo ufw disable && sudo ufw enable`
+If it reads `IPV6=no`, set it to `yes` and run `sudo ufw disable && sudo ufw enable`
 to rebuild the rules.
 
 Unlike a cloud security group, `ufw` already permits the essential ICMPv6 types in
@@ -191,10 +195,9 @@ dig <HOST> AAAA +short
 
 ---
 
-## 5. Install Node.js (current LTS, system-wide)
+## 5. Install Node.js (system-wide)
 
-Node.js **24** is the Active LTS line as of mid-2026 (Node 22 is in maintenance,
-Node 26 is still "Current").
+Install Node.js **24**, the LTS line the CI tests against:
 
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
@@ -203,8 +206,8 @@ node --version          # expect v24.x
 command -v node         # expect /usr/bin/node  (matches the systemd unit in §11)
 ```
 
-> If NodeSource has no repository for Ubuntu 26.04 yet, fall back to the
-> distribution package: `sudo apt install -y nodejs npm`.
+> If NodeSource has no repository for Ubuntu 26.04, fall back to the distribution
+> package: `sudo apt install -y nodejs npm`.
 
 A system-wide install puts `node` in `/usr/bin`, executable by every user —
 including the login-less service user created in section 7. Do **not** use `nvm`: it
@@ -257,9 +260,7 @@ sudo apt install -y golang-go
 go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 
 # Build in an empty directory of your own -- NOT in /srv/quizzy. xcaddy writes its
-# binary as ./caddy, and /srv/quizzy/caddy already exists as the TLS snippets
-# *directory*, so building there fails with "open /srv/quizzy/caddy/caddy:
-# permission denied" and the install then reports "omitting directory 'caddy'".
+# binary as ./caddy, and /srv/quizzy/caddy is the TLS snippets *directory*.
 mkdir -p ~/caddy-build && cd ~/caddy-build
 ~/go/bin/xcaddy build --with github.com/caddy-dns/rfc2136
 
@@ -271,8 +272,8 @@ It is installed to `/usr/local/bin/caddy`, **not** over `/usr/bin/caddy`, so tha
 `apt upgrade` of the `caddy` package cannot silently replace it with a binary
 lacking the module — which would leave renewals failing months later.
 
-> **Maintenance:** this binary is not updated by `apt`. Rebuild it when a Caddy
-> release matters to you, with the same two commands.
+This binary is not updated by `apt`; [UPDATE.md §5](UPDATE.md#5-system-packages-nodejs-and-caddy)
+describes how to rebuild it.
 
 ---
 
@@ -298,36 +299,14 @@ sudo git clone https://github.com/LectureDoc2/quizzy.git /srv/quizzy
 sudo git config --global --add safe.directory /srv/quizzy
 ```
 
-> **The `sudo` is not optional, on either command.** Run `git config` without it and
-> the exception lands in `/home/<you>/.gitconfig` — fixing the ownership complaint
-> for the wrong account. The next unprivileged `git pull` then fails one step later
-> with `error: cannot open '.git/FETCH_HEAD': Permission denied`, because your login
-> user can read the `quizzy`-owned tree but not write to it. Verify with
-> `sudo git config --global --get-all safe.directory`.
+> **The `sudo` is not optional, on either command.** Without it the exception lands
+> in `/home/<you>/.gitconfig` — the wrong account — and every later `git pull` on
+> this tree fails. Verify with `sudo git config --global --get-all safe.directory`.
 
-Directory layout after checkout:
-
-```text
-/srv/quizzy/
-├── Caddyfile                 # template (installed to /etc/caddy in §10)
-├── caddy/
-│   ├── tls-auto.txt          # empty  -> automatic HTTPS via HTTP-01
-│   ├── tls-dns01.txt         # DNS-01 via RFC2136
-│   └── tls-mkcert.txt        # local development only
-├── package.json              # workspace root: build scripts
-├── pnpm-workspace.yaml
-├── build.js                  # esbuild -> dist/
-├── packages/
-│   ├── ld-quiz/              # embeddable <ld-quiz> web component (browser)
-│   └── server/               # Node backend
-│       ├── src/server.js     # entry point (listens on PORT || 3000)
-│       ├── web/              # HTML/CSS/page scripts (build input)
-│       └── package.json      # deps: express, ws, katex, highlight.js
-└── dist/                     # BUILD OUTPUT, served by Caddy (not in git)
-```
-
-> **`dist/` is not committed.** Regenerate it with `pnpm build` after every checkout
-> and every `git pull`. Caddy serves nothing until it exists.
+The repository layout is described under "Project Structure" in the README. Of it,
+this document uses the `Caddyfile` and the TLS snippets in `caddy/` (§10), the
+backend entry point `packages/server/src/server.js` (§11a), and `dist/`, which is not
+committed: `pnpm build` generates it (§9), and Caddy serves nothing until it exists.
 
 ---
 
@@ -344,16 +323,16 @@ sudo chown -R quizzy:quizzy /srv/quizzy
 ```
 
 The final `chown` matters: `sudo pnpm build` leaves root-owned files behind, and the
-backend runs as `quizzy`. Repeat it after every update.
+backend runs as `quizzy`.
 
 `esbuild` is a dev dependency and is required for the build, so do **not** install
 with `--prod` unless you build elsewhere and copy `dist/` over.
 
-**About dependency build scripts.** pnpm 10+ refuses to run dependency lifecycle
+**About dependency build scripts.** pnpm refuses to run dependency lifecycle
 scripts unless each has an explicit decision recorded, and an *undecided* package
-makes `pnpm install` exit **1**. That matters more than it sounds: `pnpm build` runs
-a dependency-status check first, so a stray `ERR_PNPM_IGNORED_BUILDS` aborts the
-build with a `runDepsStatusCheck` stack trace rather than a useful message.
+makes `pnpm install` exit **1**. Because `pnpm build` runs a dependency-status check
+first, a stray `ERR_PNPM_IGNORED_BUILDS` then aborts the build with a
+`runDepsStatusCheck` stack trace rather than a useful message.
 
 The decision is committed in `pnpm-workspace.yaml`, so a clean checkout needs no
 interaction:
@@ -367,8 +346,9 @@ If pnpm has written a placeholder (`esbuild: set this to true or false`) on this
 host, discard the local edit: `sudo git checkout pnpm-workspace.yaml`.
 
 `playwright` also appears in the tree — it is a dev dependency of the browser test
-suite. It is deliberately **not** in `allowBuilds`, so its postinstall never runs and
-**no browser binaries are downloaded**; the install stays around 40 MB.
+suite (DEVELOPMENT.md §6). It is deliberately **not** in `allowBuilds`, so its
+postinstall never runs and **no browser binaries are downloaded**; the install stays
+around 40 MB.
 
 ---
 
@@ -385,11 +365,11 @@ Both lines are required. The Caddyfile imports a TLS snippet from `caddy/`, and 
 path is resolved **relative to the Caddyfile itself**, so the snippets must sit next
 to the installed copy at `/etc/caddy/caddy/`.
 
-### 10b. Add the ACME issuer
+### 10b. Check the ACME issuer
 
-The repository Caddyfile does **not** contain the issuer — without it Caddy defaults
-to Let's Encrypt, which cannot validate this internal host. Edit the global options
-block at the top of `/etc/caddy/Caddyfile`:
+The global options block at the top of the Caddyfile already selects the DHBW
+HARICA ACME endpoint. It must: without `acme_ca`, Caddy defaults to Let's Encrypt,
+which cannot validate this internal host.
 
 ```caddyfile
 {
@@ -400,13 +380,16 @@ block at the top of `/etc/caddy/Caddyfile`:
 }
 ```
 
+If certificate notices should go to someone else, change `email` in
+`/etc/caddy/Caddyfile`.
+
 Leave the rest as-is. It contains two kinds of relative path, resolved differently:
 
 - **`import {$TLS_CONFIG:caddy/tls-auto.txt}`** is resolved when the config is
   *adapted*, relative to the Caddyfile containing the import — hence
   `/etc/caddy/caddy/…`, and hence the second `cp` in 10a. Running `caddy validate`
   from `/srv/quizzy` does **not** change this.
-- **`root * dist`** and other runtime paths resolve against the process working
+- **`root * dist/app`** and other runtime paths resolve against the process working
   directory, i.e. the `WorkingDirectory` set in section 11.
 
 ### 10c. Create the environment file
@@ -421,13 +404,24 @@ sudo chown root:caddy /etc/caddy/quizzy.env
 sudo chmod 640 /etc/caddy/quizzy.env
 ```
 
+These are all the variables the Caddyfile reads:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CADDY_HOST` | `localhost` | Site address: here the host name. `http://localhost:8080` serves plain HTTP on that port (DEVELOPMENT.md §3) |
+| `BACKEND_HOST` | `localhost` | Host of the backend; see the note below |
+| `BACKEND_PORT` | `3000` | Port of the backend; must match its `PORT` (§11a) |
+| `TLS_CONFIG` | `caddy/tls-auto.txt` | The TLS snippet, see below |
+| `HTTP_PORT` / `HTTPS_PORT` | `80` / `443` | Caddy's HTTP and HTTPS ports. Leave them unset in production |
+| `TSIG_KEY_NAME`, `TSIG_SECRET`, `TSIG_ALGORITHM`, `TSIG_NAMESERVER` | — | DNS-01 credentials, read by `caddy/tls-dns01.txt` (10d) |
+
 `TLS_CONFIG` selects the snippet, and therefore how certificates are obtained:
 
 | value | meaning |
 |---|---|
 | *(unset)* | `caddy/tls-auto.txt` — empty, i.e. HTTP-01 / TLS-ALPN-01 |
 | `caddy/tls-dns01.txt` | DNS-01 via RFC2136 |
-| `caddy/tls-mkcert.txt` | a local self-signed certificate, development only |
+| `caddy/tls-mkcert.txt` | a locally trusted mkcert certificate, development only (DEVELOPMENT.md §4) |
 
 > Leave `BACKEND_HOST=localhost` — it resolves to whichever families the host has,
 > so it is correct on IPv4, IPv6 and dual-stack alike. A literal IPv6 address would
@@ -436,7 +430,7 @@ sudo chmod 640 /etc/caddy/quizzy.env
 
 #### Optional: bind the backend to loopback only
 
-By default the backend listens on every interface, and the firewall from section 5
+By default the backend listens on every interface, and the firewall from section 3
 is what keeps port 3000 private. If you would rather it were not reachable at all
 from outside the machine, set `HOST` on the backend service — but it must name the
 **same family Caddy will connect over**, or Caddy gets "connection refused":
@@ -512,6 +506,8 @@ ReadWritePaths=/srv/quizzy
 WantedBy=multi-user.target
 EOF
 ```
+
+Further settings are added as `Environment=` lines here; section 13 lists them.
 
 ### 11b. Caddy drop-in override
 
@@ -620,83 +616,36 @@ the host's networking is not what you think it is.
 
 ---
 
-## 13. Updating the application
+## 13. Backend configuration
 
-```bash
-cd /srv/quizzy
-sudo git pull
-sudo pnpm install --frozen-lockfile
-sudo pnpm build
-sudo chown -R quizzy:quizzy /srv/quizzy
-sudo systemctl restart quizzy-backend
-```
+These are all the variables the backend reads. Set them as `Environment=` lines in
+the backend unit (§11a); [UPDATE.md §4](UPDATE.md#4-changing-the-configuration)
+shows how to change them on a running server.
 
-Caddy only needs restarting if you changed the `Caddyfile` or a TLS snippet, in
-which case repeat 10a first and then `sudo systemctl reload caddy`.
-
-### 13a. Changing the practice quizzes
-
-The practice catalog (`quizzes/practice.json`, or the file `PRACTICE_CATALOG`
-names) and the quiz files it lists are read when the backend starts and again on
-reload. A reload, unlike a restart, leaves every running lecture alone:
-
-```bash
-sudo systemctl reload quizzy-backend
-sudo journalctl -u quizzy-backend -n 20   # "Practice catalog …: N quiz(zes) available."
-```
-
-An entry that cannot be loaded is skipped and named in the log; the rest of the
-catalog still loads. Games already in progress finish with the quiz they started
-with.
-
----
-
-## 14. Troubleshooting quick reference
-
-| symptom | cause | fix |
+| Variable | Default | Meaning |
 |---|---|---|
-| `git pull` → `detected dubious ownership in repository` | The tree is owned by `quizzy`, but you are pulling as root | `sudo git config --global --add safe.directory /srv/quizzy` (§8) |
-| `git pull` → `cannot open '.git/FETCH_HEAD': Permission denied` | `safe.directory` was set for your login user, so the pull runs unprivileged against a `quizzy`-owned tree | Re-run **both** commands with `sudo` |
-| Backend fails to start right after an update | `sudo git pull` / `sudo pnpm build` left root-owned files | `sudo chown -R quizzy:quizzy /srv/quizzy` |
-| `pnpm build` → `ERR_PNPM_IGNORED_BUILDS: esbuild`, then a `runDepsStatusCheck` stack trace | pnpm exits 1 for any dependency whose build script has no recorded decision, and `pnpm build` checks dependency status first | `pnpm-workspace.yaml` must contain `allowBuilds:` / `  esbuild: true` (committed). If pnpm wrote a placeholder here, `sudo git checkout pnpm-workspace.yaml` |
-| `ERR_PNPM_OUTDATED_LOCKFILE` | The checkout's `pnpm-lock.yaml` is older than its `package.json` | Fix at the source: `pnpm install` locally, commit the lockfile. Do not reach for `--no-frozen-lockfile` — the frozen install is what guarantees the host gets the tested tree |
-| `caddy validate` → `File to import not found: caddy/tls-auto.txt` | Only the Caddyfile was copied to `/etc/caddy`, not the snippets beside it | Run both `cp` lines from 10a |
-| Caddy fails to start after editing the drop-in | `ExecStart=` was overridden without the empty reset line, so systemd has two `ExecStart` values | Keep the bare `ExecStart=` before the real one (§11b) |
-| `caddy validate` → unknown module `dns.providers.rfc2136` | Validating with the packaged binary rather than the custom build | Use `/usr/local/bin/caddy validate …` (§12) |
-| ACME `http-01` "Connection error" **and** `tls-alpn-01` "Unable to retrieve server certificate" | The CA validates by connecting *to* this host and has no IPv6 | Switch to the DNS-01 profile (§1.2, 6b, 10d). Confirm first with `curl -6 http://<HOST>/` from elsewhere — a `308` means your firewall is fine and the CA is the problem |
-| `xcaddy build` → `open /srv/quizzy/caddy/caddy: permission denied`, then `install: omitting directory 'caddy'` | Built inside `/srv/quizzy`, where `caddy/` is already the snippets directory (and which is root-owned) | Build in an empty directory (§6b) |
-| `curl`/`openssl` to `[::1]` → `tlsv1 alert internal error` | No SNI is sent for an IP literal, so Caddy cannot select a certificate. Not a certificate fault | Ask for the hostname and pin the address: `curl -g --resolve '<HOST>:443:[::1]' https://<HOST>/`, or `openssl s_client -servername <HOST>` |
-| Connections establish, then hang on larger transfers | ICMPv6 "Packet Too Big" is blocked, so PMTUD fails | Add the `ipv6-icmp` ingress rule (§3a) |
-| The name does not resolve for clients | Missing or wrong-type DNS record | §4 — `A` for IPv4, `AAAA` for IPv6 |
+| `PORT` | `3000` | Port the backend listens on; must match `BACKEND_PORT` (§10c) |
+| `HOST` | every interface | Address the backend binds to; see "bind the backend to loopback only" in §10c |
+| `ALLOWED_ORIGINS` | `*` | Comma-separated origins the API's CORS middleware accepts. Restrict it to the origins your decks are served from |
+| `PRACTICE_CATALOG` | `quizzes/practice.json` in the checkout | The practice catalog; see "Practice Mode" in the README. A missing file turns practice mode off |
+| `ENDED_ROOM_RETENTION_MINUTES` | 15 | How long a finished room is kept so that its results can still be exported |
+| `DETACHED_RETENTION_MINUTES` | 15 | How long a participant whose connection dropped can come back with the same name and score; see 13a |
+| `TRUST_PROXY` | *(unset)* | Whether to believe `X-Forwarded-For`; see 13c |
+| `MAX_…`, `…_WINDOW_MS`, `IPV6_PREFIX_BITS` | see 13b | The abuse limits |
+| `PUBLIC_WS_PATH`, `PUBLIC_JOIN_PATH`, `PUBLIC_CONTROL_PATH`, `PUBLIC_KATEX_CSS_PATH`, `PUBLIC_HIGHLIGHT_CSS_PATH` | the standard paths | Override the paths `/api/config` reports; see "Service discovery" in the README |
 
----
+### 13a. Data protection
 
-## Notes
+`DETACHED_RETENTION_MINUTES` is a data-protection setting, not only a memory one:
+for this long after a student's connection closes, their name, answers and score
+stay in the backend's RAM. Keep the window short; nothing is ever written to disk,
+and a restart still discards everything. The participant's browser keeps a random
+resume key in `sessionStorage` for the same purpose — per tab, never sent anywhere
+else, and deleted when the quiz ends or the tab is closed. Mention both in your
+privacy notice (Datenschutzerklärung); see `PARTICIPANT-REATTACH.md` for the
+reasoning.
 
-- **The presenter token is derived from the quiz file.** Anyone who can reconstruct
-  the quiz JSON can compute it, so an encrypted quiz should carry a high-entropy
-  `secret` field. See the README.
-- **Room state is in memory only.** Restarting the backend ends every running
-  session; there is no persistence and none is intended.
-- **`ENDED_ROOM_RETENTION_MINUTES`** (default 15) controls how long a finished room
-  is kept so its results can still be exported. Set it on the backend service if you
-  want longer.
-- **`DETACHED_RETENTION_MINUTES`** (default 15) controls how long a participant whose
-  connection dropped can come back with the same name and score. **This is a
-  data-protection setting, not only a memory one:** for this long after a student's
-  connection closes, their name, answers and score stay in the backend's RAM. Keep the
-  window short; nothing is ever written to disk, and a restart still discards
-  everything. The participant's browser keeps a random resume key in `sessionStorage`
-  for the same purpose — per tab, never sent anywhere else, and deleted when the quiz
-  ends or the tab is closed. Mention both in your privacy notice
-  (Datenschutzerklärung); see `PARTICIPANT-REATTACH.md` for the reasoning.
-- **`PRACTICE_CATALOG`** (default `quizzes/practice.json` in the checkout) names the
-  practice catalog; see "Practice Mode" in the README. A missing file just turns
-  practice mode off. Practice is anonymous — no names are collected — and a game is
-  dropped as soon as it ends. List only quizzes meant for practice: students can
-  replay a quiz as often as they like, and with a right/wrong verdict after each
-  answer a determined one can work out the multiple-choice answers by trial.
-### Sizing the abuse limits for your audience
+### 13b. Sizing the abuse limits for your audience
 
 **Read this before the first large lecture.** Every "per IP" limit in the backend
 is really *per egress address*, and an audience almost never has one address each:
@@ -722,7 +671,7 @@ thing to lower if it is a single classroom exposed to the open internet.
 | `MESSAGE_WINDOW_MS` | 10000 | The window for the above |
 | `IPV6_PREFIX_BITS` | 64 | Prefix used to group IPv6 clients. Set to `56` where subscribers get a /56 |
 
-Set them like any other variable in the unit file:
+For example:
 
 ```ini
 Environment=MAX_SOCKETS_PER_IP=1500
@@ -743,22 +692,43 @@ running, or a lecturer who cannot open a room while colleagues are presenting,
 with everything working fine for the first N people. That is a limit, not a bug —
 check the backend log, which names the limit it refused on.
 
-- **`TRUST_PROXY` normally needs no setting at all.** The backend believes
-  `X-Forwarded-For` when the connection comes from this machine, and ignores it
-  otherwise. That is exactly the deployment above -- Caddy and the backend share a
-  host -- and it cannot be abused from off-box, because the socket address is
-  decided by the kernel rather than by the peer.
+### 13c. `TRUST_PROXY`
 
-  Set it only for the two cases the default does not cover:
+It normally needs no setting at all. The backend believes `X-Forwarded-For` when
+the connection comes from this machine, and ignores it otherwise. That is exactly
+the deployment above — Caddy and the backend share a host — and it cannot be abused
+from off-box, because the socket address is decided by the kernel rather than by
+the peer.
 
-  - `TRUST_PROXY=true` when the proxy is on a *different* machine. Only do this if
-    that proxy is genuinely the sole route to this port; otherwise any client can
-    choose its own rate-limit bucket by sending the header itself.
-  - `TRUST_PROXY=false` to bucket strictly by socket address, which is right only
-    if there is no proxy at all.
+Set it only for the two cases the default does not cover:
 
-  If the backend ever finds itself taking loopback connections with no usable
-  `X-Forwarded-For`, it logs a warning once: in that situation every client counts
-  as the same client, so `maxRoomsPerIp` (5) silently becomes a limit on the whole
-  deployment. That warning previously did not exist and the symptom was a sixth
-  lecture that simply could not start a room.
+- `TRUST_PROXY=true` when the proxy is on a *different* machine. Only do this if
+  that proxy is genuinely the sole route to this port; otherwise any client can
+  choose its own rate-limit bucket by sending the header itself.
+- `TRUST_PROXY=false` to bucket strictly by socket address, which is right only
+  if there is no proxy at all.
+
+If the backend takes loopback connections with no usable `X-Forwarded-For`, it logs
+a warning once: in that situation every client counts as the same client, so the
+per-address limits from 13b — `MAX_ROOMS_PER_IP` in particular — apply to the whole
+deployment.
+
+---
+
+## 14. Troubleshooting quick reference
+
+Problems that only appear when updating an existing server (`git pull`, file
+ownership) are covered in [UPDATE.md §6](UPDATE.md#6-troubleshooting).
+
+| symptom | cause | fix |
+|---|---|---|
+| `pnpm build` → `ERR_PNPM_IGNORED_BUILDS: esbuild`, then a `runDepsStatusCheck` stack trace | pnpm exits 1 for any dependency whose build script has no recorded decision, and `pnpm build` checks dependency status first | `pnpm-workspace.yaml` must contain `allowBuilds:` / `  esbuild: true` (committed). If pnpm wrote a placeholder here, `sudo git checkout pnpm-workspace.yaml` |
+| `ERR_PNPM_OUTDATED_LOCKFILE` | The checkout's `pnpm-lock.yaml` is older than its `package.json` | Fix at the source: `pnpm install` locally, commit the lockfile. Do not reach for `--no-frozen-lockfile` — the frozen install is what guarantees the host gets the tested tree |
+| `caddy validate` → `File to import not found: caddy/tls-auto.txt` | Only the Caddyfile was copied to `/etc/caddy`, not the snippets beside it | Run both `cp` lines from 10a |
+| Caddy fails to start after editing the drop-in | `ExecStart=` was overridden without the empty reset line, so systemd has two `ExecStart` values | Keep the bare `ExecStart=` before the real one (§11b) |
+| `caddy validate` → unknown module `dns.providers.rfc2136` | Validating with the packaged binary rather than the custom build | Use `/usr/local/bin/caddy validate …` (§12) |
+| ACME `http-01` "Connection error" **and** `tls-alpn-01` "Unable to retrieve server certificate" | The CA validates by connecting *to* this host and has no IPv6 | Switch to the DNS-01 profile (§1.2, 6b, 10d). Confirm first with `curl -6 http://<HOST>/` from elsewhere — a `308` means your firewall is fine and the CA is the problem |
+| `xcaddy build` → `open /srv/quizzy/caddy/caddy: permission denied`, then `install: omitting directory 'caddy'` | Built inside `/srv/quizzy`, where `caddy/` is already the snippets directory (and which is root-owned) | Build in an empty directory (§6b) |
+| `curl`/`openssl` to `[::1]` → `tlsv1 alert internal error` | No SNI is sent for an IP literal, so Caddy cannot select a certificate. Not a certificate fault | Ask for the hostname and pin the address: `curl -g --resolve '<HOST>:443:[::1]' https://<HOST>/`, or `openssl s_client -servername <HOST>` |
+| Connections establish, then hang on larger transfers | ICMPv6 "Packet Too Big" is blocked, so PMTUD fails | Add the `ipv6-icmp` ingress rule (§3a) |
+| The name does not resolve for clients | Missing or wrong-type DNS record | §4 — `A` for IPv4, `AAAA` for IPv6 |

@@ -80,12 +80,21 @@ flowchart LR
 ```
 
 Only two things change: the deck sets `server-url`, and the Quizzy server must
-allow that origin. Everything else — the join page, the control window, the
-protocol — is identical.
+allow that origin. For static files it already does: Caddy sends
+`Access-Control-Allow-Origin: *` with every one, so the component and its
+stylesheets load from anywhere. The API's CORS is the API server's, governed by
+`ALLOWED_ORIGINS` (DEPLOY.md §13). Everything else — the join page, the control
+window, the protocol — is identical.
 
 ---
 
 ## Which files belong to which part
+
+The browser code has to be bundled before anything can serve it: it imports the
+crypto library by its bare specifier (`@lecturedoc2/libcrypto`), which browsers
+cannot resolve on their own. `build.js` uses esbuild to bundle each browser entry
+point, inlining the library, and assembles `dist/` so that its layout matches the
+public URLs one-to-one.
 
 `dist/` has two halves, because two different people deploy them.
 
@@ -122,13 +131,17 @@ directory that has to be reachable — nothing else.
 **`dist/app/` is the Quizzy server's own website** and is of no interest to
 anyone embedding the component.
 
-| URL | Served from | Cache |
-|---|---|---|
-| `/component/<version>/ld-quiz.js` | `dist/component/` | immutable, one year — pin this |
-| `/component/ld-quiz.js` | `dist/component/` | `no-cache`; tracks the deployment |
-| `/`, `/join.html`, `/practice.html`, `/control.html`, `/demo.html`, `/tools.html` | `dist/app/` | default |
-| `/styles/*`, `/katex/*`, `/js/*` | `dist/app/` | default |
-| `/api/config`, `/api/practice`, `/ws` | API server, via Caddy | — |
+| URL | Source | Served from | Cache |
+|---|---|---|---|
+| `/component/<version>/ld-quiz.js` | `packages/ld-quiz/src/ld-quiz.js`, bundled | `dist/component/` | immutable, one year — pin this |
+| `/component/ld-quiz.js` | the same bundle | `dist/component/` | `no-cache`; tracks the deployment |
+| `/`, `/join.html`, `/practice.html`, `/control.html`, `/demo.html`, `/tools.html` | `packages/server/web/*.html`, copied | `dist/app/` | default |
+| `/js/*` | `packages/server/web/js/`, bundled | `dist/app/` | default |
+| `/styles/*`, `/katex/*`, `/highlight/*` | `packages/server/web/`, copied | `dist/app/` | default |
+| `/api/config`, `/api/practice`, `/ws` | `packages/server/src/` | API server, via Caddy | — |
+
+Consumers that run a bundler themselves can skip all this and import the
+component's sources from npm instead.
 
 KaTeX is served by the **Quizzy server** — Caddy, out of `dist/app/katex/` — at
 whatever path `/api/config` reports, and `<link>`ed into the component's shadow
@@ -194,14 +207,10 @@ sequenceDiagram
 ```
 
 One fetch per origin, shared by every `<ld-quiz>` on the page — a deck can carry
-a dozen. Paths are returned relative to the URL that answered them, so the
-Quizzy server can live under a path prefix instead of owning a domain root.
-
-`PROTOCOL_VERSION` (in `packages/ld-quiz/src/protocol.js`, imported by the API
-server through a relative path) is the version gate. It is separate from the
-package version because the two halves ship on different schedules: a deck pins
-a bundled copy of the component, while the Quizzy server is updated by its
-administrator.
+a dozen. The response and the version gate are specified in the README, under
+"Service discovery" and "Protocol versioning". `PROTOCOL_VERSION` lives in
+`packages/ld-quiz/src/protocol.js`, which the API server imports through a
+relative path, so the two halves cannot disagree about it within one checkout.
 
 ---
 
@@ -300,10 +309,9 @@ The design points that are not obvious from the diagram:
   screen, and `rejoin_room` starts the countdown again. A finished game is
   removed as soon as its socket closes, an abandoned one after
   `DETACHED_RETENTION_MINUTES`.
-- **Verdicts, not answers.** As in a lecture, a practice results screen says
-  whether an answer was right but not what the right answer was. Estimates,
-  which a lecture ranks against the room, are scored by relative error in bands
-  instead, and the verdict names only the band.
+- **Verdicts, not answers**, and estimates scored by relative error rather than
+  by rank: what a student sees is described under "Practice Mode" and "Supported
+  Question Types" in the README.
 
 ---
 
@@ -314,4 +322,5 @@ take every other lecture on the Quizzy server with it.
 
 ---
 
-Deploying a Quizzy server: `DEPLOY.md`. Releasing the npm package: `PUBLISH.md`.
+Deploying a Quizzy server: `DEPLOY.md`. Updating one: `UPDATE.md`. Running one
+locally: `DEVELOPMENT.md`. Releasing the npm package: `PUBLISH.md`.

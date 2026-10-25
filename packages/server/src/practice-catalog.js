@@ -11,7 +11,7 @@ import { prepareQuiz } from './quiz-pipeline.js';
  *   {
  *     "resultsSeconds": 30,
  *     "quizzes": [
- *       { "id": "germany", "category": "Geography", "file": "germany-quiz.en.json",
+ *       { "id": "germany", "category": "Geography", "file": "demo/germany-quiz.en.json",
  *         "description": "Warm-up" }
  *     ]
  *   }

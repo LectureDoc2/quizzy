@@ -45,9 +45,10 @@ The catalog is a JSON file on the server, `quizzes/practice.json` by default
 {
   "resultsSeconds": 30,
   "quizzes": [
-    { "id": "germany", "category": "Geography", "file": "germany-quiz.en.json",
+    { "id": "germany", "category": "Geography", "file": "demo/germany-quiz.en.json",
       "description": "Capitals, rivers, mountains and states." },
-    { "id": "tor", "category": "IT Security", "file": "tor-quiz.en.json" }
+    { "id": "tor", "category": "IT Security",
+      "file": "practice/it_security/tor-quiz.en.json" }
   ]
 }
 ```
@@ -57,7 +58,7 @@ The catalog is a JSON file on the server, `quizzes/practice.json` by default
 - `category` — optional; quizzes without one are listed under "Other", last.
   Categories appear in the order of their first quiz in the file.
 - `file` — a plain (unencrypted) quiz JSON file, relative to the catalog and
-  inside its directory.
+  inside its directory; subdirectories are fine.
 - `description` — optional, shown under the title.
 - `resultsSeconds` — how long each results screen stays up (default 30).
 
@@ -103,7 +104,10 @@ Quizzy server publishes is described in
 │
 ├── tools/encrypt-quiz.js           # CLI utility to encrypt quiz JSON
 ├── tools/validate-quiz.js          # CLI utility to check a quiz file
-├── quizzes/                        # example quizzes (plain and encrypted)
+├── quizzes/
+│   ├── practice.json               # the practice catalog
+│   ├── demo/                       # the quizzes of the demo page, and other demonstrations
+│   └── practice/<category>/        # practice quizzes, one directory per category
 └── dist/                           # build output served by Caddy (git-ignored)
 ```
 

@@ -182,6 +182,26 @@
         0
       ],
       "timeLimit": 45
+    },
+    {
+      "type": "ordering",
+      "text": "Order the Java data types by their value range (smallest first).",
+      "options": [
+        "<code>byte</code>",
+        "<code>long</code>",
+        "<code>float</code>"
+      ],
+      "timeLimit": 30
+    },
+    {
+      "type": "ordering",
+      "text": "Order the Java literals by their value (smallest first).",
+      "options": [
+        "<code>7</code>",
+        "<code>0xB</code>",
+        "<code>0x12</code>"
+      ],
+      "timeLimit": 30
     }
   ]
 }

@@ -1,6 +1,7 @@
 import { PROTOCOL_VERSION, PROTOCOL_MISMATCH } from '../../../ld-quiz/src/protocol.js';
 import { createI18n, detectLocale, translatePage } from './i18n.js';
 import { measuredLength } from '../../src/short-answer.js';
+import { attachSortable } from './sortable-list.js';
 
 /** This page's language: ?lang= if given, else the browser's; see i18n.js. */
 const i18n = createI18n(detectLocale(window.location.search, navigator.languages));
@@ -793,6 +794,27 @@ class QuizClient {
           <button type="submit" class="btn btn--primary btn--full" id="submit-btn">${html('question.submit')}</button>
         </form>
       `;
+    } else if (question.type === 'ordering') {
+      // The items arrive shuffled; data-index is their place in that list,
+      // which is what the server expects back. See sortable-list.js.
+      inputHtml = `
+        <p class="ordering-hint" id="ordering-hint">${html('question.orderHint')}</p>
+        <ol class="ordering" id="ordering" role="list" aria-describedby="ordering-hint">
+          ${question.options.map((opt, i) => `
+            <li class="ordering__item" data-index="${i}">
+              <span class="ordering__handle" aria-hidden="true"></span>
+              <span class="ordering__number" aria-hidden="true"></span>
+              <div class="ordering__content">${opt}</div>
+              <span class="ordering__moves">
+                <button type="button" class="ordering__move ordering__move--up" data-move="-1" aria-label="${html('question.moveUp')}"></button>
+                <button type="button" class="ordering__move ordering__move--down" data-move="1" aria-label="${html('question.moveDown')}"></button>
+              </span>
+            </li>
+          `).join('')}
+        </ol>
+        <p class="ordering__status" id="ordering-status" aria-live="polite"></p>
+        <button class="btn btn--primary btn--full ordering__submit" id="submit-btn">${html('question.submit')}</button>
+      `;
     }
 
     content.innerHTML = `
@@ -845,6 +867,21 @@ class QuizClient {
         const answer = parseFloat(document.getElementById('answer').value);
         if (isNaN(answer)) return;
         this.submitAnswer(answer);
+      });
+    } else if (question.type === 'ordering') {
+      const status = document.getElementById('ordering-status');
+      const sortable = attachSortable(document.getElementById('ordering'), {
+        onMove: (item, position, total) => {
+          const text = (item.querySelector('.ordering__content')?.textContent || '').replace(/\s+/g, ' ').trim();
+          status.textContent = t('question.movedTo', {
+            item: text.length > 60 ? `${text.slice(0, 59)}…` : text,
+            position: position + 1,
+            total
+          });
+        }
+      });
+      document.getElementById('submit-btn').addEventListener('click', () => {
+        this.submitAnswer(sortable.order());
       });
     } else if (question.type === 'short-answer') {
       const input = document.getElementById('answer');
@@ -956,6 +993,31 @@ class QuizClient {
         } else {
           verdict = t('feedback.recorded');
         }
+      }
+    } else if (question.type === 'ordering') {
+      // The participant's own order. The server sends the items as they were
+      // shown and the answer as positions in that list -- never the correct
+      // order, which is the presenter's to reveal.
+      const options = Array.isArray(question.options) ? question.options : [];
+      const order = Array.isArray(feedback.answer)
+        ? feedback.answer.filter((i) => Number.isInteger(i) && i >= 0 && i < options.length)
+        : [];
+      if (feedback.answered && order.length > 0) {
+        detailHtml = `
+          <div class="feedback__answer">${html('feedback.yourOrder')}</div>
+          <ol class="ordering ordering--feedback" role="list">
+            ${order.map((i) => `
+              <li class="ordering__item">
+                <span class="ordering__number" aria-hidden="true"></span>
+                <div class="ordering__content">${options[i]}</div>
+              </li>
+            `).join('')}
+          </ol>
+        `;
+      }
+      if (feedback.answered) {
+        verdict = t(feedback.isCorrect ? 'feedback.correct' : 'feedback.wrong');
+        verdictClass = feedback.isCorrect ? 'feedback__verdict--correct' : 'feedback__verdict--wrong';
       }
     } else if (question.type === 'short-answer') {
       // The participant's own text: escaped, like every other participant

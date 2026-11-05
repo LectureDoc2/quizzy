@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
-import { parseJson, locateJsonError, formatJsonError, JsonSyntaxError } from '../src/json-location.js';
+import { parseJson, locateJsonError, locateJsonPath, formatJsonError, JsonSyntaxError } from '../src/json-location.js';
 
 const QUIZZES = fileURLToPath(new URL('../../../quizzes/', import.meta.url));
 
@@ -172,5 +172,50 @@ describe('locateJsonError agrees with JSON.parse', () => {
     const deep = '['.repeat(200000) + ']'.repeat(199999);
     assert.strictEqual(locateJsonError(deep), null);
     assert.throws(() => parseJson(deep), (err) => err instanceof SyntaxError && !(err instanceof JsonSyntaxError));
+  });
+});
+
+describe('locateJsonPath', () => {
+  const text = [
+    '{',
+    '  "title": "a \\" } ] string",',
+    '  "questions": [',
+    '    { "text": "[{,}]" },',
+    '    {',
+    '      "options": [ "x" ,',
+    '        "y" ]',
+    '    }',
+    '  ]',
+    '}'
+  ].join('\n');
+  const at = (path) => {
+    const { line, column, path: found } = locateJsonPath(text, path);
+    return { line, column, found };
+  };
+
+  it('points at a property by its name and at an element by its first character', () => {
+    assert.deepStrictEqual(at(['title']), { line: 2, column: 3, found: ['title'] });
+    assert.deepStrictEqual(at(['questions', 1]), { line: 5, column: 5, found: ['questions', 1] });
+    assert.deepStrictEqual(at(['questions', 1, 'options', 1]), { line: 7, column: 9, found: ['questions', 1, 'options', 1] });
+  });
+
+  it('is not misled by brackets and quotes inside strings', () => {
+    assert.deepStrictEqual(at(['questions', 1, 'options', 0]), { line: 6, column: 20, found: ['questions', 1, 'options', 0] });
+  });
+
+  it('stops at the deepest part that exists', () => {
+    assert.deepStrictEqual(at(['questions', 0, 'options']), { line: 4, column: 5, found: ['questions', 0] });
+    assert.deepStrictEqual(at(['questions', 9]), { line: 3, column: 3, found: ['questions'] });
+    assert.deepStrictEqual(at(['title', 0]), { line: 2, column: 3, found: ['title'] });
+    assert.deepStrictEqual(at([]), { line: 1, column: 1, found: [] });
+  });
+
+  it('takes the last of duplicate names, as JSON.parse does', () => {
+    assert.strictEqual(locateJsonPath('{ "a": 1,\n  "a": 2 }', ['a']).line, 2);
+  });
+
+  it('comes with an excerpt, and gives up on invalid JSON', () => {
+    assert.strictEqual(locateJsonPath(text, ['title']).excerpt, '2 |   "title": "a \\" } ] string",\n  |   ^');
+    assert.strictEqual(locateJsonPath('[1,]', [0]), null);
   });
 });

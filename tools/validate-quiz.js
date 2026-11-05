@@ -18,7 +18,7 @@
  * here and at /tools.html. What is left in this file is the command line.
  */
 import { readFileSync } from 'node:fs';
-import { validateQuiz } from '../packages/server/src/quiz-validator.js';
+import { validateQuiz, locateQuizMessages } from '../packages/server/src/quiz-validator.js';
 import { checkSecret } from '../packages/server/src/quiz-secret-advice.js';
 import { parseJson, formatJsonError } from '../packages/server/src/json-location.js';
 
@@ -38,7 +38,7 @@ function describe(file) {
   }
 
   const structure = validateQuiz(quiz);
-  if (!structure.valid) return { errors: structure.errors, warnings: [] };
+  if (!structure.valid) return { errors: locateQuizMessages(raw, structure.errors), warnings: [] };
 
   return {
     errors: [],

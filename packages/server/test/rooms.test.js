@@ -1633,3 +1633,142 @@ describe('Short-answer questions', () => {
     });
   });
 });
+
+describe('Ordering questions', () => {
+  const ITEMS = ['<code>byte</code>', '<code>short</code>', '<code>long</code>', '<code>float</code>'];
+  const QUIZ = { title: 'Java', questions: [{
+    type: 'ordering',
+    text: 'Order by value range (ascending).',
+    options: ITEMS,
+    timeLimit: 30
+  }] };
+
+  function orderingRoom(...names) {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const participants = names.map((name) => room.addParticipant({ readyState: 1 }, name));
+    room.startGame();
+    return { room, participants };
+  }
+
+  /** The answer that puts the items as shown into `items` order. */
+  function answerFor(room, items) {
+    const shown = room.getPublicQuestion().options;
+    return items.map((item) => shown.indexOf(item));
+  }
+
+  it('sends the items shuffled, never in the correct order', () => {
+    for (let run = 0; run < 200; run++) {
+      const { room } = orderingRoom();
+      const pub = room.getPublicQuestion();
+      assert.notDeepStrictEqual(pub.options, ITEMS);
+      assert.deepStrictEqual([...pub.options].sort(), [...ITEMS].sort());
+    }
+  });
+
+  it('sends the same order every time, for a rejoin, and nothing else', () => {
+    const { room } = orderingRoom('Alice');
+    const pub = room.getPublicQuestion();
+    assert.deepStrictEqual(room.getPublicQuestion(), pub);
+    assert.deepStrictEqual(Object.keys(pub).sort(), ['options', 'text', 'timeLimit', 'type']);
+  });
+
+  it('never changes the quiz: practice quizzes are frozen and shared', () => {
+    const frozen = structuredClone(QUIZ);
+    Object.freeze(frozen.questions[0].options);
+    Object.freeze(frozen.questions[0]);
+    Object.freeze(frozen.questions);
+    Object.freeze(frozen);
+    const room = new RoomManager().openPracticeRoom(frozen);
+    room.addParticipant({ readyState: 1 }, 'Practice');
+    assert.doesNotThrow(() => room.startGame());
+    assert.deepStrictEqual(frozen.questions[0].options, ITEMS);
+    assert.notDeepStrictEqual(room.getPublicQuestion().options, ITEMS);
+  });
+
+  it('validateAnswer maps the positions as shown back to the items', () => {
+    const { room } = orderingRoom('Alice');
+    assert.deepStrictEqual(room.validateAnswer(answerFor(room, ITEMS)), { valid: true, answer: [0, 1, 2, 3] });
+    const reversed = [...ITEMS].reverse();
+    assert.deepStrictEqual(room.validateAnswer(answerFor(room, reversed)), { valid: true, answer: [3, 2, 1, 0] });
+  });
+
+  it('validateAnswer rejects anything but every item exactly once', () => {
+    const { room } = orderingRoom('Alice');
+    for (const payload of [
+      [], [0, 1, 2], [0, 1, 2, 3, 4], [0, 1, 2, 2], [0, 1, 2, 4], [0, 1, 2, -1], [0, 1, 2, 2.5],
+      ['0', '1', '2', '3'], null, 42, 'byte', { 0: 0, 1: 1, 2: 2, 3: 3, length: 4 }
+    ]) {
+      const result = room.validateAnswer(payload);
+      assert.strictEqual(result.valid, false, JSON.stringify(payload));
+      assert.strictEqual(result.code, 'invalid_answer');
+    }
+  });
+
+  it('scores 100 for exactly the right order and 0 otherwise', () => {
+    const { room, participants: [alice, bob, carol] } = orderingRoom('Alice', 'Bob', 'Carol');
+    room.submitAnswer(alice.id, answerFor(room, ITEMS));
+    room.submitAnswer(bob.id, [0, 1, 2, 3]); // submitted as shown: never right
+    room.submitAnswer(carol.id, answerFor(room, [ITEMS[1], ITEMS[0], ITEMS[2], ITEMS[3]]));
+    assert.strictEqual(room.state, 'results');
+    assert.deepStrictEqual([alice, bob, carol].map((p) => p.score), [100, 0, 0]);
+  });
+
+  it('tells a participant their own order and verdict, but not the correct order', () => {
+    const { room, participants: [alice, bob] } = orderingRoom('Alice', 'Bob');
+    const shown = room.getPublicQuestion().options;
+    const right = answerFor(room, ITEMS);
+    room.submitAnswer(alice.id, right);
+    room.submitAnswer(bob.id, [0, 1, 2, 3]);
+    const results = room.endQuestion();
+
+    const good = room.getAnswerFeedback(alice.id, results);
+    assert.strictEqual(good.isCorrect, true);
+    assert.deepStrictEqual(good.question.options, shown);
+    assert.deepStrictEqual(good.answer, right);
+
+    const bad = room.getAnswerFeedback(bob.id, results);
+    assert.strictEqual(bad.isCorrect, false);
+    assert.deepStrictEqual(bad.question.options, shown);
+    assert.notDeepStrictEqual(bad.question.options, ITEMS);
+    assert.deepStrictEqual(bad.answer, [0, 1, 2, 3]);
+  });
+
+  it('records how often each item was put in its place, without names', () => {
+    const { room, participants } = orderingRoom('Alice', 'Bob', 'Carol');
+    const [alice, bob, carol] = participants;
+    room.submitAnswer(alice.id, answerFor(room, ITEMS));
+    // byte and short swapped: long and float still in place.
+    room.submitAnswer(bob.id, answerFor(room, [ITEMS[1], ITEMS[0], ITEMS[2], ITEMS[3]]));
+    room.submitAnswer(carol.id, answerFor(room, [...ITEMS].reverse()));
+
+    const stat = room.getStatistics().questions[0];
+    assert.strictEqual(stat.type, 'ordering');
+    assert.strictEqual(stat.responseCount, 3);
+    assert.strictEqual(stat.correctCount, 1);
+    assert.deepStrictEqual(stat.items, [
+      { index: 0, text: ITEMS[0], placedCorrectly: 1 },
+      { index: 1, text: ITEMS[1], placedCorrectly: 1 },
+      { index: 2, text: ITEMS[2], placedCorrectly: 2 },
+      { index: 3, text: ITEMS[3], placedCorrectly: 2 }
+    ]);
+    assert.ok(!JSON.stringify(stat).includes('Alice'));
+  });
+
+  it('shuffles each ordering question anew, and forgets the order for other types', () => {
+    const quiz = { title: 'Mixed', questions: [
+      QUIZ.questions[0],
+      { type: 'estimation', text: 'How many?', correctAnswer: 3 },
+      QUIZ.questions[0]
+    ] };
+    const room = new Room('ABC123', 'token', quiz);
+    room.startGame();
+    assert.ok(Array.isArray(room.currentOrder));
+    room.endQuestion();
+    room.nextQuestion();
+    assert.strictEqual(room.currentOrder, null);
+    assert.strictEqual(room.getPublicQuestion().options, undefined);
+    room.endQuestion();
+    room.nextQuestion();
+    assert.ok(Array.isArray(room.currentOrder));
+  });
+});

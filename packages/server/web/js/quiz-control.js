@@ -408,6 +408,19 @@ class QuizControl {
         list.append(item);
       });
       optionsEl.append(list);
+    } else if (q.type === "ordering" && Array.isArray(q.options)) {
+      // The author lists the items in the correct order; participants see
+      // them shuffled (see Room.getPublicQuestion()).
+      optionsEl.append(el("div", "question__correct-answer", "Correct order:"));
+      const list = el("ol", "question__options");
+      for (const option of q.options) {
+        const item = el("li", "question__option question__option--correct");
+        const body = el("span", "question__option-text");
+        body.innerHTML = option;
+        item.append(body);
+        list.append(item);
+      }
+      optionsEl.append(list);
     } else if (q.type === "estimation" && q.correctAnswer !== undefined) {
       optionsEl.append(el("div", "question__correct-answer", `Correct answer: ${q.correctAnswer}`));
     } else if (q.type === "short-answer" && Array.isArray(q.acceptedAnswers)) {
@@ -427,8 +440,21 @@ class QuizControl {
    * Answers originate from participants, who are untrusted. The server rejects
    * malformed answers (see Room.validateAnswer), but this view does not depend
    * on that: the result is plain text and is inserted via textContent.
+   *
+   * @param {unknown} answer
+   * @param {object} [question] the question answered; an ordering answer is
+   *   shown as its items, in the participant's order
    */
-  formatAnswer(answer) {
+  formatAnswer(answer, question) {
+    if (Array.isArray(answer) && question?.type === "ordering" && Array.isArray(question.options)) {
+      return answer
+        .map((index) =>
+          Number.isInteger(index) && index >= 0 && index < question.options.length
+            ? QuizControl.toPlainText(question.options[index])
+            : "?",
+        )
+        .join(" → ");
+    }
     if (Array.isArray(answer)) {
       // Number() matters: with a string index, `index + 1` would concatenate
       // rather than add, carrying the participant's payload through unchanged.
@@ -450,7 +476,7 @@ class QuizControl {
     for (const a of msg.answers) {
       const item = el("div", "answer-item");
       item.append(el("span", "answer-name", a.name));
-      item.append(el("span", "answer-value", this.formatAnswer(a.answer)));
+      item.append(el("span", "answer-value", this.formatAnswer(a.answer, this.currentQuestion)));
       const points = Number(a.points) || 0;
       item.append(
         el(
@@ -641,7 +667,8 @@ class QuizControl {
    * Build the results summary.
    *
    * One row per answer option for multiple-choice questions, one per distinct
-   * answer to a short-answer question, and one per estimation question, so
+   * answer to a short-answer question, one per item of an ordering question,
+   * and one per estimation question, so
    * the whole thing opens as a flat table in a
    * spreadsheet and sorts by "percent correct" to surface the weak topics.
    */
@@ -721,7 +748,30 @@ class QuizControl {
             ]),
           );
         }
-      } else {
+      } else if (q.type === "ordering") {
+        const percentCorrect = q.responseCount
+          ? `${((q.correctCount / q.responseCount) * 100).toFixed(1)}%`
+          : "";
+        // One row per item, in the correct order, with how many answers put
+        // it in its place ("Times chosen"): the item misplaced most is the
+        // misconception.
+        (q.items || []).forEach((item, i) => {
+          rows.push(
+            QuizControl.csvRow([
+              number,
+              "ordering",
+              i === 0 ? text : "",
+              i === 0 ? q.responseCount : "",
+              `${i + 1}. ${QuizControl.toPlainText(item.text)}`,
+              `position ${i + 1}`,
+              item.placedCorrectly,
+              share(item.placedCorrectly),
+              i === 0 ? q.correctCount : "",
+              i === 0 ? percentCorrect : "",
+            ]),
+          );
+        });
+      } else if (q.type === "estimation") {
         const withinShare = q.withinTenPercent === null ? "" : share(q.withinTenPercent);
         rows.push(
           QuizControl.csvRow([

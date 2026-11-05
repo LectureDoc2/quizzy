@@ -30,7 +30,7 @@
  * secret generation are unavailable there and say so up front. Validation is
  * pure JavaScript and keeps working.
  */
-import { validateQuiz } from '../../src/quiz-validator.js';
+import { validateQuiz, locateQuizMessages } from '../../src/quiz-validator.js';
 import { checkSecret, generateSecret } from '../../src/quiz-secret-advice.js';
 import { encryptQuiz, PBKDF2_ITERATIONS } from '../../src/quiz-encryption.js';
 import { parseJson, formatJsonError } from '../../src/json-location.js';
@@ -78,7 +78,7 @@ function inspect(text) {
   }
 
   const structure = validateQuiz(quiz);
-  if (!structure.valid) return { quiz, errors: structure.errors, warnings: [] };
+  if (!structure.valid) return { quiz, errors: locateQuizMessages(text, structure.errors), warnings: [] };
 
   const count = quiz.questions.length;
   return {

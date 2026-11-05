@@ -54,6 +54,17 @@ A real-time, embeddable quiz application designed for integration with any HTML-
    `acceptedAnswers`. Typing takes longer than tapping;
    allow 30–45 seconds. Answers are free text and cannot be moderated: they
    appear, without names, in the control window and the CSV export.
+4. **Ordering**: The participant puts 2–10 items in order — data types by value
+   range, literals by value, steps of an algorithm. 100 points for exactly the
+   right order, 0 otherwise. The author lists the `options` in the correct
+   order; every participant sees them in the same shuffled order, which is never
+   the correct one. Items are dragged by their handle (with a mouse, anywhere on
+   the item), or moved with their ↑/↓ buttons, which also work from the
+   keyboard and with a screen reader. A touch on an item outside its handle
+   scrolls the page as usual. The results screen shows participants their own
+   order and a verdict, not the correct order; the control window shows the
+   correct order, and the CSV export counts per item how many participants put
+   it in its place.
 
 ## Practice Mode
 
@@ -253,6 +264,12 @@ component asks of the host page.
       "acceptedAnswers": ["Overloading [of Methods]", "Method Overloading",
                           "Überladen [von Methoden]", "Methodenüberladung"],
       "timeLimit": 40
+    },
+    {
+      "type": "ordering",
+      "text": "Order the data types by value range (ascending).",
+      "options": ["<code>byte</code>", "<code>long</code>", "<code>float</code>"],
+      "timeLimit": 30
     }
   ]
 }
@@ -261,7 +278,8 @@ component asks of the host page.
 - `text`: Question text. Rendered as HTML, and preprocessed on the server for
   KaTeX math (`\(...\)`, `\[...\]`, `$...$`, `$$...$$`) and for fenced code
   blocks — see [Code blocks](#code-blocks) below.
-- `options`: Array of strings (for multiple-choice)
+- `options`: Array of strings (for multiple-choice), or for ordering 2–10
+  distinct strings **in the correct order** — participants get them shuffled
 - `correctIndices`: Array of zero-based indices of correct options (for multiple-choice). Single-answer questions use a one-element array, e.g. `[0]`. Multi-select questions use multiple indices, e.g. `[0, 2]`.
 - `correctAnswer`: Numeric value (for estimation)
 - `acceptedAnswers`: Array of 1–50 strings (for short-answer), each at most 200
@@ -483,8 +501,10 @@ Messages that open a conversation (`create_room`, `join_room`, `rejoin_room`,
   - `roomId`: Room to rejoin
   - `resumeToken`: The token received in `joined`
 - `submit_answer`: Submit an answer
-  - `answer`: Array of option indices (multiple-choice), a number (estimation), or a string
-    (short-answer; no longer than the question's `maxLength`, spacing collapsed and umlauts written out)
+  - `answer`: Array of option indices (multiple-choice), a number (estimation), a string
+    (short-answer; no longer than the question's `maxLength`, spacing collapsed and umlauts written out),
+    or for ordering every index of the question's `options` as received, once each, in the
+    participant's order
 - `start_practice`: Start a [practice game](#practice-mode) on this connection
   - `protocolVersion`: The wire-format version the client speaks
   - `quizId`: A catalog `id`
@@ -525,12 +545,15 @@ Messages that open a conversation (`create_room`, `join_room`, `rejoin_room`,
 - `question`: New question available; includes `questionIndex`, `totalQuestions`, `question`, `startTime`,
   and `alreadyAnswered` when it is replayed to somebody who has already answered. `question` carries
   `type`, `text`, `options` and `timeLimit`, and for a short-answer question `answerLength: { min, max }`
-  and `maxLength`, derived from the accepted answers — never the answers themselves
+  and `maxLength`, derived from the accepted answers — never the answers themselves. An ordering
+  question's `options` are shuffled, the same for everybody in the room and never in the correct
+  order
 - `results`: Round results with `leaderboard`, `questionIndex`, and `waiting`. In a practice game
   also `practice: true`, `totalQuestions` and `advanceInMs` (time left on the countdown), and an estimate's
   `feedback` carries `band` (10, 25, 50 or `null`) and `points` instead of a rank. Sent again when the
   presenter accepts a short answer after all; the `feedback` of those who gave it then carries
-  `acceptedByPresenter: true`
+  `acceptedByPresenter: true`. For an ordering question, `feedback.question.options` are the items
+  as they were shown and `feedback.answer` the participant's order as indices into them
 - `game_ended`: Final results; includes `leaderboard`, and in a practice game
   `summary: { score, maxScore, correct, total }`
 

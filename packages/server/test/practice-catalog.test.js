@@ -143,6 +143,17 @@ describe('Practice catalog', () => {
     ].join('\n'));
   });
 
+  it('names the line of each reason a quiz is invalid', async () => {
+    write('invalid-lines.json', '{\n  "questions": [\n    { "type": "estimation", "text": "?" }\n  ]\n}\n');
+    const { errors } = await load({ quizzes: [{ id: 'il', file: 'invalid-lines.json' }] });
+    assert.deepStrictEqual(errors, [[
+      'entry 1 ("il"): the quiz is invalid -- skipped.',
+      '    line 3: question 1: correctAnswer must be a finite number.',
+      '      3 |     { "type": "estimation", "text": "?" }',
+      '        |     ^'
+    ].join('\n')]);
+  });
+
   it('points into the catalog itself when it is the file that is broken', async () => {
     const { errors } = await load('{\n  "quizzes": [\n    { "id": "a" "file": "quiz.json" }\n  ]\n}');
     assert.strictEqual(errors.length, 1);

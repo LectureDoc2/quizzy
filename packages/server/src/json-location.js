@@ -21,6 +21,9 @@
  * nesting depth overflows its stack -- the engine's own error is rethrown, so
  * the result is never worse than plain `JSON.parse`.
  *
+ * `locateJsonPath` does the same for a file that parses but does not
+ * validate: it turns "question 21" into the line it is written on.
+ *
  * Pure JavaScript with no imports: the server, the command line tools and
  * the browser tools page (bundled by esbuild) share this one module.
  */
@@ -330,6 +333,96 @@ function excerptAt(text, offset) {
 }
 
 /**
+ * Where the value at `path` (property names and array indices, e.g.
+ * `['questions', 20, 'acceptedAnswers']`) is written in the valid JSON `text`.
+ *
+ * A validation message names a part of the quiz, not a place in the file;
+ * this finds the place. A property points at its name, an array element at
+ * its first character. A path that runs into something that is not there --
+ * a missing property, an index past the end -- stops at the deepest part that
+ * is, so a "missing field" message points at the object it is missing from.
+ * With a duplicate property name the last one counts, as in `JSON.parse`.
+ *
+ * @returns {{offset: number, line: number, column: number, excerpt: string,
+ *            path: Array<string|number>} | null} `path` is the part found;
+ *   null if `text` is not valid JSON.
+ */
+function locateJsonPath(text, path) {
+  const length = text.length;
+  let i = 0;
+  const skipWhitespace = () => { while (i < length && WHITESPACE.has(text[i])) i++; };
+  const skipString = () => {
+    i++;
+    while (text[i] !== '"') i += text[i] === '\\' ? 2 : 1;
+    i++;
+  };
+  const skipValue = () => {
+    skipWhitespace();
+    if (text[i] === '"') return skipString();
+    if (text[i] === '{' || text[i] === '[') {
+      let depth = 0;
+      for (;;) {
+        const ch = text[i];
+        if (ch === '"') { skipString(); continue; }
+        if (ch === '{' || ch === '[') depth++;
+        else if ((ch === '}' || ch === ']') && --depth === 0) { i++; return; }
+        i++;
+      }
+    }
+    while (i < length && !WHITESPACE.has(text[i]) && !',]}'.includes(text[i])) i++;
+  };
+
+  try {
+    JSON.parse(text);
+  } catch {
+    return null;
+  }
+
+  skipWhitespace();
+  let offset = i;
+  const found = [];
+  for (const step of path) {
+    skipWhitespace();
+    let target = null; // { at, value }: where to point, and where the value starts
+    if (text[i] === '{' && typeof step === 'string') {
+      i++;
+      skipWhitespace();
+      while (text[i] !== '}') {
+        skipWhitespace();
+        const keyStart = i;
+        skipString();
+        const key = JSON.parse(text.slice(keyStart, i));
+        skipWhitespace();
+        i++; // ':'
+        skipWhitespace();
+        if (key === step) target = { at: keyStart, value: i };
+        skipValue();
+        skipWhitespace();
+        if (text[i] === ',') i++;
+      }
+    } else if (text[i] === '[' && Number.isInteger(step) && step >= 0) {
+      i++;
+      skipWhitespace();
+      for (let index = 0; text[i] !== ']'; index++) {
+        skipWhitespace();
+        if (index === step) { target = { at: i, value: i }; break; }
+        skipValue();
+        skipWhitespace();
+        if (text[i] === ',') i++;
+        skipWhitespace();
+      }
+    }
+    if (!target) break;
+    offset = target.at;
+    i = target.value;
+    found.push(step);
+  }
+
+  const { line, column } = lineAndColumn(text, offset);
+  return { offset, line, column, excerpt: excerptAt(text, offset), path: found };
+}
+
+/**
  * `JSON.parse(text)`, throwing a JsonSyntaxError with the position of the
  * first error. Errors that are not syntax errors pass through untouched.
  */
@@ -363,4 +456,4 @@ function formatJsonError(err) {
   return `invalid JSON: ${err.message}`;
 }
 
-export { parseJson, locateJsonError, formatJsonError, JsonSyntaxError };
+export { parseJson, locateJsonError, locateJsonPath, formatJsonError, JsonSyntaxError };

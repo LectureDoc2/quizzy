@@ -669,6 +669,56 @@ describe('Server integration', () => {
     });
   });
 
+  describe('ordering questions', () => {
+    const ORDER = {
+      title: 'Literals',
+      secret: 'high-entropy-secret',
+      questions: [{
+        type: 'ordering',
+        text: 'Order by value (ascending).',
+        options: ['<code>7</code>', '<code>0xB</code>', '<code>0x12</code>']
+      }]
+    };
+
+    it('sends the items shuffled, maps the answer back, and scores it', async () => {
+      const presenter = await openRoom(tokenFor('michael', ORDER), ORDER);
+      const roomId = presenter.created.roomId;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      const bob = await joinRoom(roomId, 'Bob Brown');
+      send(presenter.ws, { type: 'start_game' });
+      const { question } = await waitFor(alice.ws, 'question');
+      assert.deepStrictEqual((await waitFor(bob.ws, 'question')).question, question);
+      assert.notDeepStrictEqual(question.options, ORDER.questions[0].options);
+      assert.deepStrictEqual([...question.options].sort(), [...ORDER.questions[0].options].sort());
+
+      // Malformed: refused, and the participant may still answer.
+      send(bob.ws, { type: 'submit_answer', answer: [0, 0, 1] });
+      assert.strictEqual((await waitFor(bob.ws, 'error')).code, 'invalid_answer');
+
+      const right = ORDER.questions[0].options.map((item) => question.options.indexOf(item));
+      send(alice.ws, { type: 'submit_answer', answer: right });
+      send(bob.ws, { type: 'submit_answer', answer: [0, 1, 2] });
+
+      const alices = (await waitFor(alice.ws, 'results')).feedback;
+      assert.deepStrictEqual(alices, {
+        question: { type: 'ordering', text: ORDER.questions[0].text, options: question.options },
+        answered: true,
+        answer: right,
+        isCorrect: true
+      });
+      const bobs = (await waitFor(bob.ws, 'results')).feedback;
+      assert.strictEqual(bobs.isCorrect, false);
+      assert.deepStrictEqual(bobs.answer, [0, 1, 2]);
+
+      // The presenter gets the answers as items of the quiz: 0, 1, 2 is right.
+      const control = await waitFor(presenter.ws, 'question_results');
+      const row = (name) => control.answers.find((a) => a.name === name);
+      assert.deepStrictEqual(row('Alice Adams').answer, [0, 1, 2]);
+      assert.strictEqual(row('Alice Adams').points, 100);
+      assert.strictEqual(row('Bob Brown').points, 0);
+    });
+  });
+
   describe('one socket, one participant', () => {
     it('refuses a second join_room on a connection that has already joined', async () => {
       const presenter = await openRoom();

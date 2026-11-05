@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { createRenderSandbox } from './render-sandbox.js';
 import { questionExcerpt } from './practice-stats.js';
 import { parseJson, formatJsonError, JsonSyntaxError } from './json-location.js';
+import { locateQuizMessages } from './quiz-validator.js';
 
 /**
  * The quizzes a student may play on their own, without a presenter.
@@ -100,9 +101,15 @@ function emptyPracticeCatalog() {
  * @param {object} [options]
  * @param {(quiz: unknown) => Promise<object>|object} [options.prepareQuiz]
  *   Defaults to a render sandbox of its own; the server passes the shared one.
+ * @param {(file: string) => string|undefined} [options.sourceOf] The text of
+ *   an entry's file as loaded, so that the reasons a quiz is invalid can name
+ *   the lines they are about.
  * @returns {Promise<{catalog: PracticeCatalog, errors: string[], warnings: string[]}>}
  */
-async function buildPracticeCatalog(definition, loadQuiz, { prepareQuiz = createRenderSandbox().prepareQuiz } = {}) {
+async function buildPracticeCatalog(definition, loadQuiz, {
+  prepareQuiz = createRenderSandbox().prepareQuiz,
+  sourceOf = () => undefined
+} = {}) {
   const errors = [];
   const warnings = [];
 
@@ -184,7 +191,13 @@ async function buildPracticeCatalog(definition, loadQuiz, { prepareQuiz = create
     }
 
     const prepared = await prepareQuiz(quiz);
-    if (!prepared.valid) { skip(`the quiz is invalid: ${prepared.errors.join('; ')}`); continue; }
+    if (!prepared.valid) {
+      const source = sourceOf(entry.file);
+      skip(source === undefined
+        ? `the quiz is invalid: ${prepared.errors.join('; ')}`
+        : `the quiz is invalid\n${locateQuizMessages(source, prepared.errors).join('\n').replace(/^/gm, '    ')}`);
+      continue;
+    }
     warnings.push(...prepared.warnings.map((w) => `${at}: ${w}`));
 
     // The presenter-token secret is of no use to a game nobody presents, so
@@ -250,16 +263,21 @@ async function loadPracticeCatalog(path = DEFAULT_PRACTICE_CATALOG_PATH, options
   }
 
   const directory = dirname(resolve(path));
+  const sources = new Map();
   const loadQuiz = (file) => {
     const target = resolve(directory, file);
     const within = relative(directory, target);
     if (within.startsWith('..') || isAbsolute(within)) {
       throw new Error('the file must be inside the catalog\'s directory');
     }
-    return parseJson(readFileSync(target, 'utf8'));
+    const text = readFileSync(target, 'utf8');
+    const quiz = parseJson(text);
+    sources.set(file, text);
+    return quiz;
   };
 
-  return { ...(await buildPracticeCatalog(definition, loadQuiz, options)), missing: false };
+  const sourceOf = (file) => sources.get(file);
+  return { ...(await buildPracticeCatalog(definition, loadQuiz, { sourceOf, ...options })), missing: false };
 }
 
 export {

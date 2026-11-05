@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomInt } from 'crypto';
 import { answerLengths, groupAnswers, matchesAcceptedAnswer, matchOf, measuredLength, normalizeAnswer } from './short-answer.js';
+import { invertOrder, isIdentity, isPermutation, shuffledOrder } from './ordering.js';
 
 /**
  * Room identifiers are read aloud and typed in by hand, so the alphabet omits
@@ -138,6 +139,12 @@ class Room {
     this.currentQuestionIndex = -1;
     this.currentQuestionStartTime = null;
     this.currentAnswers = new Map(); // participantId -> { answer, timestamp, correct?, acceptedByPresenter? }
+    // Ordering questions only: the order the participants see the items in,
+    // as authored item indices -- position i shows item currentOrder[i]. On
+    // the room rather than the question, because practice quizzes are frozen
+    // and shared; kept until the next question starts, so that a rejoin and
+    // the results show the same order. See ordering.js.
+    this.currentOrder = null;
     this.presenterWss = new Set();
     this.createdAt = Date.now();
     this.questionTimer = null;
@@ -448,6 +455,9 @@ class Room {
     this.clearQuestionTimer();
 
     const question = this.getCurrentQuestion();
+    this.currentOrder = question?.type === 'ordering' && Array.isArray(question.options)
+      ? shuffledOrder(question.options.length)
+      : null;
     if (question && question.timeLimit > 0 && typeof this.onAutoEnd === 'function') {
       this.questionTimer = setTimeout(() => {
         /* This callback runs on the event loop with no caller to catch it, so
@@ -471,8 +481,9 @@ class Room {
    * Participants are untrusted: `answer` arrives verbatim from a WebSocket
    * message and may be any JSON value. Everything downstream -- scoring, and in
    * particular the presenter's results view -- assumes a number for estimation
-   * questions, an array of option indices for multiple-choice questions, and
-   * a string for short-answer questions. This is the single choke point that
+   * questions, an array of option indices for multiple-choice questions, a
+   * string for short-answer questions, and for ordering questions the item
+   * indices in the participant's order. This is the single choke point that
    * keeps those assumptions true, so answers are rejected rather than coerced.
    *
    * A refusal's `code` is `no_open_question`, or `invalid_answer` for the
@@ -540,6 +551,18 @@ class Room {
         return { valid: false, code: 'invalid_answer', error: 'Answer is longer than any accepted answer' };
       }
       return { valid: true, answer: text };
+    }
+
+    if (question.type === 'ordering') {
+      // The participant names the items by where they were shown, which is
+      // all they know (see getPublicQuestion()); translated here into the
+      // authored indices that scoring and the presenter work with. Called
+      // with the raw answer every time, so this is never applied twice.
+      const order = this.currentOrder;
+      if (!Array.isArray(order) || !isPermutation(answer, order.length)) {
+        return { valid: false, code: 'invalid_answer', error: 'Answer must list every item exactly once' };
+      }
+      return { valid: true, answer: answer.map((position) => order[position]) };
     }
 
     return { valid: false, code: 'invalid_answer', error: 'Unsupported question type' };
@@ -759,6 +782,16 @@ class Room {
       stat.withinTenPercent = stat.correctAnswer === null
         ? null
         : values.filter(v => Math.abs(v - stat.correctAnswer) <= Math.abs(stat.correctAnswer) * 0.1).length;
+    } else if (question.type === 'ordering') {
+      // In the correct order, with how many answers put each item in its
+      // place: the item that is misplaced most is the misconception.
+      const options = Array.isArray(question.options) ? question.options : [];
+      stat.items = options.map((option, index) => ({
+        index,
+        text: option,
+        placedCorrectly: answers.filter(a => Array.isArray(a) && a[index] === index).length
+      }));
+      stat.correctCount = Array.from(results.scores.values()).filter(p => p === 100).length;
     } else if (question.type === 'short-answer') {
       stat.acceptedAnswers = Array.isArray(question.acceptedAnswers)
         ? question.acceptedAnswers.filter(a => typeof a === 'string')
@@ -932,6 +965,15 @@ class Room {
         scores.set(participantId, points);
         rankings.push({ participantId, points, timestamp: data.timestamp });
       }
+    } else if (question.type === 'ordering') {
+      // Answers are in authored indices (see validateAnswer()), and the
+      // author lists the items in the correct order: right is 0, 1, 2, ...
+      // All or nothing, like a multiple-choice question.
+      for (const [participantId, data] of this.currentAnswers) {
+        const points = Array.isArray(data.answer) && isIdentity(data.answer) ? 100 : 0;
+        scores.set(participantId, points);
+        rankings.push({ participantId, points, timestamp: data.timestamp });
+      }
     }
 
     // Get leaderboard after this question
@@ -974,7 +1016,18 @@ class Room {
       answer: submitted?.answer ?? null
     };
 
-    if (question.type === 'multiple-choice' || question.type === 'short-answer') {
+    if (question.type === 'ordering') {
+      // The items as they were shown, and the answer as positions in that
+      // list. The authored order is the correct one, so it is never sent.
+      const order = Array.isArray(this.currentOrder) ? this.currentOrder : [];
+      feedback.question.options = order.map((item) => question.options[item]);
+      const shownAt = invertOrder(order);
+      feedback.answer = Array.isArray(submitted?.answer)
+        ? submitted.answer.map((item) => shownAt[item])
+        : null;
+    }
+
+    if (question.type === 'multiple-choice' || question.type === 'short-answer' || question.type === 'ordering') {
       feedback.isCorrect = feedback.answered && (results.scores.get(participantId) || 0) > 0;
       // So the page can say why a verdict changed; see setAnswerAccepted().
       if (submitted?.acceptedByPresenter === true) feedback.acceptedByPresenter = true;
@@ -1072,6 +1125,11 @@ class Room {
     if (q.type === 'short-answer') {
       // Derived from the accepted answers, never the answers themselves.
       Object.assign(publicQuestion, answerLengths(q));
+    } else if (q.type === 'ordering') {
+      // The authored order is the answer. Shuffled per question, see
+      // startQuestion(); the same for everybody and for a rejoin.
+      const order = Array.isArray(this.currentOrder) ? this.currentOrder : [];
+      publicQuestion.options = order.map((item) => q.options[item]);
     }
     return publicQuestion;
   }

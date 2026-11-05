@@ -10,8 +10,8 @@
     {
       "name": "caddy",
       "runtimeExecutable": "sh",
-      "runtimeArgs": ["-c", "CADDY_HOST=http://localhost:8080 HTTP_PORT=8080 BACKEND_PORT=3100 CADDY_ADMIN=localhost:2020 caddy run --config Caddyfile"],
-      "port": 8080
+      "runtimeArgs": ["-c", "CADDY_HOST=http://localhost:8090 HTTP_PORT=8090 BACKEND_PORT=3100 CADDY_ADMIN=localhost:2020 caddy run --config Caddyfile"],
+      "port": 8090
     }
   ]
 }

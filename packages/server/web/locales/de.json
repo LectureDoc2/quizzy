@@ -58,6 +58,10 @@
     "other": "Erwartete Länge: {count} Zeichen"
   },
   "question.answerTooLong": "Länger als jede erwartete Antwort",
+  "question.orderHint": "Ziehen Sie die Einträge am Griff oder verschieben Sie sie mit den Pfeilen.",
+  "question.moveUp": "Nach oben",
+  "question.moveDown": "Nach unten",
+  "question.movedTo": "{item}: jetzt an Position {position} von {total}",
 
   "results.counter": "Ergebnisse – Frage {number}",
   "results.counterOfTotal": "Ergebnisse – Frage {number} von {total}",
@@ -73,6 +77,7 @@
   "feedback.wrong": "Leider nicht ganz.",
   "feedback.acceptedByPresenter": "Richtig! Ihre Lehrperson hat diese Antwort anerkannt.",
   "feedback.yourAnswer": "Ihre Antwort:",
+  "feedback.yourOrder": "Ihre Reihenfolge:",
   "feedback.onlyEstimate": "Ihre Schätzung war die einzige.",
   "feedback.closest": "Am nächsten dran von allen {count} Schätzungen!",
   "feedback.rank": "Platz {rank} von {count} Schätzungen",

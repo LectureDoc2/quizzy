@@ -175,6 +175,56 @@ describe('Control view rendering (browser)', () => {
     await page.close();
   });
 
+  it('shows an ordering question\'s correct order, and each answer as its items', async () => {
+    const { page, dialogs } = await openControlPage();
+    await page.evaluate((payload) => {
+      window.__push({
+        type: 'game_started',
+        questionIndex: 0,
+        question: {
+          type: 'ordering',
+          text: 'Order by value range',
+          options: ['<code>byte</code>', '<code>short</code>', '<code>int</code>']
+        }
+      });
+      window.__push({
+        type: 'question_results',
+        questionIndex: 0,
+        answers: [
+          { participantId: 'p1', name: 'Alice', answer: [0, 1, 2], points: 100 },
+          { participantId: 'p2', name: 'Bob', answer: [2, 0, 1], points: 0 },
+          // Malformed, as only a subverted server could send it.
+          { participantId: 'p3', name: 'Carol', answer: [payload, '1', 7], points: 0 }
+        ],
+        leaderboard: []
+      });
+    }, PAYLOAD);
+    await page.waitForTimeout(200);
+
+    const view = await page.evaluate(() => ({
+      hits: window.__hits,
+      label: document.querySelector('.question__correct-answer').textContent,
+      order: [...document.querySelectorAll('.question__option')].map((n) => ({
+        text: n.textContent.trim(),
+        code: !!n.querySelector('code')
+      })),
+      answers: [...document.querySelectorAll('.answer-value')].map((n) => n.textContent),
+      injected: document.querySelectorAll('#results-content img').length
+    }));
+
+    assert.strictEqual(view.label, 'Correct order:');
+    assert.deepStrictEqual(view.order, [
+      { text: 'byte', code: true },
+      { text: 'short', code: true },
+      { text: 'int', code: true }
+    ]);
+    assert.deepStrictEqual(view.answers, ['byte → short → int', 'int → byte → short', '? → ? → ?']);
+    assert.deepStrictEqual(view.hits, []);
+    assert.deepStrictEqual(dialogs, []);
+    assert.strictEqual(view.injected, 0);
+    await page.close();
+  });
+
   it('shows the accepted answers, and groups short answers by spelling', async () => {
     const { page, dialogs } = await openControlPage();
     await page.evaluate((payload) => {

@@ -328,4 +328,204 @@
     border-radius: var(--quiz-radius-sm);
     padding: var(--quiz-space-sm);
   }
+
+  /* --- Ordering questions (see js/sortable-list.js) ----------------------- */
+
+  .ordering-hint {
+    margin: var(--quiz-space-md) 0 var(--quiz-space-xs);
+    font-size: 0.875rem;
+    color: var(--quiz-text-secondary);
+  }
+
+  /* Positioned, so that the items' offsetTop -- which the drag code reads --
+     is measured from the list. */
+  .ordering {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: var(--quiz-space-xs);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    counter-reset: ordering-position;
+  }
+
+  .ordering__item {
+    position: relative;
+    display: grid;
+    grid-template-columns: 2.75rem auto minmax(0, 1fr) auto;
+    align-items: center;
+    min-height: 3.5rem;
+    border: 1px solid var(--quiz-border);
+    border-radius: var(--quiz-radius);
+    background: var(--quiz-surface-alt);
+    counter-increment: ordering-position;
+    /* A drag must not select text or, on iOS, open the callout menu. */
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  /* The only part of an item a touch drags from; everywhere else a touch
+     scrolls the page. 2.75rem is the 44px touch target, over the full height. */
+  .ordering__handle {
+    align-self: stretch;
+    display: grid;
+    place-items: center;
+    cursor: grab;
+    touch-action: none;
+    border-right: 1px solid var(--quiz-border);
+
+    &::before {
+      content: "";
+      width: 0.625rem;
+      height: 1.125rem;
+      background-image: radial-gradient(circle, var(--quiz-text-secondary) 1.25px, transparent 1.75px);
+      background-size: 5px 6px;
+    }
+  }
+
+  .ordering__number {
+    padding-left: var(--quiz-space-sm);
+    font-weight: 600;
+    color: var(--quiz-primary);
+    font-variant-numeric: tabular-nums;
+
+    &::before {
+      content: counter(ordering-position) ".";
+    }
+  }
+
+  /* Left-aligned inside the centred question, so code lines up. */
+  .ordering__content {
+    padding: var(--quiz-space-sm);
+    text-align: left;
+    overflow-wrap: anywhere;
+
+    & pre {
+      margin: 0;
+      overflow-x: auto;
+    }
+  }
+
+  /* Stacked, to leave the width to the item's content on a phone. */
+  .ordering__moves {
+    display: flex;
+    flex-direction: column;
+    align-self: stretch;
+    border-left: 1px solid var(--quiz-border);
+  }
+
+  .ordering__move {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    width: 2.75rem;
+    min-height: 1.75rem;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--quiz-primary);
+    cursor: pointer;
+
+    /* A chevron drawn with borders: no glyph that a phone renders as emoji. */
+    &::before {
+      content: "";
+      width: 0.45rem;
+      height: 0.45rem;
+      border: solid currentColor;
+      border-width: 0 2px 2px 0;
+    }
+
+    &:disabled {
+      color: var(--quiz-border-strong);
+      cursor: default;
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--quiz-primary);
+      outline-offset: -2px;
+      border-radius: var(--quiz-radius-sm);
+    }
+  }
+
+  .ordering__move--up::before {
+    transform: translateY(0.15rem) rotate(-135deg);
+  }
+
+  .ordering__move--down::before {
+    transform: translateY(-0.15rem) rotate(45deg);
+  }
+
+  .ordering__move + .ordering__move {
+    border-top: 1px solid var(--quiz-border);
+  }
+
+  /* iOS paints its own grey tap highlight where a control was pressed, and
+     leaves it there while the item slides away. The pressed state below
+     moves with the item instead. */
+  .ordering__handle,
+  .ordering__move {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .ordering__move:active:not(:disabled) {
+    background: var(--quiz-primary-alpha-10);
+  }
+
+  /* Hover only where there is one; on a touch screen it would stick. */
+  @media (hover: hover) {
+    .ordering__move:hover:not(:disabled) {
+      background: var(--quiz-primary-alpha-10);
+    }
+  }
+
+  /* With a mouse, the whole item can be dragged. */
+  @media (hover: hover) and (pointer: fine) {
+    .ordering__item {
+      cursor: grab;
+    }
+  }
+
+  .ordering--dragging,
+  .ordering--dragging .ordering__item,
+  .ordering--dragging .ordering__handle {
+    cursor: grabbing;
+  }
+
+  .ordering__item--dragging {
+    z-index: 1;
+    border-color: var(--quiz-primary);
+    background: var(--quiz-surface);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+    will-change: transform;
+  }
+
+  /* Read out by screen readers after a move; not shown. */
+  .ordering__status {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .ordering__submit {
+    margin-top: var(--quiz-space-md);
+  }
+
+  /* The participant's own order, on the results screen. */
+  .ordering--feedback {
+    margin-top: var(--quiz-space-xs);
+
+    & .ordering__item {
+      grid-template-columns: auto minmax(0, 1fr);
+      min-height: 0;
+      cursor: default;
+    }
+  }
 }

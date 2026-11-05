@@ -226,7 +226,10 @@ stops accidents and opportunistic exploits; socket mode is the boundary.
    `text` and `options` taken from the reply. Correct answers, types and time
    limits cannot come from a worker, so a subverted renderer can produce hostile
    *markup* — which is what §7 is for — but cannot change scoring or hand the
-   server malformed state.
+   server malformed state. (Swapping two rendered options is still possible,
+   and would move a multiple-choice question's correct text, or change an
+   ordering question's correct order, which is the order of its `options`; that
+   is hostile markup too.)
 4. Every failure (timeout, oversized reply, malformed reply, crash, missing
    socket) **fails closed**: the quiz is refused with a sentence the presenter can
    act on. There is no in-process fallback, and no setting that brings the

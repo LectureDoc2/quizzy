@@ -205,6 +205,58 @@ describe('Results export (browser, full stack)', () => {
     await page.close();
   });
 
+  it('counts per item of an ordering question how many put it in its place', async () => {
+    const items = ['<code>byte</code>', '<code>short</code>', '<code>int</code>'];
+    const quiz = {
+      title: 'Java Types',
+      secret: 'high-entropy',
+      questions: [{ type: 'ordering', text: 'Order by <b>value range</b>', options: items }]
+    };
+    const token = tokenFor('michael-order', quiz);
+    const presenter = await socket();
+    presenter.sendJson({ type: 'create_room', presenterToken: token, quiz });
+    const room = await presenter.take('room_created');
+
+    const students = [];
+    for (const name of ['Alice Adams', 'Bob Brown', 'Carol Clark', 'Dave Dunn']) {
+      const ws = await socket();
+      ws.sendJson({ type: 'join_room', roomId: room.roomId, name });
+      await ws.take('joined');
+      students.push(ws);
+    }
+
+    const page = await openPage(browser);
+    page.on('pageerror', (e) => assert.fail(`control page error: ${e.message}`));
+    await page.goto(`${statics.origin}/control.html?token=${token}&room=${room.roomId}`);
+    await page.waitForSelector('.control__container');
+
+    presenter.sendJson({ type: 'start_game' });
+    await presenter.take('game_started');
+    const shown = (await students[0].take('question')).question.options;
+    const answer = (order) => order.map((item) => shown.indexOf(items[item]));
+    students[0].sendJson({ type: 'submit_answer', answer: answer([0, 1, 2]) }); // right
+    students[1].sendJson({ type: 'submit_answer', answer: answer([0, 1, 2]) }); // right
+    students[2].sendJson({ type: 'submit_answer', answer: answer([1, 0, 2]) }); // int in place
+    students[3].sendJson({ type: 'submit_answer', answer: answer([2, 1, 0]) }); // short in place
+    await presenter.take('question_results');
+
+    presenter.sendJson({ type: 'next_question' }); // ends the quiz
+    await presenter.take('game_ended');
+    await page.waitForFunction(
+      () => document.getElementById('export-panel').style.display === 'block'
+    );
+
+    const csv = await copyCsv(page);
+    const lines = csv.split('\r\n');
+    assert.ok(!/Alice|Bob|Carol|Dave/.test(csv), 'CSV must not contain participant names');
+    const row = (n, text) => lines.find((l) => l.includes(`${n}. ${text}`));
+    assert.match(row(1, 'byte'), /^1,ordering,Order by value range,4,1\. byte,position 1,2,50\.0%,2,50\.0%$/, row(1, 'byte'));
+    assert.match(row(2, 'short'), /^1,ordering,,,2\. short,position 2,3,75\.0%,,$/, row(2, 'short'));
+    assert.match(row(3, 'int'), /^1,ordering,,,3\. int,position 3,3,75\.0%,,$/, row(3, 'int'));
+
+    await page.close();
+  });
+
   it('adds name and final score of those who agreed, and of nobody else', async () => {
     const quiz = { ...QUIZ, recordNamedResults: true };
     const token = tokenFor('named', quiz);

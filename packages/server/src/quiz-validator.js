@@ -23,6 +23,8 @@
  */
 
 import { SHORT_ANSWER_LIMITS, MATCH_MODES, expandAcceptedAnswer, matchOf } from './short-answer.js';
+import { ORDERING_LIMITS } from './ordering.js';
+import { locateJsonPath } from './json-location.js';
 
 /** Bounds. Generous for a lecture, finite for an attacker. */
 const LIMITS = {
@@ -33,9 +35,10 @@ const LIMITS = {
   maxOptionLength: 5000,
   maxTimeLimitSeconds: 3600,
   ...SHORT_ANSWER_LIMITS,
+  ...ORDERING_LIMITS,
 };
 
-const QUESTION_TYPES = new Set(['multiple-choice', 'estimation', 'short-answer']);
+const QUESTION_TYPES = new Set(['multiple-choice', 'estimation', 'short-answer', 'ordering']);
 
 const isPlainObject = (value) =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -156,6 +159,42 @@ export function validateQuiz(quiz) {
       }
     }
 
+    if (question.type === 'ordering') {
+      /* Copied from a multiple-choice question, correctIndices would be
+         ignored -- and the author would believe it says which order is right. */
+      if (question.correctIndices !== undefined) {
+        fail(`${at}: correctIndices does not apply to ordering questions; list the options in the correct order instead.`);
+      }
+      if (!Array.isArray(question.options)) {
+        fail(`${at}: options must be an array, listing the items in the correct order.`);
+        return;
+      }
+      if (question.options.length < LIMITS.minOrderingItems) {
+        fail(`${at}: needs at least ${LIMITS.minOrderingItems} options to order.`);
+      }
+      if (question.options.length > LIMITS.maxOrderingItems) {
+        fail(`${at}: has ${question.options.length} options, more than the limit of ${LIMITS.maxOrderingItems} for an ordering question.`);
+        return;
+      }
+      /* Two identical items look the same on the participant's screen, so
+         there is no telling which of them goes first -- yet scoring would. */
+      const seen = new Map();
+      question.options.forEach((option, optionIndex) => {
+        if (typeof option !== 'string') {
+          fail(`${at}, option ${optionIndex + 1}: must be a string.`);
+        } else if (option.length > LIMITS.maxOptionLength) {
+          fail(`${at}, option ${optionIndex + 1}: is longer than ${LIMITS.maxOptionLength} characters.`);
+        } else {
+          const key = option.trim();
+          if (seen.has(key)) {
+            fail(`${at}, option ${optionIndex + 1}: is the same as option ${seen.get(key) + 1}; the items of an ordering question must differ.`);
+          } else {
+            seen.set(key, optionIndex);
+          }
+        }
+      });
+    }
+
     /* The validator ignores properties it does not know, so a `fuzzy` left over
        from before `match` would quietly turn into fuzzy matching. */
     if (question.fuzzy !== undefined) {
@@ -209,6 +248,56 @@ export function validateQuiz(quiz) {
   });
 
   return { valid: errors.length === 0, errors };
+}
+
+/**
+ * The part of the quiz a message is about, as a JSON path: `question 21:
+ * acceptedAnswers must be ...` is `['questions', 20, 'acceptedAnswers']`.
+ *
+ * It reads the prefixes the messages in this file start with (and that the
+ * code renderer and the sanitizer use for their warnings): `question N`,
+ * optionally `, option M` or `, accepted answer M`, then `: <property> ...`;
+ * or a top-level property, as in `title must be a string.`. A word that is not
+ * a property costs nothing: locateJsonPath stops at the deepest part it finds.
+ *
+ * @param {string} message
+ * @returns {Array<string|number>}
+ */
+export function quizMessagePath(message) {
+  const question = /^question (\d+)(?:, (option|accepted answer) (\d+))?(?:: (\w+))?/.exec(message);
+  if (question) {
+    const [, number, list, item, property] = question;
+    const path = ['questions', Number(number) - 1];
+    if (list) path.push(list === 'option' ? 'options' : 'acceptedAnswers', Number(item) - 1);
+    else if (property) path.push(property);
+    return path;
+  }
+  const property = /^(\w+) /.exec(message);
+  return property ? [property[1]] : [];
+}
+
+/**
+ * The messages about a quiz, each prefixed with the line in `text` -- the
+ * quiz's source -- that it is about, and followed by that line with a caret:
+ *
+ *   line 140: question 21: acceptedAnswers must be an array of strings.
+ *     140 |       "acceptedAnswers": "Ausdrücke",
+ *         |       ^
+ *
+ * "question 21" alone leaves the author counting objects in a long file. A
+ * message whose place cannot be found is returned as it is.
+ *
+ * @param {string} text
+ * @param {string[]} messages
+ * @returns {string[]}
+ */
+export function locateQuizMessages(text, messages) {
+  return messages.map((message) => {
+    const path = quizMessagePath(message);
+    const place = path.length > 0 ? locateJsonPath(text, path) : null;
+    if (!place) return message;
+    return `line ${place.line}: ${message}\n${place.excerpt.replace(/^/gm, '  ')}`;
+  });
 }
 
 export { LIMITS as QUIZ_LIMITS };

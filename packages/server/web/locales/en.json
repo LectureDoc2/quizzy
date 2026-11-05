@@ -58,6 +58,10 @@
     "other": "Expected length: {count} characters"
   },
   "question.answerTooLong": "Longer than any expected answer",
+  "question.orderHint": "Drag the items by their handle, or move them with the arrows.",
+  "question.moveUp": "Move up",
+  "question.moveDown": "Move down",
+  "question.movedTo": "{item}: now at position {position} of {total}",
 
   "results.counter": "Results - Question {number}",
   "results.counterOfTotal": "Results - Question {number} of {total}",
@@ -73,6 +77,7 @@
   "feedback.wrong": "Not quite.",
   "feedback.acceptedByPresenter": "Correct! Your lecturer accepted this answer.",
   "feedback.yourAnswer": "Your answer:",
+  "feedback.yourOrder": "Your order:",
   "feedback.onlyEstimate": "Yours was the only estimate.",
   "feedback.closest": "Closest of all {count} estimates!",
   "feedback.rank": "#{rank} closest of {count} estimates",

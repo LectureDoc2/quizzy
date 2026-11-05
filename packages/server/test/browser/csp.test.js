@@ -9,7 +9,7 @@
  */
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
-import { startStaticServer, launchBrowser } from './harness.js';
+import { startStaticServer, launchBrowser, openPage } from './harness.js';
 import { WebSocketServer } from 'ws';
 
 describe('Control page CSP (browser)', () => {
@@ -26,7 +26,7 @@ describe('Control page CSP (browser)', () => {
     wss.on('connection', (ws) => ws.on('message', () => {}));
 
     browser = await launchBrowser();
-    page = await browser.newPage();
+    page = await openPage(browser);
     refusals = [];
     page.on('console', (m) => {
       const text = m.text();

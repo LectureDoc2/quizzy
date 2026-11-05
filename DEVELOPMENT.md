@@ -68,7 +68,7 @@ Terminal 2, Caddy, from the repository root:
 CADDY_HOST=http://localhost:8080 HTTP_PORT=8080 caddy run --config Caddyfile
 ```
 
-Open http://localhost:8080/demo.html.
+Open <http://localhost:8080/demo.html>.
 
 The two configurations in `.claude/launch.json` run the same setup, with the
 backend on port 3100 instead (`PORT=3100` for the backend, `BACKEND_PORT=3100` for
@@ -173,3 +173,48 @@ CI (`.github/workflows/ci.yml`) runs both suites and the build on every push to
 Development and production read the same variables. The complete lists are in
 DEPLOY.md: Caddy's in [§10c](DEPLOY.md#10c-create-the-environment-file), the
 backend's in [§13](DEPLOY.md#13-backend-configuration).
+
+---
+
+## 8. Translations
+
+The participant pages (`join.html`, `practice.html`) are translated; how the
+language is chosen is described under "Language" in
+[ARCHITECTURE.md](ARCHITECTURE.md). To see a page in a language other than your
+browser's, append `?lang=de` or `?lang=en`, e.g. `/practice.html?lang=de`.
+
+**Where the texts are.** One resource file per language in
+`packages/server/web/locales/` (`en.json`, `de.json`), registered in
+`locales/index.js`. English is the reference and the fallback for any missing
+key. The files are flat objects from a dotted key to a text:
+
+```json
+"results.score": "Score: {score}",
+"practiceList.questionCount": { "one": "{count} question", "other": "{count} questions" }
+```
+
+- `{name}` is a placeholder. Numbers in placeholders are formatted for the
+  language (`12.345,5` in German), but not grouped below five digits, so a year
+  stays `1990`.
+- An object is a set of plural forms, chosen by the `count` parameter. Which
+  forms a language needs is CLDR's answer, i.e.
+  `new Intl.PluralRules(tag).resolvedOptions().pluralCategories`: German and
+  English need `one` and `other`; Polish, for instance, also `few` and `many`.
+- `error.<code>` translates the error the server sent with that `code`.
+- German addresses the student as "Sie".
+
+**Using a text.** In page code, `t('results.score', { score })`; inside an HTML
+template, `html(...)`, which escapes. Static text in an HTML file is an empty
+element with `data-i18n="key"`, filled by `translatePage()`. Never write the
+English text into the HTML as well: the resource file is the only copy.
+
+**Adding a language.** Copy `en.json` to `<tag>.json` (a BCP 47 tag such as `fr`
+or `pt-BR`), translate every value, and add the file to `LOCALES` in
+`locales/index.js`. `pnpm test` (`test/i18n.test.js`) then checks every
+registered language: the same keys as English, the same placeholders in each
+text, every plural form the language needs, every key the pages use, and a
+translation for every error code the server sends.
+
+The browser tests run in English (`openPage()` in `test/browser/harness.js` sets
+`locale: 'en-US'`), whatever the language of the machine running them; a test
+that is about another language passes its own `locale`.

@@ -1,9 +1,10 @@
 # Quizzy — Updating a Production Server
 
 How to keep a Quizzy server up to date that was installed as described in
-[DEPLOY.md](DEPLOY.md): the checkout in `/srv/quizzy`, owned by the `quizzy` user;
-the backend running as `quizzy-backend.service`; Caddy configured from the copies in
-`/etc/caddy`. References like "DEPLOY.md §10a" point into that document.
+[DEPLOY.md](DEPLOY.md): the checkout in `/srv/quizzy`, owned by root and only read by
+the backend; the backend running as `quizzy-backend.service`; Caddy configured from
+the copies in `/etc/caddy`. References like "DEPLOY.md §10a" point into that
+document. A server set up before the checkout became root-owned needs §7 once.
 
 **Restarting the backend ends every running lecture and practice game**, because
 room state lives only in its memory. Restart it when no lecture is running. The
@@ -16,6 +17,7 @@ steps below say which of them restart something:
 | §3 Changing the practice quizzes | no |
 | §4 Changing the configuration | backend: **yes**; Caddy: no, but clients reconnect |
 | §5 System packages, Node.js and Caddy | when Node.js changed: **yes** |
+| §7 Moving to the hardened layout (once) | **yes** — restarts the backend |
 
 ---
 
@@ -41,18 +43,16 @@ cd /srv/quizzy
 sudo git pull
 sudo pnpm install --frozen-lockfile
 sudo pnpm build
-sudo chown -R quizzy:quizzy /srv/quizzy
 sudo systemctl restart quizzy-backend
 ```
 
-- **Everything runs as root**, which is the account `safe.directory` was recorded for
-  (DEPLOY.md §8).
+- **Everything runs as root**, which owns the tree (DEPLOY.md §8). The backend only
+  reads it, so nothing needs to be handed back to `quizzy` afterwards.
 - **`pnpm install`** is cheap when the dependencies did not change, and it is what
   keeps `node_modules` matching the lockfile when they did.
 - **`pnpm build`** regenerates `dist/`, which is not committed. After a release of
   the component this is what publishes its new versioned URL; [PUBLISH.md](PUBLISH.md)
   §4 describes what happens to the old one.
-- **`chown`** hands back the files `git pull` and `pnpm build` created as root.
 - **The restart** loads the new backend code. Caddy needs nothing: it serves `dist/`
   straight from disk, so the new pages are live as soon as the build finishes.
 
@@ -108,7 +108,6 @@ install, build or restart is needed:
 ```bash
 cd /srv/quizzy
 sudo git pull
-sudo chown -R quizzy:quizzy /srv/quizzy
 sudo systemctl reload quizzy-backend
 sudo journalctl -u quizzy-backend -n 20 --no-pager   # "Practice catalog …: N quiz(zes) available."
 ```
@@ -135,6 +134,20 @@ sudo systemctl restart quizzy-backend
 
 `systemctl edit` reloads systemd's view of the unit when the editor closes; the
 restart is what makes the backend see the new values.
+
+To switch on the [practice usage statistics](README.md#usage-statistics) on a
+server set up before they existed, add these lines to the `[Service]` section
+the same way (DEPLOY.md §11a):
+
+```ini
+Environment=PRACTICE_STATS_DIR=/var/lib/quizzy
+StateDirectory=quizzy
+StateDirectoryMode=0700
+```
+
+After the restart, the backend's log says `Practice statistics are kept in
+/var/lib/quizzy.` The CSV files appear a few minutes after midnight following
+the first day with practice games: `sudo ls -l /var/lib/quizzy`.
 
 **Caddy** — host name, backend address, TLS snippet and DNS-01 credentials are in
 `/etc/caddy/quizzy.env` (DEPLOY.md §10c, §10d):
@@ -181,8 +194,50 @@ Errors from `pnpm install` or `pnpm build` (`ERR_PNPM_…`) are covered in
 
 | symptom | cause | fix |
 |---|---|---|
-| `git pull` → `detected dubious ownership in repository` | The tree is owned by `quizzy`, and no exception is recorded for root | `sudo git config --global --add safe.directory /srv/quizzy` (DEPLOY.md §8) |
-| `git pull` → `cannot open '.git/FETCH_HEAD': Permission denied` | The pull ran without `sudo` — typically because `safe.directory` was recorded for your login user instead of root | Record the exception with `sudo` (row above) and pull with `sudo` |
+| `git pull` → `detected dubious ownership in repository` | The tree is still owned by `quizzy`, from before the hardened layout | §7 |
+| `git pull` → `cannot open '.git/FETCH_HEAD': Permission denied` | The pull ran without `sudo` | Pull with `sudo`: the tree belongs to root |
 | `git pull` → `Your local changes … would be overwritten` | A file was edited inside `/srv/quizzy`, e.g. `pnpm-workspace.yaml` by pnpm or the practice catalog by hand | `sudo git status` shows which. Discard with `sudo git checkout <file>`; keep a server-only catalog outside the checkout (§3) |
-| Backend fails to start right after an update | `sudo git pull` / `sudo pnpm build` left root-owned files | `sudo chown -R quizzy:quizzy /srv/quizzy` |
+| Every new quiz is refused with "could not be prepared for display" | The render worker fails | [DEPLOY.md §14](DEPLOY.md#14-troubleshooting-quick-reference) |
 | `systemctl reload caddy` fails | Caddy rejected the new configuration and kept the old one | `sudo journalctl -u caddy -n 20`; validate as in §2 |
+
+---
+
+## 7. Moving to the hardened layout (once)
+
+Servers installed before this layout ran the backend with write access to its own
+checkout, let Caddy's admin API listen on `localhost:2019`, and rendered quizzes
+inside the backend. SECURITY_ARCHITECTURE.md explains why each of those mattered.
+Moving over takes one backend restart, so do it when no lecture is running.
+
+1. **Update the application** as in §1 — but skip its restart for now.
+2. **Give the tree back to root:**
+
+   ```bash
+   sudo chown -R root:root /srv/quizzy
+   ```
+
+   The `safe.directory` exception recorded for root (former DEPLOY.md §8) is no
+   longer needed; it does no harm if it stays.
+3. **Replace the backend unit** with the one in DEPLOY.md §11a, keeping your own
+   `Environment=` lines:
+
+   ```bash
+   sudo systemctl edit --full quizzy-backend
+   ```
+
+4. **Optional, recommended: the render worker service.** Create the two units of
+   DEPLOY.md §11c and add `Environment=RENDER_SOCKET=/run/quizzy-render.sock` to the
+   backend unit.
+5. **Caddy:** add `CADDY_ADMIN=unix//run/caddy/admin.sock` to
+   `/etc/caddy/quizzy.env` (DEPLOY.md §10c), add the two `RuntimeDirectory` lines to
+   the drop-in (DEPLOY.md §11b), and install the new Caddyfile as in §2.
+6. **Restart everything:**
+
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now quizzy-render.socket     # only with step 4
+   sudo systemctl restart quizzy-backend caddy
+   ```
+
+7. **Check** with items 6–8 of the verification checklist in DEPLOY.md §12, and
+   open a room with the math demo.

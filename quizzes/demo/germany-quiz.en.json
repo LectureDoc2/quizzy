@@ -1,5 +1,6 @@
 {
   "title": "Germany Geography",
+  "recordNamedResults": true,
   "questions": [
     {
       "type": "multiple-choice",

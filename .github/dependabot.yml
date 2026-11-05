@@ -1,0 +1,27 @@
+# Dependency updates as pull requests, so that they run through CI like any
+# other change instead of arriving with whatever `pnpm install` picks next.
+#
+# The cooldown matches minimumReleaseAge in pnpm-workspace.yaml: a release is
+# proposed only once it is a week old, which is when pnpm would install it
+# anyway, and long enough for most hijacked releases to have been pulled.
+version: 2
+updates:
+  # The pnpm workspace (Dependabot handles pnpm under "npm").
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      # One PR for everything that is not a major version.
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  # The actions are pinned to commit SHAs; this keeps the pins current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

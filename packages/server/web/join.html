@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Quizzy - Join Room</title>
+  <!-- Texts come from locales/<lang>.json, by key; see js/i18n.js. -->
+  <title data-i18n="page.joinTitle">Quizzy</title>
   <link rel="stylesheet" href="/styles/quiz-ui.css">
   <link rel="stylesheet" href="/styles/join.css">
   <link rel="stylesheet" href="/katex/katex.min.css">
@@ -11,11 +12,12 @@
 </head>
 <body>
   <div class="container card">
-    <h1 id="page-title">Join Quiz</h1>
-    <div class="room-code">Room: <span id="room-id">-</span></div>
+    <h1 id="page-title" data-i18n="join.heading"></h1>
+    <div class="room-code"><span data-i18n="join.room"></span> <span id="room-id">-</span></div>
     <!-- Outside #content, so that no render* call wipes them. -->
-    <div id="connection-banner" class="connection-banner" role="status" hidden>Connection lost &mdash; reconnecting&hellip;</div>
+    <div id="connection-banner" class="connection-banner" role="status" data-i18n="connection.banner" hidden></div>
     <div id="notice" class="notice" role="status" hidden></div>
+    <div id="consent-status" class="consent-status" role="status" hidden></div>
     <div id="content"></div>
   </div>
   <script type="module" src="/js/quiz-client.js"></script>

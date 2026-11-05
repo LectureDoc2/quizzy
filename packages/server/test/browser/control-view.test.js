@@ -9,7 +9,7 @@
  */
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
-import { startStaticServer, launchBrowser } from './harness.js';
+import { startStaticServer, launchBrowser, openPage } from './harness.js';
 
 const PAYLOAD = '<img src=x onerror="__hit(\'fired\')">';
 
@@ -29,7 +29,7 @@ describe('Control view rendering (browser)', () => {
 
   /** Open the control page with a stubbed socket that the test drives. */
   async function openControlPage() {
-    const page = await browser.newPage();
+    const page = await openPage(browser);
     const dialogs = [];
     page.on('dialog', async (d) => { dialogs.push(d.message()); await d.dismiss(); });
 
@@ -110,8 +110,10 @@ describe('Control view rendering (browser)', () => {
     assert.strictEqual(report.injected, 0, 'a payload became a live element');
     assert.ok(!report.resultsHtml.includes('<img'), 'answer payload was parsed as markup');
     assert.ok(!report.leaderboardHtml.includes('<img'), 'name payload was parsed as markup');
+    // A string is a short answer: shown as the text it is, never as markup.
     // Malformed answers are shown as placeholders rather than raw values.
-    assert.deepStrictEqual(report.answers, ['(invalid answer)', '42', '?', '?', '(invalid answer)']);
+    assert.deepStrictEqual(report.answers, [PAYLOAD, '42', '?', '?', '(invalid answer)']);
+    assert.ok(report.resultsHtml.includes('&lt;img'), 'the short answer is escaped text');
 
     await page.close();
   });
@@ -170,6 +172,125 @@ describe('Control view rendering (browser)', () => {
     assert.ok(view.bold, 'lecturer HTML in the question was not rendered');
     assert.deepStrictEqual(view.options.map((o) => o.text), ['TCP', 'UDP', 'SCTP']);
     assert.deepStrictEqual(view.options.map((o) => o.correct), [true, false, true]);
+    await page.close();
+  });
+
+  it('shows the accepted answers, and groups short answers by spelling', async () => {
+    const { page, dialogs } = await openControlPage();
+    await page.evaluate((payload) => {
+      window.__push({
+        type: 'game_started',
+        questionIndex: 0,
+        question: {
+          type: 'short-answer',
+          text: 'Same name, different parameter lists?',
+          acceptedAnswers: ['Overloading [of Methods]', '<b>Überladen</b>']
+        }
+      });
+      window.__push({
+        type: 'question_results',
+        questionIndex: 0,
+        answers: [
+          { participantId: 'p1', name: 'Alice', answer: 'Overloading', points: 100 },
+          { participantId: 'p2', name: 'Bob', answer: 'overloading', points: 100 },
+          { participantId: 'p3', name: 'Carol', answer: 'Overloading', points: 100 },
+          { participantId: 'p4', name: 'Dave', answer: 'Overriding', points: 0 },
+          { participantId: 'p5', name: 'Erin', answer: 'overriding', points: 0 },
+          { participantId: 'p6', name: 'Frank', answer: payload, points: 0 }
+        ],
+        leaderboard: []
+      });
+    }, PAYLOAD);
+    await page.waitForTimeout(200);
+
+    const view = await page.evaluate(() => ({
+      hits: window.__hits,
+      accepted: document.querySelector('.question__correct-answer').textContent,
+      acceptedMarkup: !!document.querySelector('.question__correct-answer b'),
+      groups: [...document.querySelectorAll('.answer-group')].map((n) => ({
+        count: n.querySelector('.answer-group__count').textContent,
+        text: n.querySelector('.answer-group__text').textContent,
+        correct: n.classList.contains('answer-group--correct')
+      })),
+      injected: document.querySelectorAll('#results-content img').length,
+      perParticipant: document.querySelectorAll('.answer-item').length
+    }));
+
+    assert.strictEqual(view.accepted, 'Accepted: Overloading [of Methods] · <b>Überladen</b>');
+    assert.ok(!view.acceptedMarkup, 'accepted answers are plain text, not markup');
+    assert.deepStrictEqual(view.groups, [
+      { count: '3×', text: 'Overloading', correct: true },
+      { count: '2×', text: 'Overriding', correct: false },
+      { count: '1×', text: PAYLOAD, correct: false }
+    ]);
+    assert.strictEqual(view.perParticipant, 6, 'the per-participant list stays below the groups');
+    assert.deepStrictEqual(view.hits, [], 'an injected event handler executed');
+    assert.deepStrictEqual(dialogs, []);
+    assert.strictEqual(view.injected, 0, 'a payload became a live element');
+    await page.close();
+  });
+
+  it('lets the presenter accept a wrong group, and take that back, until the quiz moves on', async () => {
+    const { page } = await openControlPage();
+    const results = (acceptedByPresenter) => ({
+      type: 'question_results',
+      questionIndex: 0,
+      answers: [
+        { participantId: 'p1', name: 'Alice', answer: 'Overloading', points: 100 },
+        { participantId: 'p2', name: 'Bob', answer: 'Overload', points: acceptedByPresenter ? 100 : 0,
+          ...(acceptedByPresenter ? { acceptedByPresenter: true } : {}) },
+        { participantId: 'p3', name: 'Carol', answer: 'Overriding', points: 0 }
+      ],
+      leaderboard: []
+    });
+    const groups = () => page.evaluate(() =>
+      [...document.querySelectorAll('.answer-group')].map((n) => ({
+        text: n.querySelector('.answer-group__text').textContent,
+        correct: n.classList.contains('answer-group--correct'),
+        note: n.querySelector('.answer-group__note')?.textContent ?? null,
+        button: n.querySelector('.answer-group__toggle')?.textContent ?? null
+      })));
+    const clickOn = (text) => page.evaluate((text) => {
+      const group = [...document.querySelectorAll('.answer-group')]
+        .find((n) => n.querySelector('.answer-group__text').textContent === text);
+      group.querySelector('.answer-group__toggle').click();
+      return group.querySelector('.answer-group__toggle').disabled;
+    }, text);
+
+    await page.evaluate((msg) => {
+      window.__push({
+        type: 'game_started',
+        questionIndex: 0,
+        question: { type: 'short-answer', text: 'Same name?', acceptedAnswers: ['Overloading'] }
+      });
+      window.__push(msg);
+    }, results(false));
+    assert.deepStrictEqual(await groups(), [
+      { text: 'Overload', correct: false, note: null, button: 'Accept' },
+      { text: 'Overloading', correct: true, note: null, button: null },
+      { text: 'Overriding', correct: false, note: null, button: 'Accept' }
+    ]);
+
+    // Nothing changes on screen until the server has re-scored.
+    assert.strictEqual(await clickOn('Overload'), true, 'the button waits for the server');
+    assert.deepStrictEqual(await page.evaluate(() => window.__sent.at(-1)),
+      { type: 'accept_answer', questionIndex: 0, answer: 'Overload', accepted: true });
+
+    await page.evaluate((msg) => window.__push(msg), results(true));
+    assert.deepStrictEqual((await groups())[0],
+      { text: 'Overload', correct: true, note: 'accepted by you', button: 'Undo' });
+
+    await clickOn('Overload');
+    assert.deepStrictEqual(await page.evaluate(() => window.__sent.at(-1)),
+      { type: 'accept_answer', questionIndex: 0, answer: 'Overload', accepted: false });
+
+    await page.evaluate(() => window.__push({
+      type: 'question_started',
+      questionIndex: 1,
+      question: { type: 'short-answer', text: 'Next?', acceptedAnswers: ['x'] }
+    }));
+    assert.strictEqual(await page.evaluate(() => document.querySelectorAll('.answer-group__toggle').length), 0,
+      'the last results can no longer be re-scored');
     await page.close();
   });
 });

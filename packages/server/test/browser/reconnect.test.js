@@ -11,7 +11,7 @@
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert';
 import { createQuizServer } from '../../src/server.js';
-import { startStaticServer, launchBrowser, tokenFor, connectSocket } from './harness.js';
+import { startStaticServer, launchBrowser, openPage, tokenFor, connectSocket } from './harness.js';
 import { loopbackHost, originFor } from '../loopback.js';
 
 const QUIZ = {
@@ -82,7 +82,7 @@ describe('Participant reattach (browser, full stack)', () => {
   }
 
   async function newPage() {
-    const page = await browser.newPage();
+    const page = await openPage(browser);
     pages.push(page);
     return page;
   }
@@ -312,6 +312,47 @@ describe('Participant reattach (browser, full stack)', () => {
     assert.match(await text(page, '.error'), /removed/);
     assert.strictEqual(room().getLeaderboard().length, 0, 'the kick was undone by a reconnect');
     assert.deepStrictEqual((await stored(page)).session, {});
+  });
+
+  it('shows the consent choice again after a reload, without keeping it on the device', async () => {
+    const quiz = { ...QUIZ, recordNamedResults: true };
+    presenter = await socket();
+    presenter.sendJson({ type: 'create_room', presenterToken: tokenFor(`named-${roomCounter++}`, quiz), quiz });
+    roomId = (await presenter.take('room_created')).roomId;
+
+    const page = await newPage();
+    const consentShows = (fragment) =>
+      page.waitForFunction(
+        (f) => {
+          const el = document.getElementById('consent-status');
+          return !el.hidden && el.textContent.includes(f);
+        },
+        fragment,
+        { timeout: RECONNECT_TIMEOUT }
+      );
+
+    await page.goto(`${statics.origin}/join.html?room=${roomId}`);
+    await page.waitForSelector('#join-form');
+    await page.check('#consent');
+    await page.fill('#name', 'Alice Adams');
+    await page.click('#join-btn');
+    await consentShows('will be included');
+
+    const key = `quizzy:resume:${roomId}`;
+    const before = await stored(page);
+    assert.deepStrictEqual(Object.keys(before.session), [key], 'consent adds nothing to sessionStorage');
+    assert.match(before.session[key], /^[A-Za-z0-9_-]{43}$/);
+    assert.deepStrictEqual(before.local, []);
+    assert.strictEqual(before.cookie, '');
+
+    await page.reload();
+    await consentShows('will be included');
+
+    await page.click('#consent-toggle');
+    await consentShows('will not be recorded');
+    await page.reload();
+    await consentShows('will not be recorded');
+    assert.deepStrictEqual(Object.keys((await stored(page)).session), [key]);
   });
 
   it('writes nothing to the device before the student presses Join', async () => {

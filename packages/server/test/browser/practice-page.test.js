@@ -6,7 +6,9 @@ import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert';
 import { createQuizServer } from '../../src/server.js';
 import { buildPracticeCatalog } from '../../src/practice-catalog.js';
-import { startStaticServer, launchBrowser } from './harness.js';
+// In-process: these tests are about the practice page, not rendering.
+import { prepareQuiz } from '../../src/quiz-pipeline.js';
+import { startStaticServer, launchBrowser, openPage } from './harness.js';
 import { loopbackHost } from '../loopback.js';
 
 const QUIZZES = {
@@ -25,8 +27,10 @@ const QUIZZES = {
   misc: { title: 'Miscellany', questions: [{ type: 'estimation', text: 'Answer?', correctAnswer: 42 }] }
 };
 
-function catalog(entries, resultsSeconds = 30) {
-  return buildPracticeCatalog({ resultsSeconds, quizzes: entries }, (file) => QUIZZES[file]).catalog;
+async function catalog(entries, resultsSeconds = 30) {
+  return (await buildPracticeCatalog(
+    { resultsSeconds, quizzes: entries }, (file) => QUIZZES[file], { prepareQuiz }
+  )).catalog;
 }
 
 const FULL = [
@@ -60,11 +64,11 @@ describe('Practice (browser, full stack)', () => {
     for (const id of [...quizServer.roomManager.rooms.keys()]) {
       quizServer.roomManager.removeRoom(id);
     }
-    quizServer.setPracticeCatalog(catalog(FULL));
+    quizServer.setPracticeCatalog(await catalog(FULL));
   });
 
-  async function open(path) {
-    const page = await browser.newPage();
+  async function open(path, locale) {
+    const page = await openPage(browser, { locale });
     pages.push(page);
     await page.goto(`${statics.origin}/${path}`);
     return page;
@@ -104,7 +108,7 @@ describe('Practice (browser, full stack)', () => {
   });
 
   it('opens the only category when there is just one', async () => {
-    quizServer.setPracticeCatalog(catalog([FULL[1], FULL[3]]));
+    quizServer.setPracticeCatalog(await catalog([FULL[1], FULL[3]]));
     const page = await open('practice.html');
     await page.waitForSelector('details.practice-category');
     const groups = await listView(page);
@@ -112,7 +116,7 @@ describe('Practice (browser, full stack)', () => {
   });
 
   it('says when there is nothing to practise', async () => {
-    quizServer.setPracticeCatalog(catalog([]));
+    quizServer.setPracticeCatalog(await catalog([]));
     const page = await open('practice.html');
     await page.waitForSelector('.practice-empty');
   });
@@ -201,5 +205,94 @@ describe('Practice (browser, full stack)', () => {
     }));
     assert.match(seen.error, /not available/);
     assert.deepStrictEqual(seen.links, ['All practice quizzes']);
+  });
+
+  describe('in the student\'s language', () => {
+    it('speaks German to a German browser, plurals included', async () => {
+      const page = await open('practice.html', 'de-DE');
+      await page.waitForSelector('details.practice-category');
+      const seen = await page.evaluate(() => ({
+        lang: document.documentElement.lang,
+        title: document.title,
+        heading: document.querySelector('h1').textContent,
+        privacy: document.querySelector('.join-privacy').textContent
+      }));
+      assert.deepStrictEqual(
+        { lang: seen.lang, title: seen.title, heading: seen.heading },
+        { lang: 'de', title: 'Quizzy – Üben', heading: 'Selbstständig üben' }
+      );
+      assert.match(seen.privacy, /zufälligen Sitzungsschlüssel/);
+
+      const groups = await listView(page);
+      assert.deepStrictEqual(groups.map((g) => [g.name, g.count]), [
+        ['Geography', '1 Quiz'],
+        ['Security', '2 Quizze'],
+        ['Sonstiges', '1 Quiz']
+      ]);
+      assert.strictEqual(groups[1].cards[0].meta, '2 Fragen');
+      assert.strictEqual(groups[1].cards[0].href, 'join.html?practice=net', 'the browser chose; nothing to carry');
+    });
+
+    it('plays a game in German to the final score', async () => {
+      const page = await open('join.html?practice=net', 'de-DE');
+      await page.waitForSelector('.option');
+      await page.click('.option[data-index="0"]');
+      await page.click('#submit-btn');
+      await page.waitForSelector('#practice-countdown');
+      const results = await page.evaluate(() => ({
+        verdict: document.querySelector('.feedback__verdict').textContent.trim(),
+        countdown: document.getElementById('practice-countdown').textContent
+      }));
+      assert.strictEqual(results.verdict, 'Richtig!');
+      assert.match(results.countdown, /^Nächste Frage in (30|29) s$/);
+
+      await page.click('#practice-next-btn');
+      await page.waitForSelector('#answer');
+      await page.fill('#answer', '150');
+      await page.click('#answer-form button');
+      await page.waitForSelector('#practice-countdown');
+      assert.strictEqual(
+        await page.evaluate(() => document.querySelector('.feedback__verdict').textContent.trim()),
+        'Höchstens 25 % von der richtigen Antwort entfernt: 50 Punkte'
+      );
+
+      await page.click('#practice-next-btn');
+      await page.waitForSelector('.practice-summary__score');
+      const final = await page.evaluate(() => ({
+        score: document.querySelector('.practice-summary__score').textContent.trim(),
+        stats: document.querySelector('.my-stats').textContent.trim(),
+        links: [...document.querySelectorAll('.practice-actions a')].map((a) => a.textContent)
+      }));
+      assert.strictEqual(final.score, '150 von 200 Punkten');
+      assert.strictEqual(final.stats, '1 von 2 Fragen richtig beantwortet');
+      assert.deepStrictEqual(final.links, ['Noch einmal spielen', 'Zur Übersicht der Übungsquizze']);
+    });
+
+    it('lets ?lang= override the browser, and keeps it on every link', async () => {
+      const page = await open('practice.html?lang=en', 'de-DE');
+      await page.waitForSelector('details.practice-category');
+      assert.strictEqual(await page.evaluate(() => document.documentElement.lang), 'en');
+      const groups = await listView(page);
+      assert.strictEqual(groups[2].name, 'Other');
+      assert.strictEqual(groups[1].cards[0].href, 'join.html?practice=net&lang=en');
+
+      await page.click('details.practice-category:nth-of-type(2) summary');
+      await page.click('a[href="join.html?practice=net&lang=en"]');
+      await page.waitForSelector('.option');
+      const game = await page.evaluate(() => ({
+        url: location.search,
+        submit: document.getElementById('submit-btn').textContent
+      }));
+      assert.match(game.url, /^\?practice=net&room=[A-Z2-9]{6}&lang=en$/, 'a reload stays in English too');
+      assert.strictEqual(game.submit, 'Submit');
+
+      const gone = await open('join.html?practice=gone&lang=en', 'de-DE');
+      await gone.waitForSelector('.practice-actions');
+      assert.deepStrictEqual(
+        await gone.evaluate(() => [...document.querySelectorAll('.practice-actions a')]
+          .map((a) => [a.textContent, a.getAttribute('href')])),
+        [['All practice quizzes', 'practice.html?lang=en']]
+      );
+    });
   });
 });

@@ -11,3 +11,25 @@ packages:
 # of browser binaries onto a production host that will never run browser tests.
 allowBuilds:
   esbuild: true
+
+# Supply chain. A hijacked release of a dependency runs with the privileges of
+# whatever imports it -- for katex and highlight.js that used to be the API
+# server itself (see SECURITY_ARCHITECTURE.md §10). Hijacked releases are
+# usually found and pulled within days, so nothing younger than a week is
+# installed: an update that resolves to one fails instead.
+minimumReleaseAge: 10080 # minutes
+# Refuse a version published with weaker evidence of where it came from than
+# the versions before it (say, without the provenance attestation they had) --
+# the signature of a stolen publish token.
+trustPolicy: no-downgrade
+
+# CI fails on any high or critical advisory in a production dependency
+# (`pnpm audit --prod --audit-level high`). An exception names one advisory,
+# says why it cannot reach Quizzy, and says when it goes away.
+auditConfig:
+  ignoreGhsas:
+    # body-parser < 2.4.0, DoS via compressed request bodies. Unreachable: the
+    # API server installs no body-parsing middleware and accepts no request
+    # bodies. The fix (2.4.0, published 2026-10-22) is younger than
+    # minimumReleaseAge; update and remove this entry from 2026-10-29 on.
+    - GHSA-27r3-jxmh-p828

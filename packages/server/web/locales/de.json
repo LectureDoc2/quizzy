@@ -1,0 +1,143 @@
+{
+  "page.joinTitle": "Quizzy – Am Quiz teilnehmen",
+  "page.practiceTitle": "Quizzy – Üben",
+
+  "status.checking": "Das Quiz wird geprüft …",
+  "status.reconnecting": "Die Verbindung zum Quiz wird wiederhergestellt …",
+  "status.startingPractice": "Das Übungsquiz wird gestartet …",
+  "status.starting": "Wird gestartet …",
+  "status.waitingForStart": "Warten auf den Start des Quiz …",
+  "status.answerSubmitted": "Antwort abgeschickt!",
+  "status.answerSubmittedWaiting": "Antwort abgeschickt! Warten auf die Ergebnisse …",
+
+  "connection.banner": "Verbindung unterbrochen – sie wird wiederhergestellt …",
+  "connection.lost": "Die Verbindung wurde unterbrochen. Bitte laden Sie die Seite neu.",
+  "connection.superseded": "Dieses Quiz wurde in einem anderen Tab oder Fenster fortgesetzt.",
+  "connection.answerLost": "Ihre Antwort hat den Server vor dem Verbindungsabbruch nicht erreicht. Bitte antworten Sie erneut.",
+  "connection.missedQuestions": {
+    "one": "Frage {list} wurde geschlossen, während die Verbindung wiederhergestellt wurde. Sie bringt Ihnen deshalb keine Punkte.",
+    "other": "Die Fragen {list} wurden geschlossen, während die Verbindung wiederhergestellt wurde. Sie bringen Ihnen deshalb keine Punkte."
+  },
+
+  "join.room": "Raum:",
+  "join.heading": "Am Quiz teilnehmen",
+  "join.headingInProgress": "Das Quiz läuft bereits",
+  "join.button": "Teilnehmen",
+  "join.buttonInProgress": "Jetzt teilnehmen",
+  "join.namePlaceholder": "Geben Sie Ihren Namen ein",
+  "join.noRoom": "Es wurde kein Raumcode angegeben.",
+  "join.waitingForStart": "Das Quiz hat noch nicht begonnen.",
+  "join.progress": "Frage {current} von {total}.",
+  "join.progressMissed": {
+    "one": "Frage {current} von {total} – Sie haben {count} Frage verpasst und können dafür keine Punkte mehr erhalten.",
+    "other": "Frage {current} von {total} – Sie haben {count} Fragen verpasst und können dafür keine Punkte mehr erhalten."
+  },
+  "join.kicked": "Sie wurden aus dem Quiz entfernt.",
+
+  "consent.label": "Optional: Ich willige ein, dass mein Name und meine Endpunktzahl in die Ergebnisdatei der Lehrperson aufgenommen werden. Meine Antworten auf einzelne Fragen werden darin nicht erfasst. Ich kann diese Entscheidung bis zum Ende des Quiz ändern.",
+  "consent.willBeIncluded": "Ihr Name und Ihre Endpunktzahl werden in die Ergebnisse aufgenommen.",
+  "consent.willNotBeRecorded": "Ihr Ergebnis wird nicht mit Ihrem Namen erfasst.",
+  "consent.wereIncluded": "Ihr Name und Ihre Endpunktzahl wurden in die Ergebnisse aufgenommen.",
+  "consent.wasNotRecorded": "Ihr Ergebnis wurde nicht mit Ihrem Namen erfasst.",
+  "consent.withdraw": "Einwilligung widerrufen",
+  "consent.give": "Mein Ergebnis aufnehmen",
+
+  "privacy.join": "Damit Sie bei einem Verbindungsabbruch mit Ihrem Punktestand weitermachen können, speichert dieser Tab einen zufälligen Sitzungsschlüssel. Sonst wird nichts gespeichert; der Schlüssel wird gelöscht, sobald das Quiz endet oder der Tab geschlossen wird.",
+  "privacy.joinConsent": "Ihr Name und Ihre Endpunktzahl gelangen nur dann in die Ergebnisdatei der Lehrperson, wenn Sie das Kästchen oben ankreuzen.",
+  "privacy.practice": "Damit Sie bei einem Verbindungsabbruch weitermachen können, speichert ein Spiel einen zufälligen Sitzungsschlüssel in seinem Tab. Sonst wird nichts gespeichert; der Schlüssel wird gelöscht, sobald das Quiz endet oder der Tab geschlossen wird.",
+
+  "quiz.fallbackTitle": "Quiz",
+
+  "question.counter": "Frage {current} von {total}",
+  "question.submit": "Absenden",
+  "question.estimatePlaceholder": "Ihre Schätzung",
+  "question.termPlaceholder": "Ihre Antwort",
+  "question.expectedLength": "Erwartete Länge: {min}–{max} Zeichen",
+  "question.expectedLengthExact": {
+    "one": "Erwartete Länge: {count} Zeichen",
+    "other": "Erwartete Länge: {count} Zeichen"
+  },
+  "question.answerTooLong": "Länger als jede erwartete Antwort",
+
+  "results.counter": "Ergebnisse – Frage {number}",
+  "results.counterOfTotal": "Ergebnisse – Frage {number} von {total}",
+  "results.rankAndScore": "Ihr Rang: {rank} | Punkte: {score}",
+  "results.score": "Punkte: {score}",
+  "results.waitingForNext": "Warten auf die nächste Frage …",
+  "results.complete": "Das Quiz ist beendet!",
+  "results.finalHeading": "Endergebnis",
+  "results.thanks": "Vielen Dank für Ihre Teilnahme!",
+
+  "feedback.notAnswered": "Sie haben diese Frage nicht beantwortet.",
+  "feedback.correct": "Richtig!",
+  "feedback.wrong": "Leider nicht ganz.",
+  "feedback.acceptedByPresenter": "Richtig! Ihre Lehrperson hat diese Antwort anerkannt.",
+  "feedback.yourAnswer": "Ihre Antwort:",
+  "feedback.onlyEstimate": "Ihre Schätzung war die einzige.",
+  "feedback.closest": "Am nächsten dran von allen {count} Schätzungen!",
+  "feedback.rank": "Platz {rank} von {count} Schätzungen",
+  "feedback.recorded": "Ihre Antwort wurde erfasst.",
+  "feedback.band.10": "Höchstens 10 % von der richtigen Antwort entfernt",
+  "feedback.band.25": "Höchstens 25 % von der richtigen Antwort entfernt",
+  "feedback.band.50": "Höchstens 50 % von der richtigen Antwort entfernt",
+  "feedback.bandPoints": {
+    "one": "{band}: {count} Punkt",
+    "other": "{band}: {count} Punkte"
+  },
+  "feedback.bandMissed": "Mehr als 50 % daneben: keine Punkte",
+
+  "practice.heading": "Üben",
+  "practice.expired": "Dieses Übungsspiel ist abgelaufen.",
+  "practice.nextQuestion": "Nächste Frage",
+  "practice.showFinalScore": "Endergebnis anzeigen",
+  "practice.nextQuestionIn": "Nächste Frage in {seconds} s",
+  "practice.finalScoreIn": "Endergebnis in {seconds} s",
+  "practice.ofPoints": {
+    "one": "von {count} Punkt",
+    "other": "von {count} Punkten"
+  },
+  "practice.answeredCorrectly": {
+    "one": "{correct} von {count} Frage richtig beantwortet",
+    "other": "{correct} von {count} Fragen richtig beantwortet"
+  },
+  "practice.playAgain": "Noch einmal spielen",
+  "practice.allQuizzes": "Zur Übersicht der Übungsquizze",
+
+  "practiceList.heading": "Selbstständig üben",
+  "practiceList.intro": "Wählen Sie ein Quiz und spielen Sie es allein. Jede Frage hat ihr eigenes Zeitlimit; nach jeder Antwort sehen Sie, wie Sie abgeschnitten haben, und die nächste Frage folgt von selbst.",
+  "practiceList.loading": "Quizze werden geladen …",
+  "practiceList.uncategorised": "Sonstiges",
+  "practiceList.questionCount": {
+    "one": "{count} Frage",
+    "other": "{count} Fragen"
+  },
+  "practiceList.quizCount": {
+    "one": "{count} Quiz",
+    "other": "{count} Quizze"
+  },
+  "practiceList.loadFailed": "Die Übungsquizze konnten nicht geladen werden. Bitte versuchen Sie es später erneut.",
+  "practiceList.empty": "Auf diesem Server gibt es noch keine Übungsquizze.",
+
+  "error.protocol_mismatch": "Diese Seite (Quiz-Protokollversion {version}) passt nicht zum Quiz-Server. Bitte laden Sie die Seite neu; hilft das nicht, muss der Server aktualisiert werden.",
+  "error.session_unavailable": "Diese Sitzung kann nicht geöffnet werden. Bitte prüfen Sie den Raumcode und versuchen Sie es erneut.",
+  "error.quiz_finished": "Dieses Quiz ist bereits beendet.",
+  "error.rejoin_failed": "Ihre vorherige Sitzung ist abgelaufen. Bitte nehmen Sie erneut teil.",
+  "error.already_joined": "Über diese Verbindung wurde bereits an einem Quiz teilgenommen. Laden Sie die Seite neu, um erneut teilzunehmen.",
+  "error.practice_unavailable": "Dieses Übungsquiz ist nicht verfügbar. Bitte wählen Sie eines aus der Liste.",
+  "error.practice_rate_limited": "Zu viele Übungsspiele von dieser Adresse. Bitte versuchen Sie es später erneut.",
+  "error.rate_limited": "Zu viele Versuche. Bitte warten Sie eine Minute.",
+  "error.too_many_connections": "Zu viele Verbindungen. Bitte versuchen Sie es später erneut.",
+  "error.too_many_messages": "Zu viele Nachrichten. Bitte etwas langsamer.",
+  "error.server_at_capacity": "Der Server ist ausgelastet. Bitte versuchen Sie es später erneut.",
+  "error.invalid_message": "Ungültige Nachricht.",
+  "error.name_required": "Bitte geben Sie einen Namen ein.",
+  "error.name_too_short": "Der Name muss mindestens {min} Zeichen lang sein.",
+  "error.name_too_long": "Der Name darf höchstens {max} Zeichen lang sein.",
+  "error.name_invalid_characters": "Der Name darf nur Buchstaben, Leerzeichen, Bindestriche und Apostrophe enthalten.",
+  "error.name_not_allowed": "Dieser Name ist nicht erlaubt.",
+  "error.no_open_question": "Derzeit nimmt keine Frage Antworten an.",
+  "error.invalid_answer": "Diese Antwort konnte nicht angenommen werden.",
+  "error.consent_not_requested": "Dieses Quiz erfasst keine namentlichen Ergebnisse.",
+  "error.consent_closed": "Das Quiz ist beendet; Ihre Entscheidung kann nicht mehr geändert werden.",
+  "error.consent_invalid": "Ungültige Angabe zur Einwilligung."
+}

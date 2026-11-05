@@ -229,6 +229,7 @@ describe('Server integration', () => {
       const { reply } = await joinRoom('ZZZZZZ', 'Prober One');
       assert.strictEqual(reply.type, 'error');
       assert.strictEqual(reply.message, GENERIC_REJECTION);
+      assert.strictEqual(reply.code, 'session_unavailable');
       assert.ok(!/not found|denied|exist/i.test(reply.message));
     });
 
@@ -330,10 +331,20 @@ describe('Server integration', () => {
 
       const { reply } = await joinRoom(presenter.created.roomId, 'Late Arrival');
       assert.strictEqual(reply.message, QUIZ_FINISHED);
+      assert.strictEqual(reply.code, 'quiz_finished');
 
       // A room that never existed stays opaque even after a valid name.
       const { reply: unknown } = await joinRoom('ZZZZZZ', 'Late Arrival');
       assert.strictEqual(unknown.message, GENERIC_REJECTION);
+    });
+
+    it('refuses a name with a code and parameters the join page can translate', async () => {
+      const { created } = await openRoom();
+      const { reply } = await joinRoom(created.roomId, 'A');
+      assert.strictEqual(reply.type, 'error');
+      assert.strictEqual(reply.code, 'name_too_short');
+      assert.deepStrictEqual(reply.params, { min: 2 });
+      assert.match(reply.message, /at least 2 characters/, 'the English text stays for older clients');
     });
 
     it('still admits a latecomer and sends them the question in progress', async () => {
@@ -410,7 +421,9 @@ describe('Server integration', () => {
     it('refuses out-of-range option indices', async () => {
       const { player } = await startedGame();
       send(player.ws, { type: 'submit_answer', answer: [99] });
-      assert.strictEqual((await next(player.ws)).type, 'error');
+      const refusal = await next(player.ws);
+      assert.strictEqual(refusal.type, 'error');
+      assert.strictEqual(refusal.code, 'invalid_answer');
     });
 
     it('accepts a well-formed answer and forwards it to the presenter', async () => {
@@ -486,6 +499,18 @@ describe('Server integration', () => {
       assert.strictEqual(alices.answer, 100);
     });
 
+    it('gives equally close estimates the same rank', async () => {
+      const { alice, bob } = await onEstimationQuestion();
+      send(alice.ws, { type: 'submit_answer', answer: 100 });
+      send(bob.ws, { type: 'submit_answer', answer: 100 });
+
+      const alices = (await waitFor(alice.ws, 'results')).feedback;
+      const bobs = (await waitFor(bob.ws, 'results')).feedback;
+      assert.strictEqual(alices.rank, 1);
+      assert.strictEqual(bobs.rank, 1);
+      assert.strictEqual(bobs.answerCount, 2);
+    });
+
     it('passes on none of the quiz author\'s other question fields', async () => {
       const quiz = {
         ...QUIZ,
@@ -541,6 +566,109 @@ describe('Server integration', () => {
     });
   });
 
+  describe('accepting a short answer after all', () => {
+    const TERMS = {
+      title: 'Terms',
+      secret: 'high-entropy-secret',
+      questions: [{
+        type: 'short-answer',
+        text: 'Same name, different parameter lists?',
+        acceptedAnswers: ['Overloading [of Methods]']
+      }]
+    };
+
+    /** Alice right, Bob wrong; both answered, so the results are up. */
+    async function closedQuestion() {
+      const presenter = await openRoom(tokenFor('michael', TERMS), TERMS);
+      const roomId = presenter.created.roomId;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      const bob = await joinRoom(roomId, 'Bob Brown');
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(alice.ws, 'question');
+      await waitFor(bob.ws, 'question');
+      send(alice.ws, { type: 'submit_answer', answer: 'Overloading' });
+      send(bob.ws, { type: 'submit_answer', answer: 'Overload' });
+      await waitFor(alice.ws, 'results');
+      assert.strictEqual((await waitFor(bob.ws, 'results')).feedback.isCorrect, false);
+      const results = await waitFor(presenter.ws, 'question_results');
+      assert.strictEqual(results.answers.find((a) => a.name === 'Bob Brown').points, 0);
+      // The control view groups the answers in the mode they were compared in.
+      assert.strictEqual(results.match, 'fuzzy');
+      return { presenter, roomId, alice, bob };
+    }
+
+    it('re-scores the group and sends everybody the results again', async () => {
+      const { presenter, roomId, alice, bob } = await closedQuestion();
+      send(presenter.ws, { type: 'accept_answer', questionIndex: 0, answer: 'overload' });
+
+      const bobs = await waitFor(bob.ws, 'results');
+      assert.strictEqual(bobs.feedback.isCorrect, true);
+      assert.strictEqual(bobs.feedback.acceptedByPresenter, true);
+      assert.deepStrictEqual(bobs.leaderboard.map((e) => e.score), [100, 100]);
+
+      const alices = await waitFor(alice.ws, 'results');
+      assert.strictEqual(alices.feedback.isCorrect, true);
+      assert.ok(!('acceptedByPresenter' in alices.feedback));
+
+      const control = await waitFor(presenter.ws, 'question_results');
+      const bobsRow = control.answers.find((a) => a.name === 'Bob Brown');
+      assert.strictEqual(bobsRow.points, 100);
+      assert.strictEqual(bobsRow.acceptedByPresenter, true);
+      assert.ok(!('acceptedByPresenter' in control.answers.find((a) => a.name === 'Alice Adams')));
+
+      // Somebody who comes back gets the corrected verdict, not the first one.
+      bob.ws.terminate();
+      await new Promise((r) => setTimeout(r, 50));
+      const ws = await connect();
+      send(ws, { type: 'rejoin_room', roomId, resumeToken: bob.reply.resumeToken });
+      assert.strictEqual((await next(ws)).type, 'rejoined');
+      assert.strictEqual((await waitFor(ws, 'results')).feedback.acceptedByPresenter, true);
+    });
+
+    it('takes an acceptance back', async () => {
+      const { presenter, bob } = await closedQuestion();
+      send(presenter.ws, { type: 'accept_answer', questionIndex: 0, answer: 'Overload' });
+      assert.strictEqual((await waitFor(bob.ws, 'results')).feedback.isCorrect, true);
+      await waitFor(presenter.ws, 'question_results');
+
+      send(presenter.ws, { type: 'accept_answer', questionIndex: 0, answer: 'Overload', accepted: false });
+      const bobs = await waitFor(bob.ws, 'results');
+      assert.strictEqual(bobs.feedback.isCorrect, false);
+      assert.ok(!('acceptedByPresenter' in bobs.feedback));
+      const control = await waitFor(presenter.ws, 'question_results');
+      assert.strictEqual(control.answers.find((a) => a.name === 'Bob Brown').points, 0);
+    });
+
+    it('is the presenter\'s alone', async () => {
+      const { presenter, alice, bob } = await closedQuestion();
+      send(bob.ws, { type: 'accept_answer', questionIndex: 0, answer: 'Overload' });
+      // Replies come in order, so once this one is back the attempt above
+      // has been dealt with.
+      send(bob.ws, { type: 'room_status', roomId: presenter.created.roomId });
+      await waitFor(bob.ws, 'room_status');
+
+      send(presenter.ws, { type: 'export_results' });
+      const stats = (await waitFor(presenter.ws, 'results_export')).statistics;
+      assert.strictEqual(stats.questions[0].correctCount, 1);
+      assert.ok(!bob.ws.inbox.some((m) => m.type === 'results'), 'nothing was re-scored');
+      assert.ok(!alice.ws.inbox.some((m) => m.type === 'results'));
+    });
+
+    it('ignores a click that arrives after the quiz has moved on, without an error', async () => {
+      const { presenter, bob } = await closedQuestion();
+      send(presenter.ws, { type: 'next_question' });
+      await waitFor(presenter.ws, 'game_ended');
+      await waitFor(bob.ws, 'game_ended');
+
+      send(presenter.ws, { type: 'accept_answer', questionIndex: 0, answer: 'Overload' });
+      send(presenter.ws, { type: 'export_results' });
+      const reply = await waitFor(presenter.ws, 'results_export');
+      assert.strictEqual(reply.statistics.questions[0].correctCount, 1);
+      const unexpected = presenter.ws.inbox.filter((m) => m.type === 'error' || m.type === 'question_results');
+      assert.deepStrictEqual(unexpected, []);
+    });
+  });
+
   describe('one socket, one participant', () => {
     it('refuses a second join_room on a connection that has already joined', async () => {
       const presenter = await openRoom();
@@ -551,6 +679,7 @@ describe('Server integration', () => {
       send(player.ws, { type: 'join_room', roomId, name: 'Alice Again' });
       const refusal = await waitFor(player.ws, 'error');
       assert.match(refusal.message, /already joined/i);
+      assert.strictEqual(refusal.code, 'already_joined');
       assert.strictEqual(player.ws.readyState, WebSocket.OPEN,
         'a confused client should be told what is wrong, not disconnected');
       assert.strictEqual(quizServer.roomManager.getRoom(roomId).getParticipantCount(), 1);
@@ -952,6 +1081,117 @@ describe('Server integration', () => {
       const exported = await next(reopened);
       assert.strictEqual(exported.type, 'results_export');
       assert.ok(Array.isArray(exported.statistics.questions));
+    });
+  });
+
+  describe('consent to named results', () => {
+    const NAMED_QUIZ = { ...QUIZ, recordNamedResults: true };
+    const openNamedRoom = () => openRoom(tokenFor('michael', NAMED_QUIZ), NAMED_QUIZ);
+
+    async function joinWithConsent(roomId, name, consent) {
+      const ws = await connect();
+      send(ws, { type: 'join_room', roomId, name, consent });
+      return { ws, reply: await next(ws) };
+    }
+
+    async function statusOf(roomId) {
+      const ws = await connect();
+      send(ws, { type: 'room_status', roomId });
+      return next(ws);
+    }
+
+    it('tells the join page whether the quiz asks for consent', async () => {
+      const named = await openNamedRoom();
+      assert.strictEqual((await statusOf(named.created.roomId)).recordsNamedResults, true);
+      const plain = await openRoom();
+      assert.strictEqual((await statusOf(plain.created.roomId)).recordsNamedResults, false);
+    });
+
+    it('records consent only when given as true, and says what it recorded', async () => {
+      const { created } = await openNamedRoom();
+      const alice = await joinWithConsent(created.roomId, 'Alice Adams', true);
+      assert.strictEqual(alice.reply.type, 'joined');
+      assert.strictEqual(alice.reply.recordsNamedResults, true);
+      assert.strictEqual(alice.reply.consent, true);
+
+      const bob = await joinWithConsent(created.roomId, 'Bob Brown', 'yes');
+      assert.strictEqual(bob.reply.consent, false);
+      const carol = await joinRoom(created.roomId, 'Carol Clark');
+      assert.strictEqual(carol.reply.consent, false);
+    });
+
+    it('ignores consent, and refuses to change it, when the quiz does not ask', async () => {
+      const { created } = await openRoom();
+      const alice = await joinWithConsent(created.roomId, 'Alice Adams', true);
+      assert.strictEqual(alice.reply.recordsNamedResults, false);
+      assert.strictEqual(alice.reply.consent, false);
+
+      send(alice.ws, { type: 'set_consent', consent: true });
+      const refused = await next(alice.ws);
+      assert.strictEqual(refused.type, 'error');
+      assert.match(refused.message, /does not record named results/);
+      assert.strictEqual(refused.code, 'consent_not_requested');
+      assert.strictEqual(quizServer.roomManager.getRoom(created.roomId).participants.values().next().value.consent, false);
+    });
+
+    it('lets consent change until the end, and exports only those who gave it', async () => {
+      const presenter = await openNamedRoom();
+      const { roomId } = presenter.created;
+      const alice = await joinWithConsent(roomId, 'Alice Adams', true);
+      const bob = await joinWithConsent(roomId, 'Bob Brown', true);
+      const carol = await joinRoom(roomId, 'Carol Clark');
+
+      send(bob.ws, { type: 'set_consent', consent: false });
+      assert.deepStrictEqual(await next(bob.ws), { type: 'consent_updated', consent: false });
+      send(carol.ws, { type: 'set_consent', consent: 'please' });
+      assert.strictEqual((await next(carol.ws)).code, 'consent_invalid');
+
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(presenter.ws, 'game_started');
+      send(alice.ws, { type: 'submit_answer', answer: [0, 2] }); // correct
+      send(bob.ws, { type: 'submit_answer', answer: [0, 2] });   // correct
+      send(carol.ws, { type: 'submit_answer', answer: [1] });    // wrong
+      await waitFor(presenter.ws, 'question_results');
+
+      const midGame = await connect();
+      send(midGame, { type: 'control_connect', presenterToken: tokenFor('michael', NAMED_QUIZ), roomId });
+      await next(midGame);
+      send(midGame, { type: 'export_results' });
+      assert.strictEqual((await waitFor(midGame, 'results_export')).statistics.namedResults, null,
+        'no names before the quiz has ended');
+
+      const ended = waitFor(presenter.ws, 'game_ended');
+      send(presenter.ws, { type: 'end_game' });
+      const stats = (await ended).statistics;
+      assert.strictEqual(stats.recordsNamedResults, true);
+      assert.deepStrictEqual(stats.namedResults, [{ name: 'Alice Adams', score: 100 }]);
+      assert.ok(!JSON.stringify(stats).includes('Bob'));
+      assert.ok(!JSON.stringify(stats).includes('Carol'));
+
+      await waitFor(alice.ws, 'game_ended');
+      send(alice.ws, { type: 'set_consent', consent: false });
+      const tooLate = await waitFor(alice.ws, 'error');
+      assert.match(tooLate.message, /finished/);
+      assert.strictEqual(tooLate.code, 'consent_closed');
+      send(midGame, { type: 'export_results' });
+      assert.deepStrictEqual((await waitFor(midGame, 'results_export')).statistics.namedResults,
+        [{ name: 'Alice Adams', score: 100 }]);
+    });
+
+    it('gives the choice back on a rejoin', async () => {
+      const presenter = await openNamedRoom();
+      const { roomId } = presenter.created;
+      const alice = await joinWithConsent(roomId, 'Alice Adams', true);
+      const left = waitFor(presenter.ws, 'participant_left');
+      alice.ws.terminate();
+      await left;
+
+      const ws = await connect();
+      send(ws, { type: 'rejoin_room', roomId, resumeToken: alice.reply.resumeToken });
+      const rejoined = await next(ws);
+      assert.strictEqual(rejoined.type, 'rejoined');
+      assert.strictEqual(rejoined.recordsNamedResults, true);
+      assert.strictEqual(rejoined.consent, true);
     });
   });
 

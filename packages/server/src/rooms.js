@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomInt } from 'crypto';
+import { answerLengths, groupAnswers, matchesAcceptedAnswer, matchOf, measuredLength, normalizeAnswer } from './short-answer.js';
 
 /**
  * Room identifiers are read aloud and typed in by hand, so the alphabet omits
@@ -56,6 +57,29 @@ const DETACHED_CAP_FACTOR = 3;
 const DETACHED_CAP_MIN = 30;
 
 /**
+ * Points for the first, second and third place of an estimate in a live game;
+ * every other place scores nothing. See Room.scoreQuestion().
+ */
+const ESTIMATION_POINTS = [100, 50, 25];
+
+/**
+ * Whether two estimates are equally close to the correct answer: the same
+ * estimate, or the same distance from the other side.
+ *
+ * Not `===` on the two distances: in floating point, 0.2 and 0.4 are not
+ * equally far from 0.3 (0.09999999999999998 vs. 0.10000000000000003). The
+ * rounding error of a subtraction grows with its operands, not with its
+ * result, so the tolerance is a few units in the last place of the largest
+ * number involved -- far below any difference somebody could mean by typing
+ * two different estimates.
+ */
+function equallyClose(a, b, correct) {
+  const scale = Math.max(Math.abs(a), Math.abs(b), Math.abs(correct));
+  const gap = Math.abs(Math.abs(a - correct) - Math.abs(b - correct));
+  return gap <= 8 * Number.EPSILON * scale;
+}
+
+/**
  * How a practice estimate scores. Estimation is normally ranked against the
  * rest of the room, which alone is meaningless -- the only estimate is always
  * the closest -- so a practice game scores the relative error instead, on the
@@ -84,6 +108,14 @@ function practiceEstimationBand(answer, correctAnswer) {
   ) ?? null;
 }
 
+/**
+ * How many distinct answers to a short-answer question the export lists; the
+ * rest are only counted. The frequent ones are the interesting ones -- the
+ * right answer and the common misconceptions -- and a hall typing free text
+ * should not grow the statistics without bound.
+ */
+const SHORT_ANSWER_GROUPS_IN_EXPORT = 20;
+
 class Room {
   constructor(roomId, presenterToken, quiz) {
     this.roomId = roomId;
@@ -105,7 +137,7 @@ class Room {
     this.state = 'lobby'; // lobby, question, results, ended
     this.currentQuestionIndex = -1;
     this.currentQuestionStartTime = null;
-    this.currentAnswers = new Map(); // participantId -> { answer, timestamp }
+    this.currentAnswers = new Map(); // participantId -> { answer, timestamp, correct?, acceptedByPresenter? }
     this.presenterWss = new Set();
     this.createdAt = Date.now();
     this.questionTimer = null;
@@ -124,6 +156,19 @@ class Room {
     // `advanceAt` is when it fires, for the countdown on the results screen.
     this.advanceTimer = null;
     this.advanceAt = null;
+    // Names and final scores of the participants who agreed to be named in the
+    // export, frozen when the game ends; null until then. See
+    // snapshotNamedResults().
+    this.namedResults = null;
+  }
+
+  /**
+   * Whether this room asks its participants for consent to be named in the
+   * export. Only a live quiz whose author opted in; a practice game has no
+   * lecturer and no export.
+   */
+  recordsNamedResults() {
+    return !this.practice && this.quiz.recordNamedResults === true;
   }
 
   /** Number of live sockets attached to this room, presenter included. */
@@ -156,9 +201,20 @@ class Room {
     return now - this.emptySince >= ttl;
   }
 
-  addParticipant(ws, name) {
+  /**
+   * @param {boolean} consent Whether the participant agreed to have their name
+   *   and final score in the export. Only a literal `true` counts, and only in
+   *   a room that asks; see recordsNamedResults().
+   */
+  addParticipant(ws, name, consent = false) {
     const id = `p_${Date.now()}_${randomBytes(9).toString('base64url')}`;
-    const participant = { id, name, score: 0, answers: [] };
+    const participant = {
+      id,
+      name,
+      score: 0,
+      answers: [],
+      consent: consent === true && this.recordsNamedResults()
+    };
     const resumeToken = randomBytes(32).toString('base64url');
     this.participants.set(ws, participant);
     this.resumeTokens.set(resumeToken, id);
@@ -353,6 +409,22 @@ class Room {
     return list;
   }
 
+  /**
+   * Give or withdraw consent to being named in the export. Allowed until the
+   * game ends -- withdrawing must be as easy as agreeing -- and refused after,
+   * because by then the lecturer may already hold the file.
+   *
+   * @returns {boolean} whether the participant's choice is now `consent`.
+   */
+  setConsent(participantId, consent) {
+    if (typeof consent !== 'boolean') return false;
+    if (!this.recordsNamedResults() || this.state === 'ended') return false;
+    const participant = this.getParticipantById(participantId);
+    if (!participant) return false;
+    participant.consent = consent;
+    return true;
+  }
+
   addPresenter(ws) {
     this.presenterWss.add(ws);
     this.updateEmptySince();
@@ -399,50 +471,78 @@ class Room {
    * Participants are untrusted: `answer` arrives verbatim from a WebSocket
    * message and may be any JSON value. Everything downstream -- scoring, and in
    * particular the presenter's results view -- assumes a number for estimation
-   * questions and an array of option indices for multiple-choice questions.
-   * This is the single choke point that keeps those assumptions true, so
-   * answers are rejected rather than coerced.
+   * questions, an array of option indices for multiple-choice questions, and
+   * a string for short-answer questions. This is the single choke point that
+   * keeps those assumptions true, so answers are rejected rather than coerced.
    *
-   * @returns {{valid: boolean, error?: string, answer?: number|number[]}}
+   * A refusal's `code` is `no_open_question`, or `invalid_answer` for the
+   * malformed answers that only a broken client sends; `error` says which.
+   *
+   * @returns {{valid: boolean, error?: string, code?: string, answer?: number|number[]|string}}
    */
   validateAnswer(answer) {
     if (this.state !== 'question') {
-      return { valid: false, error: 'No question is currently accepting answers' };
+      return { valid: false, code: 'no_open_question', error: 'No question is currently accepting answers' };
     }
 
     const question = this.getCurrentQuestion();
     if (!question) {
-      return { valid: false, error: 'No question is currently accepting answers' };
+      return { valid: false, code: 'no_open_question', error: 'No question is currently accepting answers' };
     }
 
     if (question.type === 'estimation') {
       // Note: typeof NaN === 'number', hence the explicit isFinite check.
       // Without it, a NaN answer silently corrupts the ranking comparator.
       if (typeof answer !== 'number' || !Number.isFinite(answer)) {
-        return { valid: false, error: 'Answer must be a finite number' };
+        return { valid: false, code: 'invalid_answer', error: 'Answer must be a finite number' };
       }
       return { valid: true, answer };
     }
 
     if (question.type === 'multiple-choice') {
       if (!Array.isArray(answer)) {
-        return { valid: false, error: 'Answer must be an array of option indices' };
+        return { valid: false, code: 'invalid_answer', error: 'Answer must be an array of option indices' };
       }
       const optionCount = Array.isArray(question.options) ? question.options.length : 0;
       // An empty selection is legitimate ("I don't know"); it simply scores 0.
       if (answer.length > optionCount) {
-        return { valid: false, error: 'Answer selects more options than the question has' };
+        return { valid: false, code: 'invalid_answer', error: 'Answer selects more options than the question has' };
       }
       for (const index of answer) {
         if (!Number.isInteger(index) || index < 0 || index >= optionCount) {
-          return { valid: false, error: 'Answer contains an invalid option index' };
+          return { valid: false, code: 'invalid_answer', error: 'Answer contains an invalid option index' };
         }
       }
       // Normalize so scoring and rendering see a canonical value.
       return { valid: true, answer: [...new Set(answer)].sort((a, b) => a - b) };
     }
 
-    return { valid: false, error: 'Unsupported question type' };
+    if (question.type === 'short-answer') {
+      if (typeof answer !== 'string') {
+        return { valid: false, code: 'invalid_answer', error: 'Answer must be a string' };
+      }
+      // The join page enforces maxLength on the answer as measured (see
+      // measuredLength()), which ignores repeated spaces. The raw bound only
+      // keeps a broken client from making the server normalize a megabyte.
+      const { maxLength } = answerLengths(question);
+      if (answer.length > 2 * maxLength) {
+        return { valid: false, code: 'invalid_answer', error: 'Answer is longer than any accepted answer' };
+      }
+      // Spacing collapsed, so that what the presenter sees is one line.
+      const text = answer.replace(/\s+/g, ' ').trim();
+      if (text === '') {
+        return { valid: false, code: 'invalid_answer', error: 'Answer must not be empty' };
+      }
+      if (/\p{Cc}/u.test(text)) {
+        return { valid: false, code: 'invalid_answer', error: 'Answer contains control characters' };
+      }
+      if (measuredLength(text) > maxLength) {
+        return { valid: false, code: 'invalid_answer', error: 'Answer is longer than any accepted answer' };
+      }
+      return { valid: true, answer: text };
+    }
+
+    return { valid: false, code: 'invalid_answer', error: 'Unsupported question type' };
   }
 
   submitAnswer(participantId, answer) {
@@ -455,10 +555,14 @@ class Room {
     if (!validation.valid) return false;
     answer = validation.answer;
 
-    this.currentAnswers.set(participantId, {
-      answer,
-      timestamp: Date.now()
-    });
+    const record = { answer, timestamp: Date.now() };
+    // Matched now rather than when the question closes: closing can happen in
+    // a timer callback, and should not have to match a whole hall's answers.
+    const question = this.getCurrentQuestion();
+    if (question.type === 'short-answer') {
+      record.correct = matchesAcceptedAnswer(question, answer);
+    }
+    this.currentAnswers.set(participantId, record);
 
     // Close the question as soon as nobody who is still in the room is being
     // waited for. Comparing currentAnswers.size against participants.size was
@@ -530,6 +634,73 @@ class Room {
   }
 
   /**
+   * Count a short answer as right after all, or take that back -- the
+   * presenter's call, while the results of the question are on screen.
+   * Matching is only as good as the author's list of accepted answers, and a
+   * hall will always find a correct spelling nobody thought of.
+   *
+   * The presenter decides about an answer, never about a person: every answer
+   * in the same normalized form as `answer` is re-scored, exactly the group
+   * the results view shows. Only answers the matching rejected can be
+   * accepted, and only those accepted here can be taken back, so a stray click
+   * can neither fail a right answer nor be undone into one.
+   *
+   * Refused (null) when the question is not a short-answer question, its
+   * results are not what is on screen, or nothing would change; a click that
+   * arrives from a window the quiz has already moved past is not an error.
+   *
+   * @param {number} questionIndex the question whose results the presenter saw
+   * @param {string} answer any spelling from the group
+   * @param {boolean} accepted false to take an earlier acceptance back
+   * @returns {object|null} the re-scored results, like endQuestion()'s
+   */
+  setAnswerAccepted(questionIndex, answer, accepted) {
+    if (this.state !== 'results' || questionIndex !== this.currentQuestionIndex) return null;
+    const question = this.getCurrentQuestion();
+    if (!question || question.type !== 'short-answer') return null;
+    if (typeof answer !== 'string' || typeof accepted !== 'boolean') return null;
+    // Spellings in the group passed validateAnswer(), whose raw bound this is.
+    if (answer.length > 2 * answerLengths(question).maxLength) return null;
+    // The form matching compared in: in "exact" mode "*" is not "/*".
+    const match = matchOf(question);
+    const form = normalizeAnswer(answer, match);
+    if (form === '') return null;
+
+    const before = this.scoreQuestion(question).scores;
+    let changed = false;
+    for (const record of this.currentAnswers.values()) {
+      if (typeof record.answer !== 'string' || normalizeAnswer(record.answer, match) !== form) continue;
+      if (accepted ? record.correct === true : record.acceptedByPresenter !== true) continue;
+      record.correct = accepted;
+      if (accepted) record.acceptedByPresenter = true;
+      else delete record.acceptedByPresenter;
+      changed = true;
+    }
+    if (!changed) return null;
+
+    // The difference, rather than a fixed 100: scoreQuestion() stays the one
+    // place that says what a right answer is worth.
+    const results = this.scoreQuestion(question);
+    for (const [participantId, points] of results.scores) {
+      const delta = points - (before.get(participantId) || 0);
+      if (delta === 0) continue;
+      // Somebody kicked meanwhile, or gone longer than DETACHED_TTL_MS, has no
+      // score left to correct.
+      const participant = this.getParticipantById(participantId);
+      if (!participant) continue;
+      participant.score += delta;
+      const entry = participant.answers.find(a => a.questionIndex === this.currentQuestionIndex);
+      if (entry) entry.points = points;
+    }
+
+    const stat = this.questionStats.find(s => s.questionIndex === this.currentQuestionIndex);
+    if (stat) Object.assign(stat, this.shortAnswerStatistics(results));
+
+    results.leaderboard = this.getLeaderboard();
+    return results;
+  }
+
+  /**
    * Snapshot how a question was answered, for the post-game export.
    *
    * Recorded when the question closes rather than derived from participants at
@@ -540,8 +711,9 @@ class Room {
    * numbers the lecturer is trying to read.
    *
    * Deliberately aggregate: counts and distributions, never names. Nothing here
-   * identifies a participant, which keeps the exported file free of personal
-   * data.
+   * identifies a participant, which keeps the per-question part of the export
+   * free of personal data. The one exception, names with final scores, is
+   * gated on consent and kept apart; see snapshotNamedResults().
    */
   recordQuestionStatistics(question, results) {
     if (this.questionStats.some(s => s.questionIndex === this.currentQuestionIndex)) {
@@ -587,21 +759,70 @@ class Room {
       stat.withinTenPercent = stat.correctAnswer === null
         ? null
         : values.filter(v => Math.abs(v - stat.correctAnswer) <= Math.abs(stat.correctAnswer) * 0.1).length;
+    } else if (question.type === 'short-answer') {
+      stat.acceptedAnswers = Array.isArray(question.acceptedAnswers)
+        ? question.acceptedAnswers.filter(a => typeof a === 'string')
+        : [];
+      Object.assign(stat, this.shortAnswerStatistics(results));
     }
 
     this.questionStats.push(stat);
   }
 
   /**
-   * Aggregate statistics for every question that has been played.
-   * Used by the presenter's post-game export.
+   * The part of a short-answer question's statistics that the presenter can
+   * still change once the question has closed; see setAnswerAccepted().
+   */
+  shortAnswerStatistics(results) {
+    // Free text, so it can say anything -- a name included. Grouped and
+    // counted like everything else here, never attributed to anybody.
+    const { groups, otherCount } = groupAnswers(this.currentAnswers.values(), {
+      limit: SHORT_ANSWER_GROUPS_IN_EXPORT,
+      match: matchOf(this.getCurrentQuestion())
+    });
+    return {
+      correctCount: Array.from(results.scores.values()).filter(p => p > 0).length,
+      answers: groups,
+      otherAnswerCount: otherCount
+    };
+  }
+
+  /**
+   * Freeze the names and final scores of the participants who agreed to be
+   * named. Called once, when the game ends.
+   *
+   * A snapshot rather than something derived when the export is requested:
+   * a participant who drops after the last question is purged after
+   * DETACHED_TTL_MS, and the lecturer may reopen the control view later than
+   * that. Consent cannot change once the game has ended, so the snapshot
+   * cannot go stale.
+   *
+   * Name and score only -- exactly what was agreed to. No id, no rank, no
+   * answers.
+   */
+  snapshotNamedResults() {
+    if (!this.recordsNamedResults()) return;
+    const consenting = new Set();
+    for (const [, p] of this.participants) if (p.consent) consenting.add(p.id);
+    for (const [id, { participant }] of this.detached) if (participant.consent) consenting.add(id);
+    this.namedResults = this.getLeaderboard()
+      .filter((entry) => consenting.has(entry.id))
+      .map(({ name, score }) => ({ name, score }));
+  }
+
+  /**
+   * Aggregate statistics for every question that has been played, plus -- in a
+   * room that asks for consent, once the game has ended -- the names and final
+   * scores of those who gave it. Used by the presenter's post-game export.
    */
   getStatistics() {
     return {
       quizTitle: this.quiz.title,
       roomId: this.roomId,
       totalQuestions: this.quiz.questions.length,
-      questions: this.questionStats.map(s => ({ ...s }))
+      questions: this.questionStats.map(s => ({ ...s })),
+      recordsNamedResults: this.recordsNamedResults(),
+      namedResults: this.namedResults ? this.namedResults.map(r => ({ ...r })) : null
     };
   }
 
@@ -660,36 +881,57 @@ class Room {
       }
     } else if (question.type === 'estimation') {
       // Answers are guaranteed finite by validateAnswer(); the correct answer
-      // comes from the quiz file, so guard against an author typo turning every
-      // comparison into NaN (which would scramble the sort below).
+      // comes from the quiz file.
       const correct = Number(question.correctAnswer);
-      const entries = [];
-      for (const [participantId, data] of this.currentAnswers) {
-        const diff = Number.isFinite(correct)
-          ? Math.abs(data.answer - correct)
-          : Number.POSITIVE_INFINITY;
-        entries.push({ participantId, diff, timestamp: data.timestamp });
+      if (!Number.isFinite(correct)) {
+        // An author typo that slipped past validation. Nobody is closer than
+        // anybody else, and since equally close estimates share a place,
+        // everybody would tie for first; nobody scores or is ranked instead.
+        for (const [participantId, data] of this.currentAnswers) {
+          scores.set(participantId, 0);
+          rankings.push({ participantId, points: 0, timestamp: data.timestamp });
+        }
+      } else {
+        const entries = [];
+        for (const [participantId, data] of this.currentAnswers) {
+          entries.push({
+            participantId,
+            answer: data.answer,
+            diff: Math.abs(data.answer - correct),
+            timestamp: data.timestamp
+          });
+        }
+        entries.sort((a, b) => a.diff - b.diff);
+
+        // Equally close estimates share a place, and the places after them
+        // are skipped, as in sport: two tied for first both score 100, the
+        // next one 25, and nobody 50. A place, and the points it earns, thus
+        // depend only on how many estimates were strictly closer -- a tie
+        // never lifts anybody behind it. Submission time plays no part: it
+        // measures the network as much as the participant, and nothing else
+        // in the game rewards speed.
+        let place = 0;
+        let placeHolder = null; // the first estimate on the current place
+        entries.forEach((entry, index) => {
+          // Compared with the first estimate on the place, not the previous
+          // one, so that a chain of near-ties cannot drift.
+          if (placeHolder === null || !equallyClose(placeHolder.answer, entry.answer, correct)) {
+            place = index + 1;
+            placeHolder = entry;
+          }
+          const points = ESTIMATION_POINTS[place - 1] ?? 0;
+          scores.set(entry.participantId, points);
+          ranks.set(entry.participantId, place);
+          rankings.push({ participantId: entry.participantId, points, timestamp: entry.timestamp });
+        });
       }
-
-      // Sort by difference ascending, then by timestamp ascending
-      entries.sort((a, b) => {
-        if (a.diff !== b.diff) return a.diff - b.diff;
-        return a.timestamp - b.timestamp;
-      });
-
-      const pointsTable = [100, 50, 25];
-      entries.forEach((entry, index) => {
-        const points = index < pointsTable.length ? pointsTable[index] : 0;
-        scores.set(entry.participantId, points);
-      });
-
-      entries.forEach((entry, index) => ranks.set(entry.participantId, index + 1));
-
-      rankings.push(...entries.map((e, i) => ({
-        participantId: e.participantId,
-        points: scores.get(e.participantId),
-        timestamp: e.timestamp
-      })));
+    } else if (question.type === 'short-answer') {
+      // Matched as each answer came in; see submitAnswer().
+      for (const [participantId, data] of this.currentAnswers) {
+        const points = data.correct === true ? 100 : 0;
+        scores.set(participantId, points);
+        rankings.push({ participantId, points, timestamp: data.timestamp });
+      }
     }
 
     // Get leaderboard after this question
@@ -732,8 +974,10 @@ class Room {
       answer: submitted?.answer ?? null
     };
 
-    if (question.type === 'multiple-choice') {
+    if (question.type === 'multiple-choice' || question.type === 'short-answer') {
       feedback.isCorrect = feedback.answered && (results.scores.get(participantId) || 0) > 0;
+      // So the page can say why a verdict changed; see setAnswerAccepted().
+      if (submitted?.acceptedByPresenter === true) feedback.acceptedByPresenter = true;
     } else if (question.type === 'estimation' && this.practice) {
       // The band, never the distance or its direction: either of those, next
       // to one's own answer, would give the correct answer away.
@@ -743,10 +987,10 @@ class Room {
       feedback.band = band ? band.within : null;
       feedback.points = band ? band.points : 0;
     } else if (question.type === 'estimation') {
-      feedback.answerCount = results.ranks.size;
-      // A meaningless rank when the quiz's correct answer is unusable; see
-      // scoreQuestion().
-      feedback.rank = feedback.answered && Number.isFinite(Number(question.correctAnswer))
+      feedback.answerCount = this.currentAnswers.size;
+      // Shared by equally close estimates, and absent when the quiz's correct
+      // answer is unusable; see scoreQuestion().
+      feedback.rank = feedback.answered
         ? results.ranks.get(participantId) ?? null
         : null;
     }
@@ -786,8 +1030,8 @@ class Room {
 
   /**
    * A practice game's final tally for its one student. "Correct" means full
-   * points: a right multiple-choice answer, or an estimate within the closest
-   * band.
+   * points: a right multiple-choice or short answer, or an estimate within the
+   * closest band.
    */
   getPracticeSummary() {
     const participant = this.participants.values().next().value
@@ -808,18 +1052,28 @@ class Room {
     return null;
   }
 
+  /**
+   * The current question as participants may see it.
+   *
+   * Whitelisted, like getAnswerFeedback(). It used to copy the question and
+   * remove the answer fields, which meant every new question type had to
+   * remember to add its own to that list -- and forgetting it would have sent
+   * the answers to every phone in the room.
+   */
   getPublicQuestion() {
     const q = this.getCurrentQuestion();
     if (!q) return null;
-    // Return question without correct answer
-    const { correctIndices: _, correctAnswer: ___, ...publicQ } = q;
-    return {
-      ...publicQ,
+    const publicQuestion = {
       type: q.type,
       text: q.text,
       options: q.options || undefined,
       timeLimit: q.timeLimit || undefined
     };
+    if (q.type === 'short-answer') {
+      // Derived from the accepted answers, never the answers themselves.
+      Object.assign(publicQuestion, answerLengths(q));
+    }
+    return publicQuestion;
   }
 
   broadcast(message, excludeWs = null) {

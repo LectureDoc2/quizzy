@@ -10,6 +10,7 @@ A real-time, embeddable quiz application designed for integration with any HTML-
 - **Presenter Control**: Separate control window with session management and reconnection support
 - **Participant QR Code Join**: Participants scan a QR code or use a short link to join
 - **Participant Reconnect**: A participant whose connection drops, or who reloads the page, carries on with the same name and score
+- **Results Export**: After the quiz, the control window exports a per-question summary as CSV. A quiz can also ask participants for consent to include their name and final score ([`recordNamedResults`](#quiz-json-format))
 - **Practice Mode**: Students play quizzes from a server-side catalog on their own, without a presenter; the server runs the game ([below](#practice-mode))
 - **Math Formula Support**: Server-based KaTeX rendering for quiz questions and answers
 - **Syntax-highlighted Code**: Server-based highlight.js rendering of fenced code blocks in 14 languages
@@ -22,11 +23,37 @@ A real-time, embeddable quiz application designed for integration with any HTML-
    - 1st closest: 100 points
    - 2nd closest: 50 points
    - 3rd closest: 25 points
-   - Tie-breaker: earliest submission wins
+   - Ties: equally close estimates (the same estimate, or the same distance
+     on the other side) share a place, and the places after them are skipped,
+     as in sport. Two tied for first both get 100, the next one gets 25, and
+     nobody gets 50. Submission time plays no part.
 
    In [practice mode](#practice-mode) there is nobody to rank against, so an
    estimate scores by its relative error instead: within 10 % → 100, within
    25 % → 50, within 50 % → 25 points.
+3. **Short Answer**: The participant types a term; 100 points if it is one of
+   the question's `acceptedAnswers`, 0 otherwise. By default the comparison
+   ignores case, spacing, hyphens, slashes, quotes and diacritics, treats `ue`
+   like `ü` (and `ae`, `oe`, `ss` alike), and forgives one typo in a term of
+   eight characters or more; the question's `match` can make it stricter, down
+   to an exact comparison for answers such as `//`. It never accepts an answer
+   for *containing* a right one. The join page
+   shows the expected length (the range of the accepted answers without their
+   optional parts) and refuses input that is longer than the longest accepted
+   answer plus 10 %.
+
+   Short answers test recall rather than recognition, and the presenter's
+   results view groups them by spelling, so the common wrong answers show. The
+   price is that a right answer the author did not foresee — a synonym, a
+   compound, the other language — scores 0: list the variants, and keep the
+   type for terms with a well-defined answer. In a live quiz the presenter can
+   still accept such an answer while the results are shown: **Accept** next to
+   a group in the control window gives everybody who wrote it the points and a
+   corrected verdict, and **Undo** takes that back. The CSV export marks these
+   answers as accepted by the presenter, ready to be added to
+   `acceptedAnswers`. Typing takes longer than tapping;
+   allow 30–45 seconds. Answers are free text and cannot be moderated: they
+   appear, without names, in the control window and the CSV export.
 
 ## Practice Mode
 
@@ -69,6 +96,26 @@ answer a determined one can work out the multiple-choice answers by trial.
 Changing the catalog on a running server is described in
 [UPDATE.md §3](UPDATE.md#3-changing-the-practice-quizzes).
 
+### Usage statistics
+
+Set `PRACTICE_STATS_DIR` to a directory, and the server keeps anonymous daily
+totals of how the practice quizzes are used. They hold no personal data:
+nothing about who played, and no time finer than the day
+([DEPLOY.md §13a](DEPLOY.md#13a-data-protection) explains why that keeps them
+out of the GDPR). Two CSV files receive one row per day, once that day is over:
+
+- `practice-games.csv`: `date,quiz,title,started,finished,abandoned,score_0_25,score_25_50,score_50_75,score_75_100`.
+  Abandoned games are those whose student left and did not come back in time.
+  The score columns count finished games by their share of the maximum score;
+  the lower bound is inclusive, and 100 % falls in the last band.
+- `practice-questions.csv`: `date,quiz,question,text,shown,answered,correct`.
+  `question` is the position in the quiz, and `text` the beginning of its
+  wording. A question edited during the day gets a row of its own.
+
+The day in progress is kept in `practice-stats-pending.json` and saved every
+five minutes and on shutdown. Days follow the server's time zone. The files are
+UTF-8 CSV with comma separators; LibreOffice and Excel open them directly.
+
 ## Project Structure
 
 This is a **pnpm workspace** with two packages: the embeddable web component and the
@@ -94,8 +141,10 @@ Quizzy server publishes is described in
 │   └── server/                     # the backend and the pages it serves
 │       ├── src/server.js           #   Express + WebSocket server
 │       ├── src/rooms.js            #   room state management and scoring
-│       ├── src/math-renderer.js    #   server-side KaTeX rendering
-│       ├── src/code-renderer.js    #   server-side syntax highlighting
+│       ├── src/render-sandbox.js   #   renders each quiz in a sandboxed worker process
+│       ├── src/render-worker.js    #   the worker: the only process running KaTeX/highlight.js
+│       ├── src/math-renderer.js    #   server-side KaTeX rendering (in the worker)
+│       ├── src/code-renderer.js    #   server-side syntax highlighting (in the worker)
 │       ├── src/name-validator.js   #   participant name validation
 │       ├── src/network-addresses.js
 │       ├── web/                    #   join/control/demo pages (HTML, CSS, page scripts)
@@ -119,6 +168,7 @@ Quizzy server publishes is described in
 | [DEPLOY.md](DEPLOY.md) | Installing a production server, and the reference of all Caddy and backend settings |
 | [UPDATE.md](UPDATE.md) | Keeping a production server up to date |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | How the parts fit together: which file is served by whom, why there is a build step, service discovery, a round of play, practice games |
+| [SECURITY_ARCHITECTURE.md](SECURITY_ARCHITECTURE.md) | What is protected against whom: trust boundaries, tokens, the render sandbox, deployment hardening, supply chain, known gaps |
 | [packages/ld-quiz/README.md](packages/ld-quiz/README.md) | Embedding the `<ld-quiz>` component: as an npm package or a hosted script, its attributes, and what it asks of the host page |
 | [PUBLISH.md](PUBLISH.md) | Releasing the npm package |
 | [PRESENTER-TOKEN.md](PRESENTER-TOKEN.md), [PARTICIPANT-REATTACH.md](PARTICIPANT-REATTACH.md), [LECTUREDOC2-BUILD-STEP.md](LECTUREDOC2-BUILD-STEP.md) | Design notes and decision records |
@@ -182,6 +232,7 @@ component asks of the host page.
 ```json
 {
   "title": "Quiz Title",
+  "recordNamedResults": true,
   "questions": [
     {
       "type": "multiple-choice",
@@ -195,6 +246,13 @@ component asks of the host page.
       "text": "Question text",
       "correctAnswer": 42.0,
       "timeLimit": 45
+    },
+    {
+      "type": "short-answer",
+      "text": "Same name, different parameter lists: what is this called?",
+      "acceptedAnswers": ["Overloading [of Methods]", "Method Overloading",
+                          "Überladen [von Methoden]", "Methodenüberladung"],
+      "timeLimit": 40
     }
   ]
 }
@@ -206,7 +264,33 @@ component asks of the host page.
 - `options`: Array of strings (for multiple-choice)
 - `correctIndices`: Array of zero-based indices of correct options (for multiple-choice). Single-answer questions use a one-element array, e.g. `[0]`. Multi-select questions use multiple indices, e.g. `[0, 2]`.
 - `correctAnswer`: Numeric value (for estimation)
+- `acceptedAnswers`: Array of 1–50 strings (for short-answer), each at most 200
+  characters of plain text — not HTML, not math. A part in square brackets is
+  optional: `"Overloading [of Methods]"` accepts "Overloading" and "Overloading
+  of Methods". At most 4 optional parts per answer, 256 spellings per question;
+  brackets cannot be nested. Write `\[` and `\]` for literal brackets (in JSON:
+  `"int\\[\\]"`).
+- `match`: Optional, for short-answer: how an answer is compared with the
+  accepted ones.
+  - `"fuzzy"` (default): ignores case, spacing, hyphens, underscores, slashes,
+    quotes and diacritics, treats `ue` like `ü`, and forgives one typo in a term
+    of eight characters or more.
+  - `"strict"`: the same without the typo, for terms that differ from a wrong
+    answer by a single letter (`"break"`, `"12"`).
+  - `"exact"`: only spacing is ignored; case, hyphens, slashes and quotes count.
+    For answers made of symbols (`"//"`, `"/*"`) — which the other modes reduce
+    to nothing, or to something else — and for answers whose case matters
+    (`"hashCode"`).
+
+  Every mode first undoes what keyboards substitute on their own: typographic
+  quotes and dashes (iOS and macOS "smart punctuation"), `…`, and no-break or
+  zero-width spaces.
 - `timeLimit`: Optional countdown timer in seconds
+- `recordNamedResults`: Optional, `true` or `false` (default `false`). When `true`, the join page
+  offers an **unticked, optional** checkbox by which a participant agrees that their name and final
+  score appear in the results CSV. Participants can see their choice throughout the quiz and change it
+  until the quiz ends. The CSV then gets a section listing name and final score of those who agreed,
+  and nobody else; answers to individual questions are never included. Has no effect in practice mode.
 
 ### Code blocks
 
@@ -288,7 +372,7 @@ A dark theme is deliberately not shipped yet.
 
 - The quiz JSON is encrypted on the client side using the presenter's password
 - The server receives the **decrypted** quiz only after the presenter decrypts it
-- The server never persists quiz data to disk; all data is ephemeral (in-memory only)
+- The server never persists quiz data to disk; all data is ephemeral (in-memory only). The one exception is the optional, anonymous [practice usage statistics](#usage-statistics)
 - The presenter is identified by a SHA-256 hash of the quiz; see [PRESENTER-TOKEN.md](PRESENTER-TOKEN.md)
 - Participants require no authentication; they join via a random room code
 - **Cross-origin**: which origins may use the API is set with `ALLOWED_ORIGINS`; see [DEPLOY.md §13](DEPLOY.md#13-backend-configuration)
@@ -357,7 +441,8 @@ pairing from failing obscurely.
 
 The version describes the wire format, not the release, and is deliberately
 decoupled from the package version so that a UI-only release does not invalidate
-every embedded copy in the wild.
+every embedded copy in the wild. Optional fields and new message types that an
+older peer can ignore, such as the consent fields below, do not bump it.
 
 ### WebSocket Messages
 
@@ -375,6 +460,13 @@ Messages that open a conversation (`create_room`, `join_room`, `rejoin_room`,
 - `start_game`: Begin the quiz
 - `end_question`: End the current question and show results
 - `next_question`: Advance to the next question or end the game
+- `accept_answer`: While a short-answer question's results are shown, count an answer as correct after
+  all. Every answer in the same normalized form is re-scored, and `results` and `question_results` are
+  sent again. Ignored, without an error, once the quiz has moved on
+  - `questionIndex`: The question whose results are shown
+  - `answer`: Any spelling of the answer, as listed in `question_results`
+  - `accepted`: Optional, default `true`; `false` takes an earlier acceptance back. Answers the server
+    matched itself cannot be counted as wrong this way
 - `control_connect`: Connect to a room as presenter
   - With `roomId`: join the control channel for that room
   - Without `roomId`: receive a `sessions_list` of all rooms for this presenter
@@ -383,11 +475,16 @@ Messages that open a conversation (`create_room`, `join_room`, `rejoin_room`,
 - `join_room`: Join a room with a name
   - `roomId`: Room to join
   - `name`: Participant display name
+  - `consent`: Optional; only `true` counts, and only if the quiz sets `recordNamedResults`. Agrees to
+    name and final score appearing in the results export
+- `set_consent`: Give or withdraw that consent; allowed until the quiz ends
+  - `consent`: `true` or `false`
 - `rejoin_room`: Come back as an existing participant after a dropped connection or a reload
   - `roomId`: Room to rejoin
   - `resumeToken`: The token received in `joined`
 - `submit_answer`: Submit an answer
-  - `answer`: Selected option index, array of indices, or estimation value
+  - `answer`: Array of option indices (multiple-choice), a number (estimation), or a string
+    (short-answer; no longer than the question's `maxLength`, spacing collapsed and umlauts written out)
 - `start_practice`: Start a [practice game](#practice-mode) on this connection
   - `protocolVersion`: The wire-format version the client speaks
   - `quizId`: A catalog `id`
@@ -405,22 +502,35 @@ Messages that open a conversation (`create_room`, `join_room`, `rejoin_room`,
 - `sessions_list`: List of active sessions when no `roomId` was provided
 - `game_started`: Quiz started; includes `questionIndex` and `question`
 - `question_started`: Next question is active; includes `questionIndex` and `question`
-- `question_results`: Question ended; includes `questionIndex`, `answers`, and `leaderboard`
+- `question_results`: Question ended; includes `questionIndex`, `answers`, and `leaderboard`. Sent
+  again after `accept_answer`; an answer the presenter accepted carries `acceptedByPresenter: true`
 - `answer_count`: Live count of submitted answers during a question
 - `participant_joined` / `participant_left`: Participant count updates, as above
 - `participants_list`: Reply to `get_participants`; each entry has `id`, `name`, `score` and `connected`
+- `game_ended` / `results_export`: The quiz ended, or reply to `export_results`; `statistics` holds the
+  per-question summary, `recordsNamedResults`, and `namedResults` — `{ name, score }` of the participants
+  who consented, or `null` before the quiz has ended or when the quiz does not ask
 
 **Server → Participant (`quiz-client.js`):**
+- `room_status`: Reply to `room_status`; includes `state`, `quizTitle`, `totalQuestions`,
+  `currentQuestionIndex`, `participantCount` and `recordsNamedResults` (whether to offer consent)
 - `joined`: Successfully joined; includes `participantId`, `quizTitle` and `resumeToken` (a secret
-  sent only to this participant, kept in the tab's `sessionStorage`, and used by `rejoin_room`)
-- `rejoined`: Reply to a successful `rejoin_room`; includes `participantId`, `quizTitle`, `state`
-  and `answeredQuestions`, followed by the current `question`, `results` or `game_ended`
+  sent only to this participant, kept in the tab's `sessionStorage`, and used by `rejoin_room`), and
+  `recordsNamedResults` and `consent` as the server recorded them
+- `rejoined`: Reply to a successful `rejoin_room`; includes `participantId`, `quizTitle`, `state`,
+  `answeredQuestions`, `recordsNamedResults` and `consent`, followed by the current `question`,
+  `results` or `game_ended`
+- `consent_updated`: Reply to an accepted `set_consent`; includes `consent`
 - `rejoin_failed`: The token is unknown or expired, or the room is gone. Join again as a new participant
 - `question`: New question available; includes `questionIndex`, `totalQuestions`, `question`, `startTime`,
-  and `alreadyAnswered` when it is replayed to somebody who has already answered
+  and `alreadyAnswered` when it is replayed to somebody who has already answered. `question` carries
+  `type`, `text`, `options` and `timeLimit`, and for a short-answer question `answerLength: { min, max }`
+  and `maxLength`, derived from the accepted answers — never the answers themselves
 - `results`: Round results with `leaderboard`, `questionIndex`, and `waiting`. In a practice game
   also `practice: true`, `totalQuestions` and `advanceInMs` (time left on the countdown), and an estimate's
-  `feedback` carries `band` (10, 25, 50 or `null`) and `points` instead of a rank
+  `feedback` carries `band` (10, 25, 50 or `null`) and `points` instead of a rank. Sent again when the
+  presenter accepts a short answer after all; the `feedback` of those who gave it then carries
+  `acceptedByPresenter: true`
 - `game_ended`: Final results; includes `leaderboard`, and in a practice game
   `summary: { score, maxScore, correct, total }`
 

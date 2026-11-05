@@ -8,7 +8,7 @@
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert';
 import { createQuizServer } from '../../src/server.js';
-import { startStaticServer, launchBrowser, tokenFor, connectSocket } from './harness.js';
+import { startStaticServer, launchBrowser, openPage, tokenFor, connectSocket } from './harness.js';
 import { loopbackHost, originFor } from '../loopback.js';
 
 const QUIZ = {
@@ -63,12 +63,60 @@ describe('Join page (browser, full stack)', () => {
     roomId = (await presenter.take('room_created')).roomId;
   });
 
-  async function openJoinPage(room = roomId) {
-    const page = await browser.newPage();
+  async function openJoinPage(room = roomId, { locale, query = '' } = {}) {
+    const page = await openPage(browser, { locale });
     pages.push(page);
-    await page.goto(`${statics.origin}/join.html?room=${room}`);
+    await page.goto(`${statics.origin}/join.html?room=${room}${query}`);
     return page;
   }
+
+  /** Replace the room from beforeEach with one whose quiz asks for consent. */
+  async function openNamedRoom() {
+    const quiz = { ...QUIZ, recordNamedResults: true };
+    presenter = connectSocket(`${originFor('ws', loopbackHost(), backendPort)}/ws`);
+    sockets.push(presenter);
+    await presenter.opened;
+    presenter.sendJson({ type: 'create_room', presenterToken: tokenFor(`named-${sockets.length}`, quiz), quiz });
+    roomId = (await presenter.take('room_created')).roomId;
+  }
+
+  /** Replace the room from beforeEach with one that asks for terms. */
+  async function openShortAnswerRoom() {
+    const quiz = {
+      title: 'Java Terms',
+      secret: 'high-entropy',
+      questions: [
+        {
+          type: 'short-answer',
+          text: 'Same name, different parameter lists?',
+          acceptedAnswers: ['Overloading [of Methods]', 'Überladen [von Methoden]']
+        },
+        { type: 'short-answer', text: 'Which word?', acceptedAnswers: ['Größe'] }
+      ]
+    };
+    presenter = connectSocket(`${originFor('ws', loopbackHost(), backendPort)}/ws`);
+    sockets.push(presenter);
+    await presenter.opened;
+    presenter.sendJson({ type: 'create_room', presenterToken: tokenFor(`terms-${sockets.length}`, quiz), quiz });
+    roomId = (await presenter.take('room_created')).roomId;
+  }
+
+  /** The state of a short-answer question's input. */
+  const termField = (page) =>
+    page.evaluate(() => {
+      const input = document.getElementById('answer');
+      const hint = document.getElementById('answer-length');
+      return {
+        type: input.type,
+        autocorrect: input.getAttribute('autocorrect'),
+        autocapitalize: input.getAttribute('autocapitalize'),
+        spellcheck: input.getAttribute('spellcheck'),
+        maxlength: input.getAttribute('maxlength'),
+        hint: hint.textContent,
+        exceeded: hint.classList.contains('answer-length--exceeded'),
+        disabled: document.getElementById('submit-btn').disabled
+      };
+    });
 
   const view = (page) =>
     page.evaluate(() => ({
@@ -215,6 +263,118 @@ describe('Join page (browser, full stack)', () => {
     assert.strictEqual(estimate.detail, 'Your answer: 120');
   });
 
+  it('asks for a term with its expected length, and holds back one that is too long', async () => {
+    await openShortAnswerRoom();
+    const page = await openJoinPage();
+    await page.waitForSelector('#join-form');
+    await page.fill('#name', 'Curious Student');
+    await page.click('#join-btn');
+    await page.waitForSelector('.waiting');
+
+    presenter.sendJson({ type: 'start_game' });
+    await page.waitForSelector('#answer-length');
+
+    let field = await termField(page);
+    assert.deepStrictEqual(field, {
+      type: 'text',
+      autocorrect: 'off',
+      autocapitalize: 'off',
+      spellcheck: 'false',
+      maxlength: null, // it would count the raw input, spaces included
+      // "Überladen" 9, "Overloading" 11.
+      hint: 'Expected length: 9–11 characters',
+      exceeded: false,
+      disabled: false
+    });
+
+    // maxLength is 26: "Ueberladen von Methoden", 23, plus 10 %.
+    await page.fill('#answer', 'x'.repeat(27));
+    field = await termField(page);
+    assert.strictEqual(field.hint, 'Longer than any expected answer');
+    assert.ok(field.exceeded && field.disabled, 'a too-long answer cannot be sent');
+
+    // The space a phone keyboard leaves after a word does not count.
+    await page.fill('#answer', 'x'.repeat(26) + ' ');
+    field = await termField(page);
+    assert.strictEqual(field.hint, 'Expected length: 9–11 characters');
+    assert.ok(!field.exceeded && !field.disabled);
+
+    await page.fill('#answer', 'Ueberladen ');
+    await page.click('#submit-btn'); // the only participant: the question closes
+    await page.waitForSelector('.feedback__answer');
+    const right = await page.evaluate(() => ({
+      detail: document.querySelector('.feedback__answer').textContent.trim(),
+      verdict: document.querySelector('.feedback__verdict').textContent.trim()
+    }));
+    assert.deepStrictEqual(right, { detail: 'Your answer: Ueberladen', verdict: 'Correct!' });
+
+    // A single expected length, and room for the umlaut written out.
+    presenter.sendJson({ type: 'next_question' });
+    await page.waitForFunction(() => document.getElementById('answer-length')?.textContent.includes('5'));
+    await page.fill('#answer', 'Groesse');
+    field = await termField(page);
+    assert.strictEqual(field.hint, 'Expected length: 5 characters');
+    assert.ok(!field.disabled, '"Groesse" fits wherever "Größe" does');
+  });
+
+  it('shows a student their own short answer as text, in German', async () => {
+    await openShortAnswerRoom();
+    const page = await openJoinPage(roomId, { locale: 'de-DE' });
+    const hits = [];
+    await page.exposeFunction('_h', (what) => hits.push(what));
+    await page.waitForSelector('#join-form');
+    await page.fill('#name', 'Neugierige Studentin');
+    await page.click('#join-btn');
+    await page.waitForSelector('.waiting');
+
+    presenter.sendJson({ type: 'start_game' });
+    await page.waitForSelector('#answer-length');
+    assert.strictEqual((await termField(page)).hint, 'Erwartete Länge: 9–11 Zeichen');
+
+    const payload = '<img src=x onerror=_h(1)>'; // within maxLength (26)
+    await page.fill('#answer', payload);
+    await page.click('#submit-btn');
+    await page.waitForSelector('.feedback__answer');
+    const wrong = await page.evaluate(() => ({
+      detail: document.querySelector('.feedback__answer').textContent.trim(),
+      verdict: document.querySelector('.feedback__verdict').textContent.trim(),
+      injected: document.querySelectorAll('.feedback img').length
+    }));
+    assert.deepStrictEqual(wrong, {
+      detail: `Ihre Antwort: ${payload}`,
+      verdict: 'Leider nicht ganz.',
+      injected: 0
+    });
+    assert.deepStrictEqual(hits, []);
+  });
+
+  it('turns the verdict round when the lecturer accepts the answer after all', async () => {
+    await openShortAnswerRoom();
+    const page = await openJoinPage();
+    await page.waitForSelector('#join-form');
+    await page.fill('#name', 'Curious Student');
+    await page.click('#join-btn');
+    await page.waitForSelector('.waiting');
+
+    presenter.sendJson({ type: 'start_game' });
+    await page.waitForSelector('#answer-length');
+    await page.fill('#answer', 'Overload');
+    await page.click('#submit-btn');
+    await page.waitForSelector('.feedback__verdict--wrong');
+    const verdict = () => page.evaluate(() => ({
+      verdict: document.querySelector('.feedback__verdict').textContent.trim(),
+      stats: document.querySelector('.my-stats').textContent.trim()
+    }));
+    assert.deepStrictEqual(await verdict(), { verdict: 'Not quite.', stats: 'Your rank: 1 | Score: 0' });
+
+    presenter.sendJson({ type: 'accept_answer', questionIndex: 0, answer: 'overload' });
+    await page.waitForSelector('.feedback__verdict--correct');
+    assert.deepStrictEqual(await verdict(), {
+      verdict: 'Correct! Your lecturer accepted this answer.',
+      stats: 'Your rank: 1 | Score: 100'
+    });
+  });
+
   it('tells a student the quiz has finished rather than blaming the room code', async () => {
     presenter.sendJson({ type: 'start_game' });
     await presenter.take('game_started');
@@ -242,6 +402,91 @@ describe('Join page (browser, full stack)', () => {
     assert.match(seen.error, /Unable to open that session/);
   });
 
+  describe('consent to named results', () => {
+    const consentShows = (page, fragment) =>
+      page.waitForFunction(
+        (f) => {
+          const el = document.getElementById('consent-status');
+          return !el.hidden && el.textContent.includes(f);
+        },
+        fragment,
+        { timeout: 3000 }
+      );
+
+    async function joinNamed(name, tick) {
+      const page = await openJoinPage();
+      await page.waitForSelector('#join-form');
+      if (tick) await page.check('#consent');
+      await page.fill('#name', name);
+      await page.click('#join-btn');
+      await page.waitForSelector('.waiting');
+      return page;
+    }
+
+    it('is not offered unless the quiz asks for it', async () => {
+      const page = await openJoinPage();
+      await page.waitForSelector('#join-form');
+      assert.strictEqual(await page.$('#consent'), null);
+      await page.fill('#name', 'Plain Student');
+      await page.click('#join-btn');
+      await page.waitForSelector('.waiting');
+      assert.strictEqual(await page.evaluate(() => document.getElementById('consent-status').hidden), true);
+    });
+
+    it('is offered unticked, and optional', async () => {
+      await openNamedRoom();
+      const page = await openJoinPage();
+      await page.waitForSelector('#join-form');
+      const box = await page.evaluate(() => {
+        const input = document.getElementById('consent');
+        return { checked: input.checked, required: input.required, label: input.closest('label').textContent };
+      });
+      assert.strictEqual(box.checked, false, 'consent must never be pre-ticked');
+      assert.strictEqual(box.required, false);
+      assert.match(box.label, /name and final score/);
+      assert.match(box.label, /individual questions are\s+not recorded/);
+    });
+
+    it('shows the choice for the whole quiz, lets it change, and says what it was at the end', async () => {
+      await openNamedRoom();
+      const page = await joinNamed('Agreeing Student', true);
+      await consentShows(page, 'will be included');
+      const participant = () => [...quizServer.roomManager.getRoom(roomId).participants.values()][0];
+      assert.strictEqual(participant().consent, true);
+
+      await page.click('#consent-toggle');
+      await consentShows(page, 'will not be recorded');
+      assert.strictEqual(participant().consent, false);
+      await page.click('#consent-toggle');
+      await consentShows(page, 'will be included');
+      assert.strictEqual(participant().consent, true);
+
+      // Survives the question screens, which replace everything in #content.
+      presenter.sendJson({ type: 'start_game' });
+      await page.waitForSelector('.question__text');
+      await consentShows(page, 'will be included');
+
+      presenter.sendJson({ type: 'end_game' });
+      await page.waitForSelector('.results h2');
+      await consentShows(page, 'were included');
+      assert.strictEqual(await page.$('#consent-toggle'), null, 'nothing left to change after the end');
+    });
+
+    it('says the result is not recorded when the box is left unticked', async () => {
+      await openNamedRoom();
+      const page = await joinNamed('Private Student', false);
+      await consentShows(page, 'will not be recorded');
+      assert.strictEqual(
+        [...quizServer.roomManager.getRoom(roomId).participants.values()][0].consent,
+        false
+      );
+      presenter.sendJson({ type: 'start_game' });
+      await page.waitForSelector('.question__text');
+      presenter.sendJson({ type: 'end_game' });
+      await consentShows(page, 'was not recorded');
+    });
+  });
+
   it('keeps a rejected name on the form instead of wiping the page', async () => {
     const page = await openJoinPage();
     await page.waitForSelector('#join-form');
@@ -257,5 +502,74 @@ describe('Join page (browser, full stack)', () => {
     );
     const stillThere = await page.evaluate(() => !!document.getElementById('join-form'));
     assert.ok(stillThere, 'the form should survive a rejected name');
+  });
+
+  describe('in the student\'s language', () => {
+    it('speaks German to a German browser, the consent and privacy texts included', async () => {
+      await openNamedRoom();
+      const page = await openJoinPage(roomId, { locale: 'de-DE' });
+      await page.waitForSelector('#join-form');
+      const seen = await page.evaluate(() => ({
+        lang: document.documentElement.lang,
+        title: document.title,
+        heading: document.getElementById('page-title').textContent,
+        room: document.querySelector('.room-code').textContent.replace(/\s+/g, ' ').trim(),
+        button: document.getElementById('join-btn').textContent,
+        placeholder: document.getElementById('name').placeholder,
+        consent: document.getElementById('consent').closest('label').textContent.trim(),
+        privacy: document.getElementById('join-privacy').textContent.replace(/\s+/g, ' ').trim()
+      }));
+      assert.deepStrictEqual(
+        { lang: seen.lang, title: seen.title, heading: seen.heading, button: seen.button },
+        { lang: 'de', title: 'Am Quiz teilnehmen', heading: 'Am Quiz teilnehmen', button: 'Teilnehmen' }
+      );
+      assert.strictEqual(seen.room, `Raum: ${roomId}`);
+      assert.strictEqual(seen.placeholder, 'Geben Sie Ihren Namen ein');
+      assert.match(seen.consent, /^Optional: Ich willige ein, dass mein Name und meine Endpunktzahl/);
+      assert.match(seen.privacy, /zufälligen Sitzungsschlüssel/);
+      assert.match(seen.privacy, /wenn Sie das Kästchen oben ankreuzen\.$/);
+
+      // Refused by the server, which sends a code; the page says it in German.
+      await page.fill('#name', 'Adolf Hitler');
+      await page.click('#join-btn');
+      await page.waitForFunction(
+        () => document.getElementById('name-error').textContent === 'Dieser Name ist nicht erlaubt.',
+        { timeout: 3000 }
+      );
+
+      await page.check('#consent');
+      await page.fill('#name', 'Erika Mustermann');
+      await page.click('#join-btn');
+      await page.waitForFunction(
+        () => document.getElementById('consent-status').textContent.includes('werden in die Ergebnisse aufgenommen'),
+        { timeout: 3000 }
+      );
+      assert.strictEqual(
+        await page.evaluate(() => document.getElementById('consent-toggle').textContent),
+        'Einwilligung widerrufen'
+      );
+    });
+
+    it('says how much a latecomer has missed, in German', async () => {
+      presenter.sendJson({ type: 'start_game' });
+      await presenter.take('game_started');
+      presenter.sendJson({ type: 'next_question' });
+      await presenter.take('question_started');
+      const page = await openJoinPage(roomId, { locale: 'de-DE' });
+      await page.waitForSelector('.room-state__detail--live');
+      const seen = await view(page);
+      assert.strictEqual(seen.heading, 'Das Quiz läuft bereits');
+      assert.strictEqual(seen.button, 'Jetzt teilnehmen');
+      assert.match(seen.detail, /^Frage 2 von 3 – Sie haben 1 Frage verpasst/);
+    });
+
+    it('lets ?lang= override the browser', async () => {
+      const page = await openJoinPage(roomId, { locale: 'de-DE', query: '&lang=en' });
+      await page.waitForSelector('#join-form');
+      const seen = await view(page);
+      assert.strictEqual(await page.evaluate(() => document.documentElement.lang), 'en');
+      assert.strictEqual(seen.heading, 'Join Quiz');
+      assert.strictEqual(seen.detail, 'Waiting for the quiz to start.');
+    });
   });
 });

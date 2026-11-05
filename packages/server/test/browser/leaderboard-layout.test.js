@@ -11,7 +11,7 @@
  */
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
-import { startStaticServer, launchBrowser } from './harness.js';
+import { startStaticServer, launchBrowser, openPage } from './harness.js';
 
 describe('Leaderboard layout (browser)', () => {
   let statics;
@@ -27,7 +27,7 @@ describe('Leaderboard layout (browser)', () => {
   before(async () => {
     statics = await startStaticServer();
     browser = await launchBrowser();
-    page = await browser.newPage();
+    page = await openPage(browser);
 
     await page.addInitScript(() => {
       window.__sent = [];

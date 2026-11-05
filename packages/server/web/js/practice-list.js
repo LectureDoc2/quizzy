@@ -6,8 +6,17 @@
  * descriptions are written by the operator and the lecturer, and none of them
  * pass through the quiz sanitizer on their way here.
  */
+import { createI18n, detectLocale, translatePage } from './i18n.js';
 
-/** The group for quizzes without a category; shown last. */
+/** This page's language: ?lang= if given, else the browser's; see i18n.js. */
+const i18n = createI18n(detectLocale(window.location.search, navigator.languages));
+const { t } = i18n;
+
+/**
+ * The group for quizzes without a category; shown last. Also the key under
+ * which they are grouped, so an operator's explicit "Other" category takes
+ * them in -- only the label shown is translated.
+ */
 const UNCATEGORISED = 'Other';
 
 /** Where a quiz card leads. */
@@ -49,13 +58,13 @@ function element(tag, className, text) {
 
 function renderCard(quiz) {
   const card = element('a', 'practice-card');
-  card.href = `${PLAY_URL}?${new URLSearchParams({ practice: quiz.id })}`;
+  card.href = `${PLAY_URL}?${new URLSearchParams({ practice: quiz.id, ...i18n.langParam() })}`;
   card.append(element('div', 'practice-card__title', quiz.title));
   if (quiz.description) {
     card.append(element('div', 'practice-card__description', quiz.description));
   }
   const count = Number(quiz.questionCount) || 0;
-  card.append(element('div', 'practice-card__meta', `${count} question${count === 1 ? '' : 's'}`));
+  card.append(element('div', 'practice-card__meta', t('practiceList.questionCount', { count })));
   const item = element('li');
   item.append(card);
   return item;
@@ -71,8 +80,9 @@ function renderGroup({ category, quizzes }, open) {
   details.open = open;
   const summary = element('summary', 'practice-category__summary');
   summary.append(
-    element('span', 'practice-category__name', category),
-    element('span', 'practice-category__count', `${quizzes.length} quiz${quizzes.length === 1 ? '' : 'zes'}`)
+    element('span', 'practice-category__name',
+      category === UNCATEGORISED ? t('practiceList.uncategorised') : category),
+    element('span', 'practice-category__count', t('practiceList.quizCount', { count: quizzes.length }))
   );
   const list = element('ul', 'practice-category__list');
   list.append(...quizzes.map(renderCard));
@@ -88,12 +98,12 @@ async function loadPracticeList() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     ({ quizzes } = await response.json());
   } catch {
-    container.replaceChildren(element('div', 'error', 'The practice quizzes could not be loaded. Please try again later.'));
+    container.replaceChildren(element('div', 'error', t('practiceList.loadFailed')));
     return;
   }
 
   if (!Array.isArray(quizzes) || quizzes.length === 0) {
-    container.replaceChildren(element('p', 'practice-empty', 'There are no practice quizzes on this server yet.'));
+    container.replaceChildren(element('p', 'practice-empty', t('practiceList.empty')));
     return;
   }
 
@@ -101,4 +111,5 @@ async function loadPracticeList() {
   container.replaceChildren(...groups.map((group) => renderGroup(group, groups.length === 1)));
 }
 
+translatePage(i18n);
 loadPracticeList();

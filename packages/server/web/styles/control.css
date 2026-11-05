@@ -130,6 +130,7 @@
     .answer-value {
         color: var(--quiz-text-secondary);
         margin: 0 var(--quiz-space-md);
+        overflow-wrap: anywhere; /* a short answer is free text */
     }
 
     .answer-points {
@@ -144,6 +145,58 @@
         &.answer-points--positive {
             color: var(--quiz-success);
         }
+    }
+
+    /* A short-answer question's answers, grouped by spelling, above the
+       per-participant list. Right answers are marked like correct options. */
+    .answer-groups {
+        list-style: none;
+        margin: 0 0 var(--quiz-space-md);
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: var(--quiz-space-xs);
+    }
+
+    .answer-group {
+        display: flex;
+        align-items: center;
+        gap: var(--quiz-space-sm);
+        padding: var(--quiz-space-xs) var(--quiz-space-sm);
+        border-radius: var(--quiz-radius-sm);
+        border: 1px solid var(--quiz-border);
+        overflow-wrap: anywhere;
+
+        &.answer-group--correct {
+            font-weight: 600;
+            background: color-mix(in srgb, var(--quiz-success) 12%, transparent);
+        }
+    }
+
+    .answer-group__count {
+        flex: none;
+        min-width: 3rem;
+        font-variant-numeric: tabular-nums;
+        color: var(--quiz-text-secondary);
+    }
+
+    .answer-group__text {
+        flex: 1;
+    }
+
+    .answer-group__note {
+        flex: none;
+        font-size: 0.875rem;
+        font-weight: 400;
+        color: var(--quiz-text-secondary);
+    }
+
+    /* Accept / Undo: a presenter's correction, so deliberately quieter than
+       the quiz's own controls. */
+    .answer-group__toggle {
+        flex: none;
+        padding: 2px var(--quiz-space-sm);
+        font-size: 0.875rem;
     }
 
     .leaderboard-panel {

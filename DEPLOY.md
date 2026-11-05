@@ -292,16 +292,14 @@ getent passwd quizzy     # verify: low UID, shell /usr/sbin/nologin
 
 ```bash
 sudo git clone https://github.com/LectureDoc2/quizzy.git /srv/quizzy
-
-# Section 9 hands the tree to the `quizzy` service user while you keep operating on
-# it as root. Git refuses to touch a repository owned by someone else ("detected
-# dubious ownership"), so record the exception once, for root:
-sudo git config --global --add safe.directory /srv/quizzy
 ```
 
-> **The `sudo` is not optional, on either command.** Without it the exception lands
-> in `/home/<you>/.gitconfig` — the wrong account — and every later `git pull` on
-> this tree fails. Verify with `sudo git config --global --get-all safe.directory`.
+The tree stays **owned by root**, and the backend only ever reads it. That is
+deliberate: a backend that can write to its own code — or to `dist/app`, which
+Caddy serves to every participant — would turn any compromise of the backend into a
+permanent one, and into a compromise of every browser that loads the site. Section
+11a enforces the same from the systemd side; SECURITY_ARCHITECTURE.md §9 explains
+the reasoning.
 
 The repository layout is described under "Project Structure" in the README. Of it,
 this document uses the `Caddyfile` and the TLS snippets in `caddy/` (§10), the
@@ -319,11 +317,10 @@ cd /srv/quizzy
 sudo corepack enable
 sudo pnpm install --frozen-lockfile
 sudo pnpm build            # writes dist/
-sudo chown -R quizzy:quizzy /srv/quizzy
 ```
 
-The final `chown` matters: `sudo pnpm build` leaves root-owned files behind, and the
-backend runs as `quizzy`.
+Do **not** `chown` the tree to `quizzy` (§8). Everything in it is world-readable,
+which is all the backend needs.
 
 `esbuild` is a dev dependency and is required for the build, so do **not** install
 with `--prod` unless you build elsewhere and copy `dist/` over.
@@ -399,6 +396,7 @@ sudo tee /etc/caddy/quizzy.env >/dev/null <<'EOF'
 CADDY_HOST=quizzy.michael-eichberg-at-dhbw-de.users.dhbw.site
 BACKEND_HOST=localhost
 BACKEND_PORT=3000
+CADDY_ADMIN=unix//run/caddy/admin.sock
 EOF
 sudo chown root:caddy /etc/caddy/quizzy.env
 sudo chmod 640 /etc/caddy/quizzy.env
@@ -413,6 +411,7 @@ These are all the variables the Caddyfile reads:
 | `BACKEND_PORT` | `3000` | Port of the backend; must match its `PORT` (§11a) |
 | `TLS_CONFIG` | `caddy/tls-auto.txt` | The TLS snippet, see below |
 | `HTTP_PORT` / `HTTPS_PORT` | `80` / `443` | Caddy's HTTP and HTTPS ports. Leave them unset in production |
+| `CADDY_ADMIN` | `localhost:2019` | Where Caddy's admin API listens; see the note below |
 | `TSIG_KEY_NAME`, `TSIG_SECRET`, `TSIG_ALGORITHM`, `TSIG_NAMESERVER` | — | DNS-01 credentials, read by `caddy/tls-dns01.txt` (10d) |
 
 `TLS_CONFIG` selects the snippet, and therefore how certificates are obtained:
@@ -422,6 +421,15 @@ These are all the variables the Caddyfile reads:
 | *(unset)* | `caddy/tls-auto.txt` — empty, i.e. HTTP-01 / TLS-ALPN-01 |
 | `caddy/tls-dns01.txt` | DNS-01 via RFC2136 |
 | `caddy/tls-mkcert.txt` | a locally trusted mkcert certificate, development only (DEVELOPMENT.md §4) |
+
+> **Why `CADDY_ADMIN` is a socket in production.** Caddy's admin API can replace
+> the whole configuration, and on its default address, `localhost:2019`, it accepts
+> that from **any process on the machine** — the backend included. A compromised
+> backend could then make Caddy serve its own pages to every participant, or expose
+> any file and environment variable Caddy can read: the TLS keys, the TSIG secret. A
+> Unix socket in `/run/caddy`, a directory only the `caddy` user can enter (§11b),
+> takes that away. `systemctl reload caddy` keeps working: it runs as `caddy` and
+> finds the address in the Caddyfile. Local development keeps the default.
 
 > Leave `BACKEND_HOST=localhost` — it resolves to whichever families the host has,
 > so it is correct on IPv4, IPv6 and dual-stack alike. A literal IPv6 address would
@@ -491,16 +499,54 @@ ExecStart=/usr/bin/node packages/server/src/server.js
 ExecReload=/bin/kill -HUP $MAINPID
 Environment=NODE_ENV=production
 Environment=PORT=3000
+# Anonymous usage totals of the practice quizzes (§13a). Remove both lines to
+# keep the backend from writing anything at all.
+Environment=PRACTICE_STATS_DIR=/var/lib/quizzy
+StateDirectory=quizzy
+StateDirectoryMode=0700
 User=quizzy
 Group=quizzy
 Restart=on-failure
 RestartSec=2
-# Hardening
+
+# --- Hardening --------------------------------------------------------------
+# The backend keeps no database and no per-person data on disk. Its only
+# writable path is the StateDirectory above, /var/lib/quizzy, which systemd
+# creates and keeps writable despite ProtectSystem=strict -- not even its own
+# checkout is writable (see §8).
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/srv/quizzy
+PrivateDevices=true
+# It talks to Caddy over loopback and to nobody else. If Caddy runs on another
+# machine, add that machine's address to IPAddressAllow.
+IPAddressDeny=any
+IPAddressAllow=localhost
+# AF_NETLINK: listing the host's addresses at startup.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# Caddy's configuration, state and admin socket are none of its business.
+InaccessiblePaths=-/etc/caddy -/var/lib/caddy -/run/caddy
+CapabilityBoundingSet=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0077
+# Caps for the backend together with its render workers (child mode, §11c).
+MemoryMax=1G
+TasksMax=256
 
 [Install]
 WantedBy=multi-user.target
@@ -508,6 +554,17 @@ EOF
 ```
 
 Further settings are added as `Environment=` lines here; section 13 lists them.
+
+Two things are deliberately absent. `MemoryDenyWriteExecute=` would forbid the
+writable-and-executable memory V8's JIT compiler needs, and Node would not start.
+`ProcSubset=pid` would hide `/proc/meminfo`, from which Node sizes its heap.
+
+Every quiz the backend is asked to show is rendered — KaTeX for formulas,
+highlight.js for code — in a **separate worker process**, never in the backend
+itself: anyone who can reach the WebSocket can submit a quiz, so those two parsers
+see input from strangers. By default the backend spawns the worker itself, confined
+by Node's permission model and by everything above. Section 11c moves it into a unit
+of its own, which is stronger; SECURITY_ARCHITECTURE.md §6 compares the two.
 
 ### 11b. Caddy drop-in override
 
@@ -523,6 +580,9 @@ sudo tee /etc/systemd/system/caddy.service.d/override.conf >/dev/null <<'EOF'
 [Service]
 WorkingDirectory=/srv/quizzy
 EnvironmentFile=/etc/caddy/quizzy.env
+# The admin socket's directory, entered by no one but caddy (§10c).
+RuntimeDirectory=caddy
+RuntimeDirectoryMode=0700
 EOF
 ```
 
@@ -535,6 +595,9 @@ sudo tee /etc/systemd/system/caddy.service.d/override.conf >/dev/null <<'EOF'
 [Service]
 WorkingDirectory=/srv/quizzy
 EnvironmentFile=/etc/caddy/quizzy.env
+# The admin socket's directory, entered by no one but caddy (§10c).
+RuntimeDirectory=caddy
+RuntimeDirectoryMode=0700
 ExecStart=
 ExecStart=/usr/local/bin/caddy run --environ --config /etc/caddy/Caddyfile
 ExecReload=
@@ -544,6 +607,105 @@ EOF
 
 The empty `ExecStart=` is **required**: without it systemd appends to the vendor
 unit's value instead of replacing it, and the service fails to start.
+
+### 11c. Render worker service (recommended)
+
+Without this section the backend renders each quiz in a child process it spawns
+itself (§11a). That child runs under Node's permission model — it cannot read
+anything but its own code and the two libraries, cannot write, cannot start
+processes — but Node's documentation is explicit that the permission model does
+not hold against code that is already malicious, and Node 24 cannot restrict the
+network at all. The child also inherits the backend's view of the machine, the
+quiz files included.
+
+These two units move rendering into a service of its own, started fresh for every
+quiz: a throwaway user, no network whatsoever, and a file system that contains
+nothing but the server package and its dependencies.
+
+```bash
+sudo tee /etc/systemd/system/quizzy-render.socket >/dev/null <<'EOF'
+[Unit]
+Description=Quizzy quiz renderer (socket)
+
+[Socket]
+ListenStream=/run/quizzy-render.sock
+# Only the backend may connect.
+SocketUser=quizzy
+SocketGroup=quizzy
+SocketMode=0600
+# One worker process per connection, i.e. per quiz.
+Accept=yes
+MaxConnections=4
+
+[Install]
+WantedBy=sockets.target
+EOF
+
+sudo tee /etc/systemd/system/quizzy-render@.service >/dev/null <<'EOF'
+[Unit]
+Description=Quizzy quiz renderer (one quiz)
+
+[Service]
+ExecStart=/usr/bin/node --permission \
+  --allow-fs-read=/srv/quizzy/packages/server --allow-fs-read=/srv/quizzy/node_modules \
+  --frozen-intrinsics --disallow-code-generation-from-strings \
+  --max-old-space-size=128 --disable-warning=ExperimentalWarning \
+  /srv/quizzy/packages/server/src/render-worker.js
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+DynamicUser=true
+# The backend gives up after RENDER_TIMEOUT_MS (10 s); this is the backstop.
+RuntimeMaxSec=15
+MemoryMax=256M
+CPUQuota=100%
+TasksMax=32
+
+# No network: the request arrives on the socket systemd hands over.
+PrivateNetwork=true
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+# Of /srv, only the code: no quizzes, no dist/, no .git.
+TemporaryFileSystem=/srv:ro
+BindReadOnlyPaths=/srv/quizzy/packages/server /srv/quizzy/node_modules
+InaccessiblePaths=-/etc/caddy -/var/lib/caddy -/run/caddy
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateIPC=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0077
+EOF
+```
+
+Then point the backend at the socket — add to the `[Service]` section of
+`quizzy-backend.service` (§11a):
+
+```ini
+Environment=RENDER_SOCKET=/run/quizzy-render.sock
+```
+
+The `--allow-fs-read` paths are broader than in child mode, where the backend
+computes the exact package directories itself; here the file system the unit sees
+is the boundary, and it holds nothing but code. They do not name package versions,
+so a dependency update needs no change to the unit.
 
 ---
 
@@ -558,6 +720,7 @@ sudo caddy validate --config /etc/caddy/Caddyfile                    # http-01 p
 sudo /usr/local/bin/caddy validate --config /etc/caddy/Caddyfile     # dns-01 profile
 
 sudo systemctl daemon-reload
+sudo systemctl enable --now quizzy-render.socket     # only with §11c
 sudo systemctl enable --now quizzy-backend
 sudo systemctl restart caddy
 
@@ -591,7 +754,23 @@ echo | openssl s_client -connect '<HOST>:443' -servername '<HOST>' 2>/dev/null \
 #    blackholed -- check the ICMPv6 rule in 3a.
 curl -o /dev/null -w 'transferred %{size_download} bytes in %{time_total}s\n' \
   https://<HOST>/js/quiz-control.js
+
+# 6. The backend cannot write to its own code, and Caddy's admin API is not on TCP.
+sudo -u quizzy touch /srv/quizzy/dist/app/probe     # expect "Permission denied"
+curl -sS localhost:2019/config/                     # expect "Connection refused"
+
+# 7. Where quizzes are rendered: "...rendered by the worker service at
+#    /run/quizzy-render.sock" with §11c, "...in sandboxed child processes" without.
+sudo journalctl -u quizzy-backend -n 20 --no-pager | grep -i rendered
+
+# 8. How exposed each unit is. Lower is better; compare before and after §11.
+systemd-analyze security quizzy-backend.service quizzy-render@x.service caddy.service
 ```
+
+Then open the math demo (`/demo.html`) and start a room: formulas and code
+blocks must render. A quiz refused with "could not be prepared for display" means
+the worker failed; `sudo journalctl -u quizzy-backend -u 'quizzy-render@*' -n 50`
+says why.
 
 On an IPv6 or dual-stack profile, add `-6` to the curl commands to force the family,
 and check the loopback path too. Note this asks for the **hostname** and only pins
@@ -628,22 +807,57 @@ shows how to change them on a running server.
 | `HOST` | every interface | Address the backend binds to; see "bind the backend to loopback only" in §10c |
 | `ALLOWED_ORIGINS` | `*` | Comma-separated origins the API's CORS middleware accepts. Restrict it to the origins your decks are served from |
 | `PRACTICE_CATALOG` | `quizzes/practice.json` in the checkout | The practice catalog; see "Practice Mode" in the README. A missing file turns practice mode off |
+| `PRACTICE_STATS_DIR` | *(unset: off)* | Directory for the anonymous practice usage statistics; see 13a and "Usage statistics" in the README. The unit in §11a sets `/var/lib/quizzy` |
 | `ENDED_ROOM_RETENTION_MINUTES` | 15 | How long a finished room is kept so that its results can still be exported |
 | `DETACHED_RETENTION_MINUTES` | 15 | How long a participant whose connection dropped can come back with the same name and score; see 13a |
 | `TRUST_PROXY` | *(unset)* | Whether to believe `X-Forwarded-For`; see 13c |
 | `MAX_…`, `…_WINDOW_MS`, `IPV6_PREFIX_BITS` | see 13b | The abuse limits |
+| `RENDER_SOCKET` | *(unset)* | Socket of the render worker service (§11c). Unset: the backend spawns sandboxed workers itself |
+| `RENDER_TIMEOUT_MS` | 10000 | How long one quiz may take to render before it is refused |
+| `RENDER_MAX_CONCURRENCY` | 2 | Quizzes rendered at the same time. Keep it at or below `MaxConnections` in §11c |
+| `RENDER_MAX_QUEUE` | 16 | Quizzes waiting for a worker; beyond that, "the server is busy" |
+| `RENDER_MAX_OUTPUT_BYTES` | 16777216 | Largest rendered quiz accepted (KaTeX output is large) |
+| `RENDER_MEMORY_MB` | 128 | Heap limit of a child-mode worker; §11c sets its own |
 | `PUBLIC_WS_PATH`, `PUBLIC_JOIN_PATH`, `PUBLIC_CONTROL_PATH`, `PUBLIC_KATEX_CSS_PATH`, `PUBLIC_HIGHLIGHT_CSS_PATH` | the standard paths | Override the paths `/api/config` reports; see "Service discovery" in the README |
 
 ### 13a. Data protection
 
 `DETACHED_RETENTION_MINUTES` is a data-protection setting, not only a memory one:
 for this long after a student's connection closes, their name, answers and score
-stay in the backend's RAM. Keep the window short; nothing is ever written to disk,
-and a restart still discards everything. The participant's browser keeps a random
+stay in the backend's RAM. Keep the window short; nothing about a participant is
+ever written to disk, and a restart still discards everything. The participant's browser keeps a random
 resume key in `sessionStorage` for the same purpose — per tab, never sent anywhere
 else, and deleted when the quiz ends or the tab is closed. Mention both in your
 privacy notice (Datenschutzerklärung); see `PARTICIPANT-REATTACH.md` for the
 reasoning.
+
+A quiz that sets `"recordNamedResults": true` additionally asks each participant,
+with an unticked checkbox on the join page, whether their **name and final
+score** may appear in the results CSV. Nothing else about them is added: no
+answers to individual questions, no rank. Participants see their choice for the
+whole quiz and can change it until the quiz ends. If your lecturers use this,
+the privacy notice should say what is collected and why, that the legal basis is
+consent (Art. 6(1)(a) GDPR), that consent is optional and can be withdrawn until
+the quiz ends, and that the downloaded CSV is then held by the lecturer, who is
+responsible for keeping and deleting it.
+
+**Practice usage statistics** (`PRACTICE_STATS_DIR`) contain no personal data.
+They are totals per quiz and calendar day: games started, finished and
+abandoned, final scores in four bands, and per question how often it was
+shown, answered and answered fully correctly. No address, room id, token, name
+or time of day is recorded, and no game is recorded individually: each event
+only adds one to a total. That is anonymous data (GDPR Recital 26), which the
+GDPR does not cover, and nothing is stored on the student's device, so there is
+nothing to consent to (§ 25 TDDDG). The privacy notice need not mention them;
+say so in one sentence if you want to be transparent. This holds as long as no
+other log ties requests to addresses: the Caddyfile configures no access log,
+and one you enable would be what needs the privacy notice.
+
+The consent checkbox, the participant's view of their choice, and the note about
+the resume key are shown in German or English, following the student's browser
+(see "Language" in ARCHITECTURE.md). The exact wording is in
+`packages/server/web/locales/de.json` and `en.json`, under the keys
+`consent.*` and `privacy.*`, if your privacy notice should quote it.
 
 ### 13b. Sizing the abuse limits for your audience
 
@@ -725,6 +939,8 @@ ownership) are covered in [UPDATE.md §6](UPDATE.md#6-troubleshooting).
 | `pnpm build` → `ERR_PNPM_IGNORED_BUILDS: esbuild`, then a `runDepsStatusCheck` stack trace | pnpm exits 1 for any dependency whose build script has no recorded decision, and `pnpm build` checks dependency status first | `pnpm-workspace.yaml` must contain `allowBuilds:` / `  esbuild: true` (committed). If pnpm wrote a placeholder here, `sudo git checkout pnpm-workspace.yaml` |
 | `ERR_PNPM_OUTDATED_LOCKFILE` | The checkout's `pnpm-lock.yaml` is older than its `package.json` | Fix at the source: `pnpm install` locally, commit the lockfile. Do not reach for `--no-frozen-lockfile` — the frozen install is what guarantees the host gets the tested tree |
 | `caddy validate` → `File to import not found: caddy/tls-auto.txt` | Only the Caddyfile was copied to `/etc/caddy`, not the snippets beside it | Run both `cp` lines from 10a |
+| Every new quiz is refused with "could not be prepared for display" | The render worker fails. With §11c: the socket unit is not running, or `RENDER_SOCKET` names another path | `sudo journalctl -u quizzy-backend -u 'quizzy-render@*' -n 50`; `systemctl status quizzy-render.socket` |
+| Backend or render worker exits with `status=31/SYS` | A system call the unit's `SystemCallFilter=` forbids, without `SystemCallErrorNumber=EPERM` to soften it | Keep `SystemCallErrorNumber=EPERM` (§11a, §11c); `journalctl -k` names the syscall |
 | Caddy fails to start after editing the drop-in | `ExecStart=` was overridden without the empty reset line, so systemd has two `ExecStart` values | Keep the bare `ExecStart=` before the real one (§11b) |
 | `caddy validate` → unknown module `dns.providers.rfc2136` | Validating with the packaged binary rather than the custom build | Use `/usr/local/bin/caddy validate …` (§12) |
 | ACME `http-01` "Connection error" **and** `tls-alpn-01` "Unable to retrieve server certificate" | The CA validates by connecting *to* this host and has no IPv6 | Switch to the DNS-01 profile (§1.2, 6b, 10d). Confirm first with `curl -6 http://<HOST>/` from elsewhere — a `308` means your firewall is fine and the CA is the problem |

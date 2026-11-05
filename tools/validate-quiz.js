@@ -20,6 +20,7 @@
 import { readFileSync } from 'node:fs';
 import { validateQuiz } from '../packages/server/src/quiz-validator.js';
 import { checkSecret } from '../packages/server/src/quiz-secret-advice.js';
+import { parseJson, formatJsonError } from '../packages/server/src/json-location.js';
 
 function describe(file) {
   let raw;
@@ -31,9 +32,9 @@ function describe(file) {
 
   let quiz;
   try {
-    quiz = JSON.parse(raw);
+    quiz = parseJson(raw);
   } catch (err) {
-    return { errors: [`is not valid JSON: ${err.message}`], warnings: [] };
+    return { errors: [formatJsonError(err)], warnings: [] };
   }
 
   const structure = validateQuiz(quiz);
@@ -66,7 +67,7 @@ for (const file of files) {
   if (errors.length > 0) {
     invalid++;
     console.error(`✗ ${file}`);
-    for (const error of errors) console.error(`    ${error}`);
+    for (const error of errors) console.error(error.replace(/^/gm, '    '));
     continue;
   }
 

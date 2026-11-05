@@ -22,6 +22,8 @@
  * single `create_room` can pin down finite, not to be opinionated about teaching.
  */
 
+import { SHORT_ANSWER_LIMITS, MATCH_MODES, expandAcceptedAnswer, matchOf } from './short-answer.js';
+
 /** Bounds. Generous for a lecture, finite for an attacker. */
 const LIMITS = {
   maxQuestions: 200,
@@ -30,9 +32,10 @@ const LIMITS = {
   maxTextLength: 20000,
   maxOptionLength: 5000,
   maxTimeLimitSeconds: 3600,
+  ...SHORT_ANSWER_LIMITS,
 };
 
-const QUESTION_TYPES = new Set(['multiple-choice', 'estimation']);
+const QUESTION_TYPES = new Set(['multiple-choice', 'estimation', 'short-answer']);
 
 const isPlainObject = (value) =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -62,6 +65,13 @@ export function validateQuiz(quiz) {
     } else if (quiz.title.length > LIMITS.maxTitleLength) {
       fail(`title is longer than ${LIMITS.maxTitleLength} characters.`);
     }
+  }
+
+  /* Opts the quiz in to asking each participant whether their name and final
+     score may appear in the lecturer's export. Strictly a boolean: a string
+     "false" must not switch on something that collects personal data. */
+  if (quiz.recordNamedResults !== undefined && typeof quiz.recordNamedResults !== 'boolean') {
+    fail('recordNamedResults must be true or false.');
   }
 
   if (!Array.isArray(quiz.questions)) {
@@ -143,6 +153,57 @@ export function validateQuiz(quiz) {
     if (question.type === 'estimation') {
       if (typeof question.correctAnswer !== 'number' || !Number.isFinite(question.correctAnswer)) {
         fail(`${at}: correctAnswer must be a finite number.`);
+      }
+    }
+
+    /* The validator ignores properties it does not know, so a `fuzzy` left over
+       from before `match` would quietly turn into fuzzy matching. */
+    if (question.fuzzy !== undefined) {
+      fail(`${at}: fuzzy was replaced by match: write "match": "strict" for "fuzzy": false, and leave it out for "fuzzy": true.`);
+    }
+    if (question.match !== undefined && question.type !== 'short-answer') {
+      fail(`${at}: match only applies to short-answer questions.`);
+    }
+
+    if (question.type === 'short-answer') {
+      if (question.match !== undefined && !MATCH_MODES.includes(question.match)) {
+        fail(`${at}: match must be one of ${MATCH_MODES.map((m) => `"${m}"`).join(', ')}.`);
+      }
+      const match = matchOf(question);
+
+      const accepted = question.acceptedAnswers;
+      if (!Array.isArray(accepted)) {
+        fail(`${at}: acceptedAnswers must be an array of strings.`);
+        return;
+      }
+      if (accepted.length === 0) {
+        fail(`${at}: acceptedAnswers is empty; at least one answer must be accepted.`);
+      }
+      if (accepted.length > LIMITS.maxAcceptedAnswers) {
+        fail(`${at}: has ${accepted.length} accepted answers, more than the limit of ${LIMITS.maxAcceptedAnswers}.`);
+        return;
+      }
+
+      let variants = 0;
+      accepted.forEach((answer, answerIndex) => {
+        const where = `${at}, accepted answer ${answerIndex + 1}`;
+        if (typeof answer !== 'string') {
+          fail(`${where}: must be a string.`);
+          return;
+        }
+        if (answer.length > LIMITS.maxAcceptedAnswerLength) {
+          fail(`${where}: is longer than ${LIMITS.maxAcceptedAnswerLength} characters.`);
+          return;
+        }
+        const expanded = expandAcceptedAnswer(answer, match);
+        if (expanded.error) {
+          fail(`${where} ${JSON.stringify(answer)} ${expanded.error}`);
+          return;
+        }
+        variants += expanded.variants.length;
+      });
+      if (variants > LIMITS.maxAnswerVariants) {
+        fail(`${at}: the optional parts of acceptedAnswers expand to ${variants} spellings, more than the limit of ${LIMITS.maxAnswerVariants}.`);
       }
     }
   });

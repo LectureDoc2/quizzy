@@ -33,6 +33,7 @@
 import { validateQuiz } from '../../src/quiz-validator.js';
 import { checkSecret, generateSecret } from '../../src/quiz-secret-advice.js';
 import { encryptQuiz, PBKDF2_ITERATIONS } from '../../src/quiz-encryption.js';
+import { parseJson, formatJsonError } from '../../src/json-location.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -70,9 +71,10 @@ function encryptedName(fileName) {
 function inspect(text) {
   let quiz;
   try {
-    quiz = JSON.parse(text);
+    quiz = parseJson(text);
   } catch (err) {
-    return { errors: [`is not valid JSON: ${err.message}`], warnings: [] };
+    // Several lines (position, offending line, caret); .message keeps them.
+    return { errors: [formatJsonError(err)], warnings: [] };
   }
 
   const structure = validateQuiz(quiz);

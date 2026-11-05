@@ -10,6 +10,12 @@ import { validateQuiz } from './quiz-validator.js';
  * `create_room`, and the practice catalog the server loads from disk -- so that
  * a practice quiz cannot be held to a weaker standard than an uploaded one.
  *
+ * It runs only in render-worker.js, never in the API server process. Steps 1
+ * and 3 below hand the quiz to KaTeX and highlight.js, and since `create_room`
+ * needs no account, that input comes from whoever can open a WebSocket: for
+ * the *server*, quiz content is untrusted, whatever the browser-side threat
+ * model below says. render-sandbox.js is the API server's way in.
+ *
  * Shape first, markup second. A quiz that is not shaped like a quiz must never
  * reach a room: the assumptions it would break are checked in scoring and in
  * the auto-end timer, and the timer runs outside every try/catch. See

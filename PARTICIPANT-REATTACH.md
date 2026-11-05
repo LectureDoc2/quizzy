@@ -230,8 +230,12 @@ already flags. Three properties keep it defensible:
 
 - the window is short, bounded and configurable per deployment;
 - nothing is written to disk, and a restart still discards everything;
-- the export stays aggregate. `recordQuestionStatistics` records counts and
-  distributions, never names, and reattach did not change that.
+- the per-question export stays aggregate. `recordQuestionStatistics`
+  records counts and distributions, never names, and reattach did not change
+  that. The one way names enter the export is opt-in: a quiz that sets
+  `recordNamedResults` lists the name and final score of participants who
+  ticked the consent box and did not withdraw before the end. The page keeps
+  no copy of that choice; a rejoin gets it back from the server.
 
 `DEPLOY.md` describes `DETACHED_RETENTION_MINUTES` as a data-protection knob,
 not merely a memory one.

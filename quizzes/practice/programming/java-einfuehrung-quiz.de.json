@@ -1,0 +1,78 @@
+{
+  "title": "Java - Einführung\n(Programmierung 1 - Prof. Dr. Michael Eichberg)",
+  "secret": "9Nt41wHmbjxl1kaa54wza2oSFTamKvi7IuEsLIa1sHCrb0XDzK7dqc7SHELyX9NTU",
+  "questions": [
+    {
+      "type": "multiple-choice",
+      "text": "Welche der folgenden Datentypen sind keine primitiven Datentypen?",
+      "options": [
+        "<code>int</code>",
+        "<code>long</code>",
+        "<code>String</code>",
+        "<code>Integer</code>"
+      ],
+      "correctIndices": [2,3],
+      "timeLimit": 30
+    },
+    {
+      "type": "short-answer",
+      "text": "Welchen Wert hat der folgende Ausdruck: <code>3 * 2 << 1</code>",
+      "acceptedAnswers": ["12"],
+      "match": "strict",
+      "timeLimit": 30
+    },
+    {
+      "type": "short-answer",
+      "text": "Welchen Wert hat der folgende Ausdruck: <code>4 + 5 << 1</code>",
+      "acceptedAnswers": ["18"],
+      "match": "strict",
+      "timeLimit": 30
+    },
+    {
+      "type": "short-answer",
+      "text": "Mit welchem Schlüsselwort beende ich die Ausführung einer Schleife vorzeitig?",
+      "acceptedAnswers": ["break"],
+      "match": "strict",
+      "timeLimit": 30
+    },
+    {
+      "type": "short-answer",
+      "text": "Mit welchem Schlüsselwort setze ich die Ausführung einer Schleife fort?",
+      "acceptedAnswers": ["continue"],
+      "match": "strict",
+      "timeLimit": 30
+    },
+    {
+      "type": "short-answer",
+      "text": "In Java gibt es <code>switch</code>-Anweisungen und auch <code>switch</code>-?",
+      "acceptedAnswers": ["Ausdrücke","Ausdruck","expression","expressions"],
+      "timeLimit": 30
+    },
+    {
+      "type": "short-answer",
+      "text": "Mit welchen Zeichen startet ein einzeiliger Kommentar?",
+      "acceptedAnswers": ["//"],
+      "match": "exact",
+      "timeLimit": 30
+    },
+    {
+      "type": "short-answer",
+      "text": "Mit welchen Zeichen starten mehrzeilige Kommentare?",
+      "acceptedAnswers": ["/*","/**"],
+      "match": "exact",
+      "timeLimit": 30
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Sortiere die folgenden Datentypen nach aufsteigendem Wertebereich: byte, long, float",
+      "options": [
+        "<code>int</code>",
+        "<code>long</code>",
+        "<code>String</code>",
+        "<code>Integer</code>"
+      ],
+      "correctIndices": [2,3],
+      "timeLimit": 30
+    }
+  ]
+}

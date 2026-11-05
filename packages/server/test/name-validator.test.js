@@ -15,7 +15,7 @@ test('validateName accepts valid names', () => {
         'Jo', // minimum length
         'ab' // minimum length
     ];
-    
+
     for (const name of validNames) {
         const result = validateName(name);
         assert.strictEqual(result.valid, true, `Expected "${name}" to be valid`);
@@ -25,7 +25,7 @@ test('validateName accepts valid names', () => {
 
 test('validateName rejects empty or null names', () => {
     const invalidNames = ['', null, undefined, '   '];
-    
+
     for (const name of invalidNames) {
         const result = validateName(name);
         assert.strictEqual(result.valid, false);
@@ -78,7 +78,7 @@ test('validateName rejects names with invalid characters', () => {
         'Name~',
         'Name`',
     ];
-    
+
     for (const name of invalidNames) {
         const result = validateName(name);
         assert.strictEqual(result.valid, false, `Expected "${name}" to be invalid`);
@@ -92,7 +92,7 @@ test('validateName trims leading/trailing spaces', () => {
         'John ',
         '  John  ',
     ];
-    
+
     for (const name of validNames) {
         const result = validateName(name);
         assert.strictEqual(result.valid, true, `Expected "${name}" to be valid after trimming`);
@@ -109,7 +109,7 @@ test('validateName rejects names starting or ending with hyphens/apostrophes', (
         '-John-',
         "'John'",
     ];
-    
+
     for (const name of invalidNames) {
         const result = validateName(name);
         assert.strictEqual(result.valid, false, `Expected "${name}" to be invalid`);
@@ -127,7 +127,7 @@ test('validateName rejects blacklisted names', () => {
         'Hermann Goering',
         'Benito Mussolini',
     ];
-    
+
     for (const name of blacklistedNames) {
         const result = validateName(name);
         assert.strictEqual(result.valid, false, `Expected "${name}" to be rejected as blacklisted`);
@@ -161,16 +161,22 @@ test('NAME_PATTERN allows Unicode letters', () => {
         '日本',
         '中村',
     ];
-    
+
     for (const name of unicodeNames) {
         assert.ok(NAME_PATTERN.test(name), `Expected "${name}" to match pattern`);
     }
 });
 
-test('NAME_PATTERN rejects names with numbers', () => {
+test('NAME_PATTERN rejects names with letters and numbers', () => {
     assert.ok(!NAME_PATTERN.test('John123'));
-    assert.ok(!NAME_PATTERN.test('123'));
     assert.ok(!NAME_PATTERN.test('John2'));
+});
+
+test('NAME_PATTERN accepts names which are matriculation numbers', () => {
+  assert.ok(NAME_PATTERN.test('126534'));
+  assert.ok(NAME_PATTERN.test('12653419'));
+  assert.ok(NAME_PATTERN.test('12653419474'));
+  assert.ok(NAME_PATTERN.test('12653419'));
 });
 
 test('NAME_MIN_LENGTH is 2', () => {
@@ -179,4 +185,17 @@ test('NAME_MIN_LENGTH is 2', () => {
 
 test('NAME_MAX_LENGTH is 50', () => {
     assert.strictEqual(NAME_MAX_LENGTH, 50);
+});
+
+test('validateName gives each refusal a code, and the length limits as parameters', () => {
+    assert.deepStrictEqual(
+        [validateName(''), validateName('A'), validateName('A'.repeat(51)), validateName('R2D2')]
+            .map(({ code, params }) => ({ code, params })),
+        [
+            { code: 'name_required', params: undefined },
+            { code: 'name_too_short', params: { min: NAME_MIN_LENGTH } },
+            { code: 'name_too_long', params: { max: NAME_MAX_LENGTH } },
+            { code: 'name_invalid_characters', params: undefined }
+        ]
+    );
 });

@@ -1,0 +1,143 @@
+{
+  "page.joinTitle": "Quizzy - Join Room",
+  "page.practiceTitle": "Quizzy - Practice",
+
+  "status.checking": "Checking the quiz...",
+  "status.reconnecting": "Reconnecting to the quiz...",
+  "status.startingPractice": "Starting the practice quiz...",
+  "status.starting": "Starting...",
+  "status.waitingForStart": "Waiting for the quiz to start...",
+  "status.answerSubmitted": "Answer submitted!",
+  "status.answerSubmittedWaiting": "Answer submitted! Waiting for results...",
+
+  "connection.banner": "Connection lost — reconnecting…",
+  "connection.lost": "Connection lost. Please refresh the page.",
+  "connection.superseded": "This quiz was continued in another tab or window.",
+  "connection.answerLost": "Your answer did not reach the server before the connection dropped. Please answer again.",
+  "connection.missedQuestions": {
+    "one": "Question {list} closed while you were reconnecting, so it scores nothing for you.",
+    "other": "Questions {list} closed while you were reconnecting, so they score nothing for you."
+  },
+
+  "join.room": "Room:",
+  "join.heading": "Join Quiz",
+  "join.headingInProgress": "Quiz in progress",
+  "join.button": "Join Quiz",
+  "join.buttonInProgress": "Join now",
+  "join.namePlaceholder": "Enter your name",
+  "join.noRoom": "No room ID provided",
+  "join.waitingForStart": "Waiting for the quiz to start.",
+  "join.progress": "Question {current} of {total}.",
+  "join.progressMissed": {
+    "one": "Question {current} of {total} — you have missed {count} question and cannot score on it.",
+    "other": "Question {current} of {total} — you have missed {count} questions and cannot score on those."
+  },
+  "join.kicked": "You have been removed from the quiz",
+
+  "consent.label": "Optional: I agree that my name and final score are included in the lecturer's results file. My answers to individual questions are not recorded. I can change this until the quiz ends.",
+  "consent.willBeIncluded": "Your name and final score will be included in the results.",
+  "consent.willNotBeRecorded": "Your result will not be recorded with your name.",
+  "consent.wereIncluded": "Your name and final score were included in the results.",
+  "consent.wasNotRecorded": "Your result was not recorded with your name.",
+  "consent.withdraw": "Withdraw consent",
+  "consent.give": "Include my result",
+
+  "privacy.join": "So that you can carry on with your score if your connection drops, this tab keeps a random session key. Nothing else is stored, and the key is deleted when the quiz ends or the tab is closed.",
+  "privacy.joinConsent": "Your name and final score reach the lecturer's results file only if you tick the box above.",
+  "privacy.practice": "So that you can carry on if your connection drops, a game keeps a random session key in its tab. Nothing else is stored, and the key is deleted when the quiz ends or the tab is closed.",
+
+  "quiz.fallbackTitle": "Quiz",
+
+  "question.counter": "Question {current} of {total}",
+  "question.submit": "Submit",
+  "question.estimatePlaceholder": "Your estimate",
+  "question.termPlaceholder": "Your answer",
+  "question.expectedLength": "Expected length: {min}–{max} characters",
+  "question.expectedLengthExact": {
+    "one": "Expected length: {count} character",
+    "other": "Expected length: {count} characters"
+  },
+  "question.answerTooLong": "Longer than any expected answer",
+
+  "results.counter": "Results - Question {number}",
+  "results.counterOfTotal": "Results - Question {number} of {total}",
+  "results.rankAndScore": "Your rank: {rank} | Score: {score}",
+  "results.score": "Score: {score}",
+  "results.waitingForNext": "Waiting for next question...",
+  "results.complete": "Quiz complete!",
+  "results.finalHeading": "Final Results",
+  "results.thanks": "Thank you for participating!",
+
+  "feedback.notAnswered": "You did not answer this question.",
+  "feedback.correct": "Correct!",
+  "feedback.wrong": "Not quite.",
+  "feedback.acceptedByPresenter": "Correct! Your lecturer accepted this answer.",
+  "feedback.yourAnswer": "Your answer:",
+  "feedback.onlyEstimate": "Yours was the only estimate.",
+  "feedback.closest": "Closest of all {count} estimates!",
+  "feedback.rank": "#{rank} closest of {count} estimates",
+  "feedback.recorded": "Your answer was recorded.",
+  "feedback.band.10": "Within 10 % of the correct answer",
+  "feedback.band.25": "Within 25 % of the correct answer",
+  "feedback.band.50": "Within 50 % of the correct answer",
+  "feedback.bandPoints": {
+    "one": "{band}: {count} point",
+    "other": "{band}: {count} points"
+  },
+  "feedback.bandMissed": "More than 50 % off: no points",
+
+  "practice.heading": "Practice",
+  "practice.expired": "This practice game has expired.",
+  "practice.nextQuestion": "Next question",
+  "practice.showFinalScore": "Show final score",
+  "practice.nextQuestionIn": "Next question in {seconds} s",
+  "practice.finalScoreIn": "Final score in {seconds} s",
+  "practice.ofPoints": {
+    "one": "of {count} point",
+    "other": "of {count} points"
+  },
+  "practice.answeredCorrectly": {
+    "one": "{correct} of {count} question answered correctly",
+    "other": "{correct} of {count} questions answered correctly"
+  },
+  "practice.playAgain": "Play again",
+  "practice.allQuizzes": "All practice quizzes",
+
+  "practiceList.heading": "Practice on your own",
+  "practiceList.intro": "Pick a quiz and play it by yourself. Each question runs on its own timer; after every answer you see how you did, and the next question follows on its own.",
+  "practiceList.loading": "Loading quizzes…",
+  "practiceList.uncategorised": "Other",
+  "practiceList.questionCount": {
+    "one": "{count} question",
+    "other": "{count} questions"
+  },
+  "practiceList.quizCount": {
+    "one": "{count} quiz",
+    "other": "{count} quizzes"
+  },
+  "practiceList.loadFailed": "The practice quizzes could not be loaded. Please try again later.",
+  "practiceList.empty": "There are no practice quizzes on this server yet.",
+
+  "error.protocol_mismatch": "This page (quiz protocol version {version}) does not match the quiz server. Please reload the page; if that does not help, the server needs to be updated.",
+  "error.session_unavailable": "Unable to open that session. Please check the room code and try again.",
+  "error.quiz_finished": "This quiz has already finished.",
+  "error.rejoin_failed": "Your previous session has expired. Please join again.",
+  "error.already_joined": "This connection has already joined a quiz. Reload the page to join again.",
+  "error.practice_unavailable": "This practice quiz is not available. Please pick one from the list.",
+  "error.practice_rate_limited": "Too many practice games from this address. Please try again later.",
+  "error.rate_limited": "Too many attempts. Please wait a minute.",
+  "error.too_many_connections": "Too many connections. Please try again later.",
+  "error.too_many_messages": "Too many messages. Slowing you down.",
+  "error.server_at_capacity": "The server is at capacity. Please try again later.",
+  "error.invalid_message": "Invalid message",
+  "error.name_required": "Name is required",
+  "error.name_too_short": "Name must be at least {min} characters",
+  "error.name_too_long": "Name must be at most {max} characters",
+  "error.name_invalid_characters": "Name must contain only letters, spaces, hyphens, and apostrophes",
+  "error.name_not_allowed": "This name is not allowed",
+  "error.no_open_question": "No question is currently accepting answers",
+  "error.invalid_answer": "This answer could not be accepted.",
+  "error.consent_not_requested": "This quiz does not record named results.",
+  "error.consent_closed": "The quiz has finished, so your choice can no longer be changed.",
+  "error.consent_invalid": "Invalid consent value"
+}

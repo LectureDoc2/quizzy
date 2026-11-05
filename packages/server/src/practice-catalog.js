@@ -1,7 +1,9 @@
 import { readFileSync } from 'fs';
 import { dirname, isAbsolute, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import { prepareQuiz } from './quiz-pipeline.js';
+import { createRenderSandbox } from './render-sandbox.js';
+import { questionExcerpt } from './practice-stats.js';
+import { parseJson, formatJsonError, JsonSyntaxError } from './json-location.js';
 
 /**
  * The quizzes a student may play on their own, without a presenter.
@@ -16,8 +18,9 @@ import { prepareQuiz } from './quiz-pipeline.js';
  *     ]
  *   }
  *
- * Every quiz goes through the same pipeline as an uploaded one (see
- * quiz-pipeline.js), once, when the catalog is loaded -- not once per game. The
+ * Every quiz goes through the same pipeline as an uploaded one, in the same
+ * render sandbox (see render-sandbox.js), once, when the catalog is loaded --
+ * not once per game. The
  * result is frozen and shared by every practice room playing it, which is what
  * keeps a game cheap enough that a lecture hall can practise at once.
  *
@@ -94,9 +97,12 @@ function emptyPracticeCatalog() {
  * @param {unknown} definition The parsed catalog file.
  * @param {(file: string) => unknown} loadQuiz Returns the parsed quiz named by
  *   an entry's `file`; throws if it cannot.
- * @returns {{catalog: PracticeCatalog, errors: string[], warnings: string[]}}
+ * @param {object} [options]
+ * @param {(quiz: unknown) => Promise<object>|object} [options.prepareQuiz]
+ *   Defaults to a render sandbox of its own; the server passes the shared one.
+ * @returns {Promise<{catalog: PracticeCatalog, errors: string[], warnings: string[]}>}
  */
-function buildPracticeCatalog(definition, loadQuiz) {
+async function buildPracticeCatalog(definition, loadQuiz, { prepareQuiz = createRenderSandbox().prepareQuiz } = {}) {
   const errors = [];
   const warnings = [];
 
@@ -126,24 +132,36 @@ function buildPracticeCatalog(definition, loadQuiz) {
   }
 
   const entries = new Map();
-  definition.quizzes.slice(0, MAX_ENTRIES).forEach((entry, index) => {
+  /* One entry after the other, in file order: whether an id is a duplicate
+     depends on whether the entry before it made it in. A quiz renders in a
+     tenth of a second, so this costs a catalog of ordinary size about a second
+     at startup -- spent before the server listens, or, on reload, while the
+     old catalog is still in service. */
+  for (const [index, entry] of definition.quizzes.slice(0, MAX_ENTRIES).entries()) {
     const at = isPlainObject(entry) && typeof entry.id === 'string'
       ? `entry ${index + 1} ("${entry.id}")`
       : `entry ${index + 1}`;
-    const skip = (message) => errors.push(`${at}: ${message} -- skipped.`);
+    /* A JSON syntax error carries its excerpt on further lines; the verdict
+       belongs on the first one, not after the caret. */
+    const skip = (message) => {
+      const [first, ...rest] = message.split('\n');
+      errors.push([`${at}: ${first} -- skipped.`, ...rest].join('\n'));
+    };
 
-    if (!isPlainObject(entry)) return skip('must be a JSON object');
+    if (!isPlainObject(entry)) { skip('must be a JSON object'); continue; }
     if (typeof entry.id !== 'string' || !ID_PATTERN.test(entry.id)) {
-      return skip('id must be 1-64 lowercase letters, digits or hyphens');
+      skip('id must be 1-64 lowercase letters, digits or hyphens');
+      continue;
     }
-    if (entries.has(entry.id)) return skip('id is already used by an earlier entry');
-    if (typeof entry.file !== 'string' || entry.file === '') return skip('file must be a path');
+    if (entries.has(entry.id)) { skip('id is already used by an earlier entry'); continue; }
+    if (typeof entry.file !== 'string' || entry.file === '') { skip('file must be a path'); continue; }
 
     let category = null;
     if (entry.category !== undefined && entry.category !== null) {
       if (typeof entry.category !== 'string' || entry.category.trim() === '' ||
           entry.category.length > MAX_CATEGORY_LENGTH) {
-        return skip(`category must be a non-empty string of at most ${MAX_CATEGORY_LENGTH} characters`);
+        skip(`category must be a non-empty string of at most ${MAX_CATEGORY_LENGTH} characters`);
+        continue;
       }
       category = entry.category.trim();
     }
@@ -151,7 +169,8 @@ function buildPracticeCatalog(definition, loadQuiz) {
     let description = null;
     if (entry.description !== undefined && entry.description !== null) {
       if (typeof entry.description !== 'string' || entry.description.length > MAX_DESCRIPTION_LENGTH) {
-        return skip(`description must be a string of at most ${MAX_DESCRIPTION_LENGTH} characters`);
+        skip(`description must be a string of at most ${MAX_DESCRIPTION_LENGTH} characters`);
+        continue;
       }
       description = entry.description;
     }
@@ -160,11 +179,12 @@ function buildPracticeCatalog(definition, loadQuiz) {
     try {
       quiz = loadQuiz(entry.file);
     } catch (err) {
-      return skip(`cannot read ${entry.file}: ${err.message}`);
+      skip(cannotRead(entry.file, err));
+      continue;
     }
 
-    const prepared = prepareQuiz(quiz);
-    if (!prepared.valid) return skip(`the quiz is invalid: ${prepared.errors.join('; ')}`);
+    const prepared = await prepareQuiz(quiz);
+    if (!prepared.valid) { skip(`the quiz is invalid: ${prepared.errors.join('; ')}`); continue; }
     warnings.push(...prepared.warnings.map((w) => `${at}: ${w}`));
 
     // The presenter-token secret is of no use to a game nobody presents, so
@@ -176,9 +196,12 @@ function buildPracticeCatalog(definition, loadQuiz) {
       title: typeof playable.title === 'string' && playable.title !== '' ? playable.title : entry.id,
       description,
       questionCount: playable.questions.length,
+      // For the usage statistics (practice-stats.js), taken from the quiz as
+      // authored: the rendered text would be KaTeX markup. Never listed.
+      questionLabels: quiz.questions.map((q) => questionExcerpt(q.text)),
       quiz: deepFreeze(playable)
     });
-  });
+  }
 
   return {
     catalog: new PracticeCatalog({ resultsMs: resultsSeconds * 1000, entries }),
@@ -188,25 +211,39 @@ function buildPracticeCatalog(definition, loadQuiz) {
 }
 
 /**
+ * `cannot read <what>: <why>` -- or, for a JSON syntax error, the name on the
+ * first line and the position, reason and offending line indented below it,
+ * so that the line a server log prints is the one to fix.
+ */
+function cannotRead(what, err) {
+  if (err instanceof JsonSyntaxError) {
+    return `cannot read ${what}\n${formatJsonError(err).replace(/^/gm, '    ')}`;
+  }
+  return `cannot read ${what}: ${err.message}`;
+}
+
+/**
  * Load the catalog file at `path`. Quiz files are resolved relative to it and
  * must stay inside its directory.
  *
  * A missing catalog is not an error: it is how a deployment says it offers no
  * practice quizzes.
  *
- * @returns {{catalog: PracticeCatalog, errors: string[], warnings: string[], missing: boolean}}
+ * @param {string} [path]
+ * @param {object} [options] Passed on to buildPracticeCatalog().
+ * @returns {Promise<{catalog: PracticeCatalog, errors: string[], warnings: string[], missing: boolean}>}
  */
-function loadPracticeCatalog(path = DEFAULT_PRACTICE_CATALOG_PATH) {
+async function loadPracticeCatalog(path = DEFAULT_PRACTICE_CATALOG_PATH, options = {}) {
   let definition;
   try {
-    definition = JSON.parse(readFileSync(path, 'utf8'));
+    definition = parseJson(readFileSync(path, 'utf8'));
   } catch (err) {
     if (err.code === 'ENOENT') {
       return { catalog: emptyPracticeCatalog(), errors: [], warnings: [], missing: true };
     }
     return {
       catalog: emptyPracticeCatalog(),
-      errors: [`cannot read the catalog: ${err.message}`],
+      errors: [cannotRead('the catalog', err)],
       warnings: [],
       missing: false
     };
@@ -219,10 +256,10 @@ function loadPracticeCatalog(path = DEFAULT_PRACTICE_CATALOG_PATH) {
     if (within.startsWith('..') || isAbsolute(within)) {
       throw new Error('the file must be inside the catalog\'s directory');
     }
-    return JSON.parse(readFileSync(target, 'utf8'));
+    return parseJson(readFileSync(target, 'utf8'));
   };
 
-  return { ...buildPracticeCatalog(definition, loadQuiz), missing: false };
+  return { ...(await buildPracticeCatalog(definition, loadQuiz, options)), missing: false };
 }
 
 export {

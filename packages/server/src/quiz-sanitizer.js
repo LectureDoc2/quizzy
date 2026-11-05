@@ -14,6 +14,11 @@
  * boundary. It must never be relied upon to make untrusted input safe.
  * Untrusted input (anything originating from a participant) is escaped or
  * inserted via textContent instead, and never passes through here.
+ *
+ * "The author is trusted" describes what the markup may do in a browser. It
+ * says nothing about the server: anyone can open a room with a quiz of their
+ * own, so this module -- like the renderers it runs between -- runs in the
+ * render worker, not in the API server process (see render-sandbox.js).
  */
 
 /** Elements dropped together with their content. */

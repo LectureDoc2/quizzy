@@ -226,22 +226,53 @@ describe('Room', () => {
     assert.strictEqual(results.scores.get(p4.id), 0);
   });
 
-  it('scoreQuestion estimation: tie-breaker uses earliest timestamp', () => {
-    const quiz = { title: 'Test', questions: [{ type: 'estimation', text: 'Estimate', correctAnswer: 100, timeLimit: 30 }] };
-    const room = new Room('ABC123', 'token', quiz);
-    const ws1 = { readyState: 1 };
-    const ws2 = { readyState: 1 };
-    const p1 = room.addParticipant(ws1, 'Alice');
-    const p2 = room.addParticipant(ws2, 'Bob');
-    
-    room.startGame();
-    room.submitAnswer(p1.id, 100);
-    room.submitAnswer(p2.id, 100);
-    
-    const results = room.endQuestion();
-    // Both are equally close, but Alice submitted first
-    assert.strictEqual(results.scores.get(p1.id), 100);
-    assert.strictEqual(results.scores.get(p2.id), 50);
+  describe('scoreQuestion estimation: equally close estimates share a place', () => {
+    /**
+     * Plays one estimation question with the given estimates, submitted in
+     * the given order, and returns each estimate's points and place in that
+     * order.
+     */
+    function score(estimates, correctAnswer = 100) {
+      const quiz = { title: 'Test', questions: [{ type: 'estimation', text: 'Estimate', correctAnswer, timeLimit: 30 }] };
+      const room = new Room('ABC123', 'token', quiz);
+      const players = estimates.map((_, i) => room.addParticipant({ readyState: 1 }, `P${i}`));
+      room.startGame();
+      estimates.forEach((estimate, i) => room.submitAnswer(players[i].id, estimate));
+      const results = room.endQuestion();
+      return {
+        points: players.map((p) => results.scores.get(p.id)),
+        places: players.map((p) => results.ranks.get(p.id))
+      };
+    }
+
+    it('gives the same estimate the same points, whoever submitted first', () => {
+      assert.deepStrictEqual(score([100, 100]), { points: [100, 100], places: [1, 1] });
+    });
+
+    it('ties estimates the same distance off on either side', () => {
+      assert.deepStrictEqual(score([90, 110, 80]), { points: [100, 100, 25], places: [1, 1, 3] });
+    });
+
+    it('skips the places after a tie, so it never lifts anybody behind it', () => {
+      // Two tied for first: nobody is second, the next one is third.
+      assert.deepStrictEqual(score([105, 100, 100, 120]), { points: [25, 100, 100, 0], places: [3, 1, 1, 4] });
+      // Three tied for first: nobody else scores.
+      assert.deepStrictEqual(score([100, 100, 100, 101]), { points: [100, 100, 100, 0], places: [1, 1, 1, 4] });
+    });
+
+    it('shares the lower places too', () => {
+      assert.deepStrictEqual(score([100, 102, 98, 110]), { points: [100, 50, 50, 0], places: [1, 2, 2, 4] });
+      assert.deepStrictEqual(score([100, 102, 105, 95, 110]), { points: [100, 50, 25, 25, 0], places: [1, 2, 3, 3, 5] });
+    });
+
+    it('is not fooled by floating-point rounding', () => {
+      // |0.2 - 0.3| is 0.09999999999999998, |0.4 - 0.3| is 0.10000000000000003.
+      assert.deepStrictEqual(score([0.2, 0.4], 0.3), { points: [100, 100], places: [1, 1] });
+      // The rounding error grows with the operands, not with the distance.
+      assert.deepStrictEqual(score([1e6 + 0.2, 1e6 + 0.4], 1e6 + 0.3), { points: [100, 100], places: [1, 1] });
+      // But estimates that do differ are still told apart.
+      assert.deepStrictEqual(score([0.2, 0.41], 0.3), { points: [100, 50], places: [1, 2] });
+    });
   });
 
   it('nextQuestion advances the game', () => {
@@ -689,10 +720,15 @@ describe('Room.validateAnswer (untrusted participant input)', () => {
     const p2 = room.addParticipant({ readyState: 1 }, 'Bob');
     room.startGame();
     room.submitAnswer(p1.id, 100);
+    room.submitAnswer(p2.id, 7);
     const results = room.endQuestion();
-    // Nobody is closer than anybody else, but scoring must stay well-defined.
-    assert.strictEqual(typeof results.scores.get(p1.id), 'number');
+    // Nobody is closer than anybody else. Since equally close estimates share
+    // a place, that would be a tie for first; nobody scores or is ranked.
+    assert.strictEqual(results.scores.get(p1.id), 0);
+    assert.strictEqual(results.scores.get(p2.id), 0);
+    assert.strictEqual(results.ranks.size, 0);
     assert.strictEqual(results.leaderboard.length, 2);
+    assert.strictEqual(room.getAnswerFeedback(p1.id, results).rank, null);
   });
 });
 
@@ -1199,5 +1235,401 @@ describe('Practice rooms', () => {
       assert.strictEqual(fired, false);
       resolve();
     }, 30));
+  });
+});
+
+describe('Consent to named results', () => {
+  const QUIZ = {
+    title: 'Named',
+    recordNamedResults: true,
+    questions: [{ type: 'multiple-choice', text: 'Q1', options: ['A', 'B'], correctIndices: [0] }]
+  };
+
+  /** Play the one question: every name in `correct` answers right. */
+  function playOneQuestion(room, participants, correct) {
+    room.startGame();
+    for (const p of participants) {
+      room.currentAnswers.set(p.id, { answer: correct.has(p.name) ? [0] : [1], timestamp: Date.now() });
+    }
+    room.endQuestion();
+  }
+
+  it('is off unless the participant gives it, and only a literal true counts', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    assert.strictEqual(room.recordsNamedResults(), true);
+    assert.strictEqual(room.addParticipant({}, 'Alice').consent, false);
+    assert.strictEqual(room.addParticipant({}, 'Bob', 'yes').consent, false);
+    assert.strictEqual(room.addParticipant({}, 'Carol', 1).consent, false);
+    assert.strictEqual(room.addParticipant({}, 'Dave', true).consent, true);
+  });
+
+  it('is never recorded when the quiz does not ask, or in a practice game', () => {
+    const plain = new Room('ABC123', 'token', { ...QUIZ, recordNamedResults: undefined });
+    assert.strictEqual(plain.recordsNamedResults(), false);
+    const p = plain.addParticipant({}, 'Alice', true);
+    assert.strictEqual(p.consent, false);
+    assert.strictEqual(plain.setConsent(p.id, true), false);
+    assert.strictEqual(p.consent, false);
+
+    const practice = new Room('ABC124', 'token', QUIZ);
+    practice.practice = true;
+    assert.strictEqual(practice.recordsNamedResults(), false);
+    assert.strictEqual(practice.addParticipant({}, 'Alice', true).consent, false);
+  });
+
+  it('can be given and withdrawn until the game ends, and not after', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const p = room.addParticipant({}, 'Alice');
+    assert.strictEqual(room.setConsent(p.id, true), true);
+    assert.strictEqual(p.consent, true);
+    assert.strictEqual(room.setConsent(p.id, false), true);
+    assert.strictEqual(p.consent, false);
+    assert.strictEqual(room.setConsent(p.id, 'true'), false, 'non-booleans are refused');
+    assert.strictEqual(room.setConsent('nobody', true), false);
+
+    room.state = 'ended';
+    assert.strictEqual(room.setConsent(p.id, true), false);
+    assert.strictEqual(p.consent, false);
+  });
+
+  it('can still be changed by a participant whose connection dropped', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const ws = {};
+    const p = room.addParticipant(ws, 'Alice', true);
+    room.detachParticipant(ws);
+    assert.strictEqual(room.setConsent(p.id, false), true);
+    assert.strictEqual(p.consent, false);
+  });
+
+  it('exports name and final score of the consenting only, once the game has ended', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const alice = room.addParticipant({}, 'Alice', true);
+    const bobWs = {};
+    const bob = room.addParticipant(bobWs, 'Bob', true);
+    const carol = room.addParticipant({}, 'Carol');
+    const dave = room.addParticipant({}, 'Dave', true);
+    playOneQuestion(room, [alice, bob, carol, dave], new Set(['Bob', 'Carol']));
+
+    assert.strictEqual(room.getStatistics().namedResults, null, 'nothing named before the end');
+
+    room.detachParticipant(bobWs); // dropped, but still known: stays in
+    room.purgeParticipant(dave.id); // kicked: gone
+    room.state = 'ended';
+    room.snapshotNamedResults();
+
+    const stats = room.getStatistics();
+    assert.strictEqual(stats.recordsNamedResults, true);
+    assert.deepStrictEqual(stats.namedResults, [
+      { name: 'Bob', score: 100 },
+      { name: 'Alice', score: 0 }
+    ]);
+    for (const entry of stats.namedResults) {
+      assert.deepStrictEqual(Object.keys(entry).sort(), ['name', 'score']);
+    }
+    // Per-question statistics stay aggregate.
+    assert.ok(!JSON.stringify(stats.questions).includes('Alice'));
+  });
+
+  it('keeps the snapshot after the participants are purged', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const alice = room.addParticipant({}, 'Alice', true);
+    room.state = 'ended';
+    room.snapshotNamedResults();
+    room.purgeParticipant(alice.id);
+    assert.deepStrictEqual(room.getStatistics().namedResults, [{ name: 'Alice', score: 0 }]);
+  });
+
+  it('has no named results at all when the quiz does not ask', () => {
+    const room = new Room('ABC123', 'token', { ...QUIZ, recordNamedResults: false });
+    room.addParticipant({}, 'Alice', true);
+    room.state = 'ended';
+    room.snapshotNamedResults();
+    const stats = room.getStatistics();
+    assert.strictEqual(stats.recordsNamedResults, false);
+    assert.strictEqual(stats.namedResults, null);
+  });
+});
+
+describe('Short-answer questions', () => {
+  const QUIZ = { title: 'Terms', questions: [{
+    type: 'short-answer',
+    text: 'Same name, different parameter lists?',
+    acceptedAnswers: ['Overloading [of Methods]', 'Überladen [von Methoden]'],
+    timeLimit: 40
+  }] };
+
+  function shortAnswerRoom(...names) {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const participants = names.map((name) => room.addParticipant({ readyState: 1 }, name));
+    room.startGame();
+    return { room, participants };
+  }
+
+  it('sends participants the expected lengths, never the accepted answers', () => {
+    const { room } = shortAnswerRoom('Alice');
+    const pub = room.getPublicQuestion();
+    assert.deepStrictEqual(pub, {
+      type: 'short-answer',
+      text: 'Same name, different parameter lists?',
+      options: undefined,
+      timeLimit: 40,
+      // "Überladen" 9, "Overloading" 11; "Ueberladen von Methoden" 23 + 3.
+      answerLength: { min: 9, max: 11 },
+      maxLength: 26
+    });
+    assert.ok(!JSON.stringify(pub).includes('Overloading'));
+  });
+
+  it('getPublicQuestion passes on nothing it does not know', () => {
+    const quiz = { title: 'Test', questions: [
+      { type: 'short-answer', text: 'Q', acceptedAnswers: ['x'], match: 'exact', solution: 'x' }
+    ] };
+    const room = new Room('ABC123', 'token', quiz);
+    room.startGame();
+    const pub = room.getPublicQuestion();
+    assert.strictEqual(pub.acceptedAnswers, undefined);
+    assert.strictEqual(pub.match, undefined);
+    assert.strictEqual(pub.solution, undefined);
+  });
+
+  it('validateAnswer accepts a string up to maxLength as measured, spacing collapsed', () => {
+    const { room } = shortAnswerRoom('Alice');
+    assert.deepStrictEqual(room.validateAnswer('  Method   Overloading '), { valid: true, answer: 'Method Overloading' });
+    assert.strictEqual(room.validateAnswer('x'.repeat(26)).valid, true);
+    assert.strictEqual(room.validateAnswer('x'.repeat(27)).valid, false);
+    // A trailing space does not count against the allowance...
+    assert.strictEqual(room.validateAnswer('x'.repeat(26) + ' ').valid, true);
+    // ...but there is a hard bound on the raw text.
+    assert.strictEqual(room.validateAnswer('x' + ' '.repeat(52)).valid, false);
+    // Umlauts count written out, as they do in maxLength.
+    assert.strictEqual(room.validateAnswer('ü'.repeat(13)).valid, true);
+    assert.strictEqual(room.validateAnswer('ü'.repeat(14)).valid, false);
+  });
+
+  it('validateAnswer rejects what is not a usable string', () => {
+    const { room } = shortAnswerRoom('Alice');
+    for (const payload of ['', '   ', 'a\u0000b', 42, null, ['Overloading'], { toString: () => 'Overloading' }]) {
+      const result = room.validateAnswer(payload);
+      assert.strictEqual(result.valid, false, JSON.stringify(payload));
+      assert.strictEqual(result.code, 'invalid_answer');
+    }
+  });
+
+  it('scores 100 for an accepted answer, typo included, and 0 otherwise', () => {
+    const { room, participants: [alice, bob, carol] } = shortAnswerRoom('Alice', 'Bob', 'Carol');
+    room.submitAnswer(alice.id, 'ueberladen');
+    room.submitAnswer(bob.id, 'Overloadng');
+    room.submitAnswer(carol.id, 'Overriding');
+    const results = room.endQuestion();
+    assert.strictEqual(results.scores.get(alice.id), 100);
+    assert.strictEqual(results.scores.get(bob.id), 100);
+    assert.strictEqual(results.scores.get(carol.id), 0);
+  });
+
+  it('tells a participant whether they were right, but not what was right', () => {
+    const { room, participants: [alice, bob] } = shortAnswerRoom('Alice', 'Bob');
+    room.submitAnswer(alice.id, 'Overloading');
+    room.submitAnswer(bob.id, '<img src=x onerror=y>');
+    const results = room.endQuestion();
+
+    const right = room.getAnswerFeedback(alice.id, results);
+    assert.strictEqual(right.isCorrect, true);
+    assert.strictEqual(right.answer, 'Overloading');
+
+    const wrong = room.getAnswerFeedback(bob.id, results);
+    assert.strictEqual(wrong.isCorrect, false);
+    // The participant's own text comes back as data; the page escapes it.
+    assert.strictEqual(wrong.answer, '<img src=x onerror=y>');
+    assert.ok(!JSON.stringify(wrong).includes('Overloading'));
+    assert.ok(!JSON.stringify(wrong).includes('Überladen'));
+  });
+
+  it('records the answers grouped by spelling, without names', () => {
+    const { room, participants } = shortAnswerRoom('Alice', 'Bob', 'Carol', 'Dave', 'Erin');
+    const [alice, bob, carol, dave, erin] = participants;
+    room.submitAnswer(alice.id, 'Overloading');
+    room.submitAnswer(bob.id, 'overloading');
+    room.submitAnswer(carol.id, 'Overloading');
+    room.submitAnswer(dave.id, 'Overriding');
+    room.submitAnswer(erin.id, 'Polymorphie');
+    room.endQuestion();
+
+    const stat = room.getStatistics().questions[0];
+    assert.strictEqual(stat.type, 'short-answer');
+    assert.strictEqual(stat.responseCount, 5);
+    assert.strictEqual(stat.correctCount, 3);
+    assert.deepStrictEqual(stat.acceptedAnswers, QUIZ.questions[0].acceptedAnswers);
+    assert.deepStrictEqual(stat.answers, [
+      { text: 'Overloading', count: 3, isCorrect: true },
+      { text: 'Overriding', count: 1, isCorrect: false },
+      { text: 'Polymorphie', count: 1, isCorrect: false }
+    ]);
+    assert.strictEqual(stat.otherAnswerCount, 0);
+    assert.ok(!JSON.stringify(stat).includes('Alice'));
+  });
+
+  it('lists the 20 most frequent answers and only counts the rest', () => {
+    const names = Array.from({ length: 23 }, (_, i) => `Person ${String.fromCharCode(65 + i)}`);
+    const { room, participants } = shortAnswerRoom(...names);
+    participants.forEach((p, i) => room.submitAnswer(p.id, i < 2 ? 'Overloading' : `guess ${String.fromCharCode(97 + i)}`));
+    room.endQuestion();
+
+    const stat = room.getStatistics().questions[0];
+    assert.strictEqual(stat.answers.length, 20);
+    assert.deepStrictEqual(stat.answers[0], { text: 'Overloading', count: 2, isCorrect: true });
+    assert.strictEqual(stat.otherAnswerCount, 2);
+  });
+
+  it('compares and groups in exact mode when the question says so', () => {
+    const quiz = { title: 'Java', questions: [{
+      type: 'short-answer', text: 'Multi-line comment?', acceptedAnswers: ['/*'], match: 'exact', timeLimit: 30
+    }] };
+    const room = new Room('ABC123', 'token', quiz);
+    const [ann, ben, cem] = ['Ann', 'Ben', 'Cem'].map((name) => room.addParticipant({ readyState: 1 }, name));
+    room.startGame();
+    room.submitAnswer(ann.id, '/*');
+    room.submitAnswer(ben.id, '*');
+    room.submitAnswer(cem.id, '/ *');
+    assert.strictEqual(room.state, 'results');
+    assert.deepStrictEqual([ann, ben, cem].map((p) => p.score), [100, 0, 0]);
+
+    // Accepting "*" accepts exactly that spelling, not "/ *" with it.
+    const results = room.setAnswerAccepted(0, '*', true);
+    assert.deepStrictEqual([ann, ben, cem].map((p) => results.scores.get(p.id)), [100, 100, 0]);
+    assert.deepStrictEqual(room.getStatistics().questions[0].answers.map((a) => a.text).sort(), ['*', '/ *', '/*']);
+  });
+
+  describe('accepted by the presenter after all', () => {
+    /** Alice right; Bob and Carol the same wrong spelling, near enough; Dave wrong. */
+    function closedQuestion() {
+      const sockets = { alice: { readyState: 1 }, bob: { readyState: 1 }, carol: { readyState: 1 }, dave: { readyState: 1 } };
+      const room = new Room('ABC123', 'token', QUIZ);
+      const alice = room.addParticipant(sockets.alice, 'Alice');
+      const bob = room.addParticipant(sockets.bob, 'Bob');
+      const carol = room.addParticipant(sockets.carol, 'Carol');
+      const dave = room.addParticipant(sockets.dave, 'Dave');
+      room.startGame();
+      room.submitAnswer(alice.id, 'Overloading');
+      room.submitAnswer(bob.id, 'Overload');
+      room.submitAnswer(carol.id, 'overload');
+      room.submitAnswer(dave.id, 'Overriding');
+      assert.strictEqual(room.state, 'results', 'everybody answered, so the question closed');
+      return { room, sockets, alice, bob, carol, dave };
+    }
+
+    it('credits everybody in the group, and says why in their feedback', () => {
+      const { room, alice, bob, carol, dave } = closedQuestion();
+      assert.strictEqual(bob.score, 0);
+
+      // Any spelling in the group stands for all of it.
+      const results = room.setAnswerAccepted(0, 'OVERLOAD', true);
+      assert.ok(results);
+      assert.deepStrictEqual(
+        [alice, bob, carol, dave].map((p) => results.scores.get(p.id)),
+        [100, 100, 100, 0]
+      );
+      assert.deepStrictEqual([alice, bob, carol, dave].map((p) => p.score), [100, 100, 100, 0]);
+      assert.strictEqual(bob.answers[0].points, 100);
+      assert.deepStrictEqual(results.leaderboard.map((e) => e.score), [100, 100, 100, 0]);
+
+      const bobs = room.getAnswerFeedback(bob.id, results);
+      assert.strictEqual(bobs.isCorrect, true);
+      assert.strictEqual(bobs.acceptedByPresenter, true);
+      const alices = room.getAnswerFeedback(alice.id, results);
+      assert.strictEqual(alices.isCorrect, true);
+      assert.strictEqual(alices.acceptedByPresenter, undefined, 'matched, not accepted');
+      assert.strictEqual(room.getAnswerFeedback(dave.id, results).isCorrect, false);
+    });
+
+    it('updates the statistics, marking what was accepted in class', () => {
+      const { room } = closedQuestion();
+      room.setAnswerAccepted(0, 'overload', true);
+
+      const stat = room.getStatistics().questions[0];
+      assert.strictEqual(stat.correctCount, 3);
+      assert.deepStrictEqual(stat.answers, [
+        { text: 'Overload', count: 2, isCorrect: true, acceptedByPresenter: true },
+        { text: 'Overloading', count: 1, isCorrect: true },
+        { text: 'Overriding', count: 1, isCorrect: false }
+      ]);
+    });
+
+    it('takes an acceptance back, and nothing else', () => {
+      const { room, alice, bob } = closedQuestion();
+      room.setAnswerAccepted(0, 'Overload', true);
+
+      const results = room.setAnswerAccepted(0, 'Overload', false);
+      assert.ok(results);
+      assert.strictEqual(results.scores.get(bob.id), 0);
+      assert.strictEqual(bob.score, 0);
+      assert.strictEqual(bob.answers[0].points, 0);
+      assert.strictEqual(room.getAnswerFeedback(bob.id, results).acceptedByPresenter, undefined);
+      assert.strictEqual(room.getStatistics().questions[0].correctCount, 1);
+
+      // A matched answer is not the presenter's to fail.
+      assert.strictEqual(room.setAnswerAccepted(0, 'Overloading', false), null);
+      assert.strictEqual(alice.score, 100);
+    });
+
+    it('changes nothing twice', () => {
+      const { room, bob } = closedQuestion();
+      assert.ok(room.setAnswerAccepted(0, 'Overload', true));
+      assert.strictEqual(room.setAnswerAccepted(0, 'Overload', true), null);
+      assert.strictEqual(room.setAnswerAccepted(0, 'Overloading', true), null, 'already right');
+      assert.strictEqual(bob.score, 100);
+      assert.strictEqual(room.setAnswerAccepted(0, 'Overriding', false), null, 'never accepted');
+    });
+
+    it('refuses while the question is open, once the quiz has moved on, and anything malformed', () => {
+      const { room: open, participants: [alice, bob] } = shortAnswerRoom('Alice', 'Bob');
+      open.submitAnswer(alice.id, 'Overload');
+      assert.strictEqual(open.setAnswerAccepted(0, 'Overload', true), null, 'question still open');
+      open.submitAnswer(bob.id, 'Overriding');
+
+      const { room, bob: closedBob } = closedQuestion();
+      for (const [questionIndex, answer, accepted] of [
+        [1, 'Overload', true],
+        ['0', 'Overload', true],
+        [0, 'Overload', 'yes'],
+        [0, 'Overload', undefined],
+        [0, 42, true],
+        [0, ['Overload'], true],
+        [0, '', true],
+        [0, ' - ', true],
+        [0, 'Overload'.repeat(10), true],
+        [0, 'Nobody said this', true]
+      ]) {
+        assert.strictEqual(room.setAnswerAccepted(questionIndex, answer, accepted), null,
+          JSON.stringify([questionIndex, answer, accepted]));
+      }
+      assert.strictEqual(closedBob.score, 0);
+
+      room.state = 'ended';
+      assert.strictEqual(room.setAnswerAccepted(0, 'Overload', true), null, 'the game is over');
+    });
+
+    it('applies only to short-answer questions', () => {
+      const room = new Room('ABC123', 'token', { title: 'MC', questions: [
+        { type: 'multiple-choice', text: 'Q', options: ['a', 'b'], correctIndices: [0] }
+      ] });
+      const alice = room.addParticipant({ readyState: 1 }, 'Alice');
+      room.startGame();
+      room.submitAnswer(alice.id, [1]);
+      assert.strictEqual(room.state, 'results');
+      assert.strictEqual(room.setAnswerAccepted(0, '1', true), null);
+      assert.strictEqual(alice.score, 0);
+    });
+
+    it('still credits somebody who dropped, and skips somebody who was kicked', () => {
+      const { room, sockets, bob, carol } = closedQuestion();
+      room.detachParticipant(sockets.bob);
+      room.purgeParticipant(carol.id);
+
+      const results = room.setAnswerAccepted(0, 'Overload', true);
+      assert.ok(results);
+      assert.strictEqual(bob.score, 100);
+      assert.ok(!results.leaderboard.some((e) => e.id === carol.id));
+      assert.strictEqual(results.leaderboard.find((e) => e.id === bob.id).score, 100);
+    });
   });
 });

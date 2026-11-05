@@ -1,5 +1,5 @@
 {
-  "title": "Java-Konzepte als Grundlage für modernes JavaScript",
+  "title": "Java - grundlegende Konzepte",
   "secret": "jzi9hnfn6cqO/h7HklslsI9/ijrGVJKm",
   "questions": [
     {
@@ -247,7 +247,7 @@
       "text": "<p>Warum lässt sich dieser Code nicht übersetzen?</p><pre style='text-align:left;'><code>int zaehler = 0;\nList&lt;Runnable&gt; aufgaben = new ArrayList&lt;&gt;();\n\naufgaben.add(() -&gt; IO.println(zaehler));\nzaehler++;</code></pre>",
       "options": [
         "Lambdas dürfen überhaupt keine lokalen Variablen der umgebenden Methode verwenden.",
-        "Eine im Lambda verwendete lokale Variable muss <code>final</code> oder <em>effektiv final</em> sein – <code>zaehler++</code> verletzt das.",
+        "Eine im Lambda verwendete lokale Variable muss <code>final</code> oder <em>effektiv final</em> sein – <code>zaehler</code> verletzt das.",
         "<code>IO.println</code> darf in einem Lambda nicht aufgerufen werden.",
         "<code>Runnable</code> ist kein funktionales Interface."
       ],
@@ -289,6 +289,37 @@
       ],
       "correctIndices": [3],
       "timeLimit": 60
+    },
+    {
+      "type": "short-answer",
+      "text": "<p>Eine Klasse hat mehrere Methoden mit demselben Namen, aber unterschiedlichen Parameterlisten. Wie heißt dieses Konzept?</p>",
+      "acceptedAnswers": [
+        "Überladen [von Methoden]",
+        "Überladung",
+        "Methodenüberladung",
+        "Overloading [of Methods]",
+        "Method Overloading"
+      ],
+      "timeLimit": 40
+    },
+    {
+      "type": "short-answer",
+      "text": "<p>Eine Unterklasse implementiert eine geerbte Methode mit derselben Signatur neu. Wie heißt dieses Konzept?</p>",
+      "acceptedAnswers": [
+        "Überschreiben [von Methoden]",
+        "Überschreibung",
+        "Methodenüberschreibung",
+        "Overriding [of Methods]",
+        "Method Overriding"
+      ],
+      "timeLimit": 40
+    },
+    {
+      "type": "short-answer",
+      "text": "<p>Mit welchem Schlüsselwort gibt eine Klasse an, dass sie ein Interface implementiert?</p>",
+      "acceptedAnswers": ["implements"],
+      "match": "strict",
+      "timeLimit": 30
     }
   ]
 }

@@ -1,4 +1,5 @@
 import { PROTOCOL_VERSION } from "../../../ld-quiz/src/protocol.js";
+import { groupAnswers } from "../../src/short-answer.js";
 
 /**
  * Create an element. `text` is always assigned via textContent, so callers
@@ -325,6 +326,12 @@ class QuizControl {
     if (answerCountPanel)
       answerCountPanel.style.display = state === "question" ? "flex" : "none";
 
+    // The last results stay on screen during the next question, but they can
+    // only be re-scored while they are the current ones.
+    if (state !== "results") {
+      for (const button of document.querySelectorAll(".answer-group__toggle")) button.remove();
+    }
+
     // Disable "Next Question" button on the last question
     const btnNext = document.getElementById("btn-next");
     if (btnNext) {
@@ -403,6 +410,12 @@ class QuizControl {
       optionsEl.append(list);
     } else if (q.type === "estimation" && q.correctAnswer !== undefined) {
       optionsEl.append(el("div", "question__correct-answer", `Correct answer: ${q.correctAnswer}`));
+    } else if (q.type === "short-answer" && Array.isArray(q.acceptedAnswers)) {
+      // As written in the quiz, [optional parts] included: plain text, not
+      // markup, so textContent like everything else.
+      optionsEl.append(
+        el("div", "question__correct-answer", `Accepted: ${q.acceptedAnswers.map(String).join(" · ")}`),
+      );
     }
 
     panel.style.display = "block";
@@ -424,6 +437,7 @@ class QuizControl {
         .join(", ");
     }
     if (typeof answer === "number" && Number.isFinite(answer)) return String(answer);
+    if (typeof answer === "string") return answer; // a short answer
     return "(invalid answer)";
   }
 
@@ -448,10 +462,70 @@ class QuizControl {
       list.append(item);
     }
 
-    replaceChildren(content, list);
+    if (this.currentQuestion?.type === "short-answer") {
+      replaceChildren(content, this.renderAnswerGroups(msg), list);
+    } else {
+      replaceChildren(content, list);
+    }
     panel.style.display = "block";
 
     this.renderLeaderboard(msg.leaderboard);
+  }
+
+  /**
+   * The answers to a short-answer question, grouped by spelling as the server
+   * compares them, most frequent first: "12× Overloading", "5× Overriding".
+   * This is where the common misconceptions show. Participant text, so
+   * textContent only.
+   *
+   * While the results are up, a wrong group can be accepted as right after
+   * all, and an acceptance taken back. The list changes only once the server
+   * has re-scored and sent the results again, so it never shows a verdict the
+   * participants did not get.
+   */
+  renderAnswerGroups(msg) {
+    const { groups } = groupAnswers(
+      msg.answers.map((a) => ({
+        answer: a.answer,
+        correct: Number(a.points) > 0,
+        acceptedByPresenter: a.acceptedByPresenter === true,
+      })),
+      { match: msg.match },
+    );
+    const list = el("ol", "answer-groups");
+    for (const group of groups) {
+      const item = el("li", group.isCorrect ? "answer-group answer-group--correct" : "answer-group");
+      item.append(el("span", "answer-group__count", `${group.count}×`));
+      item.append(el("span", "answer-group__text", group.text));
+      if (group.acceptedByPresenter) {
+        item.append(el("span", "answer-group__note", "accepted by you"));
+        item.append(this.acceptButton(msg.questionIndex, group.text, false));
+      } else if (!group.isCorrect) {
+        item.append(this.acceptButton(msg.questionIndex, group.text, true));
+      }
+      list.append(item);
+    }
+    return list;
+  }
+
+  /**
+   * Accept a group of short answers as right, or take that back. The spelling
+   * stands for its whole group: the server re-scores every answer in the same
+   * normalized form. Removed once the quiz moves on; see updateControlUI().
+   */
+  acceptButton(questionIndex, answer, accepted) {
+    const button = el("button", "btn btn--secondary answer-group__toggle", accepted ? "Accept" : "Undo");
+    button.type = "button";
+    button.title = accepted
+      ? "Count this answer as correct for everybody who gave it"
+      : "Count this answer as wrong again";
+    // One per group, so the label says which; an attribute, never markup.
+    button.setAttribute("aria-label", accepted ? `Accept "${answer}"` : `Undo accepting "${answer}"`);
+    button.addEventListener("click", () => {
+      button.disabled = true;
+      this.ws.send(JSON.stringify({ type: "accept_answer", questionIndex, answer, accepted }));
+    });
+    return button;
   }
 
   renderLeaderboard(leaderboard) {
@@ -492,10 +566,17 @@ class QuizControl {
     if (!panel || !this.statistics) return;
 
     const answered = this.statistics.questions.length;
+    const named = this.statistics.recordsNamedResults && Array.isArray(this.statistics.namedResults)
+      ? this.statistics.namedResults.length
+      : null;
     hint.textContent =
       `${answered} of ${this.statistics.totalQuestions} question(s) played. ` +
       "The summary shows how each question was answered, so you can see which " +
-      "topics need revisiting. It contains no participant names.";
+      "topics need revisiting. " +
+      (named === null
+        ? "It contains no participant names."
+        : `It also lists the names and final scores of the ${named} participant(s) ` +
+          "who agreed to this; everyone else is left out, and no individual answers are included.");
 
     panel.style.display = "block";
 
@@ -559,8 +640,9 @@ class QuizControl {
   /**
    * Build the results summary.
    *
-   * One row per answer option for multiple-choice questions and one row per
-   * estimation question, so the whole thing opens as a flat table in a
+   * One row per answer option for multiple-choice questions, one per distinct
+   * answer to a short-answer question, and one per estimation question, so
+   * the whole thing opens as a flat table in a
    * spreadsheet and sorts by "percent correct" to surface the weak topics.
    */
   buildCsv() {
@@ -604,6 +686,41 @@ class QuizControl {
             ]),
           );
         });
+      } else if (q.type === "short-answer") {
+        const percentCorrect = q.responseCount
+          ? `${((q.correctCount / q.responseCount) * 100).toFixed(1)}%`
+          : "";
+        rows.push(
+          QuizControl.csvRow([
+            number, "short-answer", text, q.responseCount,
+            `accepted: ${(q.acceptedAnswers || []).join(" | ")}`, "", "", "",
+            q.correctCount, percentCorrect,
+          ]),
+        );
+        // One row per distinct answer, numbered like the options of a
+        // multiple-choice question. The number in front is also what keeps a
+        // participant's "=HYPERLINK(...)" from being read as a formula. The
+        // answers accepted in class are marked: they belong in the quiz's
+        // acceptedAnswers next time.
+        (q.answers || []).forEach((answer, i) => {
+          rows.push(
+            QuizControl.csvRow([
+              "", "", "", "",
+              `${i + 1}. ${answer.text}`,
+              answer.acceptedByPresenter ? "yes (accepted by presenter)" : answer.isCorrect ? "yes" : "no",
+              answer.count,
+              share(answer.count),
+              "", "",
+            ]),
+          );
+        });
+        if (q.otherAnswerCount) {
+          rows.push(
+            QuizControl.csvRow([
+              "", "", "", "", "(other answers)", "", q.otherAnswerCount, share(q.otherAnswerCount), "", "",
+            ]),
+          );
+        }
       } else {
         const withinShare = q.withinTenPercent === null ? "" : share(q.withinTenPercent);
         rows.push(
@@ -621,6 +738,24 @@ class QuizControl {
             "", "", "", "", "",
           ]),
         );
+      }
+    }
+
+    // Only in a quiz that asked for consent, and only the participants who
+    // gave it: name and final score, nothing per question. The server sends
+    // this list only once the game has ended. Names cannot start a formula --
+    // the server accepts only letters, spaces, hyphens and apostrophes, and
+    // the first character must be a letter (name-validator.js).
+    if (stats.recordsNamedResults && Array.isArray(stats.namedResults)) {
+      rows.push("");
+      rows.push(QuizControl.csvRow(["Final results (participants who agreed to be named)"]));
+      if (stats.namedResults.length === 0) {
+        rows.push(QuizControl.csvRow(["No participant agreed to be named."]));
+      } else {
+        rows.push(QuizControl.csvRow(["Name", "Final score"]));
+        for (const entry of stats.namedResults) {
+          rows.push(QuizControl.csvRow([entry.name, Number(entry.score) || 0]));
+        }
       }
     }
 

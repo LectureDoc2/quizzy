@@ -17,6 +17,7 @@
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { encryptQuiz } from '../packages/server/src/quiz-encryption.js';
+import { parseJson, formatJsonError } from '../packages/server/src/json-location.js';
 
 const [inputFile, outputFile, passwordArg] = process.argv.slice(2);
 const password = passwordArg ?? process.env.QUIZ_PASSWORD;
@@ -28,7 +29,14 @@ if (!inputFile || !outputFile || !password) {
 }
 
 const quizData = readFileSync(inputFile, 'utf-8');
-JSON.parse(quizData); // reject a malformed quiz here rather than in a lecture hall
+// Reject a malformed quiz here rather than in a lecture hall.
+try {
+  parseJson(quizData);
+} catch (err) {
+  console.error(`✗ ${inputFile} was not encrypted:`);
+  console.error(formatJsonError(err).replace(/^/gm, '    '));
+  process.exit(1);
+}
 
 writeFileSync(outputFile, await encryptQuiz(quizData, password));
 console.log(`Encrypted quiz written to ${outputFile}`);

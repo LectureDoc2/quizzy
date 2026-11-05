@@ -154,6 +154,27 @@ loaded from.
 
 ---
 
+## Language
+
+The participant pages (`join.html`, `practice.html`) speak German or English, as
+the student's browser prefers (`navigator.languages`), and English when it
+prefers neither; `?lang=de` or `?lang=en` overrides that and is carried along on
+the pages' own links. Nothing is stored on the device to remember the choice.
+
+The texts live in one resource file per language, `packages/server/web/locales/`,
+which esbuild inlines into the page bundles; `web/js/i18n.js` picks the language
+and fills them in. The lecturer's pages, the `<ld-quiz>` component and the
+authoring tools are still English only.
+
+The API server does not know the student's language and does not need to. Every
+error a participant can receive carries a machine-readable `code` (and `params`
+where the text has numbers in it, e.g. `{ "code": "name_too_short", "params":
+{ "min": 2 } }`); the join page shows the translation of `error.<code>`. The
+English `message` stays in every error, for the clients that do not translate
+yet. Both fields are additive, so the protocol version did not change.
+
+---
+
 ## Authoring runs in the browser, not on the server
 
 `/tools.html` validates a quiz, encrypts one, and generates a `secret`. All
@@ -232,7 +253,7 @@ sequenceDiagram
     K->>A: control_connect
     A-->>K: control_connected
 
-    P->>A: join_room { roomId, name }
+    P->>A: join_room { roomId, name, consent? }
     A-->>P: joined
     A-->>D: participant_joined
     A-->>K: participants_list
@@ -250,6 +271,13 @@ sequenceDiagram
     A-->>D: question_results
     A-->>K: question_results
     A-->>P: question_results
+
+    opt a right short answer the matching missed
+        K->>A: accept_answer { questionIndex, answer }
+        Note over A: re-scores every answer<br/>in the same normalized form
+        A-->>P: results
+        A-->>K: question_results
+    end
 
     K->>A: next_question
     K->>A: end_game
@@ -323,4 +351,5 @@ take every other lecture on the Quizzy server with it.
 ---
 
 Deploying a Quizzy server: `DEPLOY.md`. Updating one: `UPDATE.md`. Running one
-locally: `DEVELOPMENT.md`. Releasing the npm package: `PUBLISH.md`.
+locally: `DEVELOPMENT.md`. Releasing the npm package: `PUBLISH.md`. What is
+protected against whom, and how: `SECURITY_ARCHITECTURE.md`.

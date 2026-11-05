@@ -1,4 +1,10 @@
 import { PROTOCOL_VERSION, PROTOCOL_MISMATCH } from '../../../ld-quiz/src/protocol.js';
+import { createI18n, detectLocale, translatePage } from './i18n.js';
+import { measuredLength } from '../../src/short-answer.js';
+
+/** This page's language: ?lang= if given, else the browser's; see i18n.js. */
+const i18n = createI18n(detectLocale(window.location.search, navigator.languages));
+const { t, html } = i18n;
 
 /**
  * Close code the server uses when another connection has taken over this
@@ -34,12 +40,21 @@ const FINAL_STATES = new Set(['ended', 'kicked', 'superseded', 'fatal']);
 /** Where a practice game sends the student to pick another quiz. */
 const PRACTICE_LIST_URL = 'practice.html';
 
-/** What a practice estimate's band (see Room.getAnswerFeedback()) reads as. */
-const PRACTICE_BAND_VERDICTS = {
-  10: 'Within 10 % of the correct answer',
-  25: 'Within 25 % of the correct answer',
-  50: 'Within 50 % of the correct answer'
-};
+/** The practice estimate bands (see Room.getAnswerFeedback()) with a verdict. */
+const PRACTICE_BANDS = new Set([10, 25, 50]);
+
+/**
+ * "Expected length: 9–18 characters", from the range the server derived from
+ * the accepted answers; empty when the range is unusable.
+ */
+function expectedLengthText(answerLength) {
+  const min = answerLength?.min;
+  const max = answerLength?.max;
+  if (!Number.isInteger(min) || !Number.isInteger(max) || min < 1 || max < min) return '';
+  return min === max
+    ? t('question.expectedLengthExact', { count: min })
+    : t('question.expectedLength', { min, max });
+}
 
 class QuizClient {
   constructor() {
@@ -67,36 +82,44 @@ class QuizClient {
     this.practice = false;
     this.practiceQuizId = null;
     this.totalQuestions = null;
+    // Consent to having one's name and final score in the lecturer's export,
+    // as the server last confirmed it; null when the quiz does not ask.
+    // Never stored on the device: a rejoin gets it back from the server.
+    this.recordsNamedResults = false;
+    this.consent = null;
+    this.consentPending = false;
   }
 
-  // Client-side validation (must match server-side)
-  static NAME_PATTERN = /^[\p{L}][\p{L}'\- ]{0,48}[\p{L}]$/u;
+  // Client-side validation (must match server-side). A refusal carries the
+  // same `code` and `params` as the server's, and so the same translation.
+  static NAME_PATTERN = /^(([\p{L}][\p{L}'\- ]{0,48}[\p{L}])|([\p{Nd}]{6,16}))$/u;
   static NAME_MIN_LENGTH = 2;
   static NAME_MAX_LENGTH = 50;
 
   static validateName(name) {
     if (!name || typeof name !== 'string') {
-      return { valid: false, error: 'Name is required' };
+      return { valid: false, code: 'name_required' };
     }
 
     const trimmed = name.trim();
 
     if (trimmed.length < QuizClient.NAME_MIN_LENGTH) {
-      return { valid: false, error: `Name must be at least ${QuizClient.NAME_MIN_LENGTH} characters` };
+      return { valid: false, code: 'name_too_short', params: { min: QuizClient.NAME_MIN_LENGTH } };
     }
 
     if (trimmed.length > QuizClient.NAME_MAX_LENGTH) {
-      return { valid: false, error: `Name must be at most ${QuizClient.NAME_MAX_LENGTH} characters` };
+      return { valid: false, code: 'name_too_long', params: { max: QuizClient.NAME_MAX_LENGTH } };
     }
 
     if (!QuizClient.NAME_PATTERN.test(trimmed)) {
-      return { valid: false, error: 'Name must contain only letters, spaces, hyphens, and apostrophes' };
+      return { valid: false, code: 'name_invalid_characters' };
     }
 
     return { valid: true, name: trimmed };
   }
 
   init() {
+    translatePage(i18n);
     const urlParams = new URLSearchParams(window.location.search);
     this.roomId = urlParams.get('room');
     this.practiceQuizId = urlParams.get('practice');
@@ -104,7 +127,7 @@ class QuizClient {
     if (this.practiceQuizId) {
       this.enterPracticeMode();
     } else if (!this.roomId) {
-      this.showError('No room ID provided');
+      this.showError(t('join.noRoom'));
       return;
     } else {
       document.getElementById('room-id').textContent = this.roomId;
@@ -115,9 +138,9 @@ class QuizClient {
     // has not started yet has no room, and so nothing to carry on with.
     this.resumeToken = this.roomId ? this.loadResumeToken() : null;
     this.renderConnecting(
-      this.resumeToken ? 'Reconnecting to the quiz...'
-        : this.practiceQuizId ? 'Starting the practice quiz...'
-          : 'Checking the quiz...'
+      t(this.resumeToken ? 'status.reconnecting'
+        : this.practiceQuizId ? 'status.startingPractice'
+          : 'status.checking')
     );
     // One socket for the whole visit: the room's state is fetched over it
     // before the name is asked for, and the join then reuses it.
@@ -145,10 +168,10 @@ class QuizClient {
     this.practice = true;
     const roomCode = document.querySelector('.room-code');
     if (roomCode) roomCode.hidden = true;
-    if (this.state === 'join') this.setHeading('Practice');
+    if (this.state === 'join') this.setHeading(t('practice.heading'));
   }
 
-  renderConnecting(message = 'Checking the quiz...') {
+  renderConnecting(message = t('status.checking')) {
     const content = document.getElementById('content');
     content.innerHTML = `
       <div class="waiting">
@@ -218,14 +241,15 @@ class QuizClient {
       // means reloading this tab offers a fresh join instead of taking the
       // identity back.
       this.clearResumeToken();
+      this.updateConsent(false, null);
       this.setReconnecting(false);
-      this.showError('This quiz was continued in another tab or window.');
+      this.showError(t('connection.superseded'));
       return;
     }
 
     if (!this.resumeToken) {
       this.setReconnecting(false);
-      this.showError('Connection lost. Please refresh the page.');
+      this.showError(t('connection.lost'));
       return;
     }
 
@@ -255,6 +279,69 @@ class QuizClient {
       content.classList.toggle('content--stale', on);
       content.inert = on;
     }
+    // A consent change cannot be sent while the socket is down.
+    this.renderConsentStatus();
+  }
+
+  /**
+   * Record what the server says about consent and show it.
+   *
+   * @param {boolean} recordsNamedResults Whether this quiz asks at all.
+   * @param {boolean|null} consent The participant's choice, as recorded.
+   */
+  updateConsent(recordsNamedResults, consent) {
+    this.recordsNamedResults = recordsNamedResults === true;
+    this.consent = this.recordsNamedResults && consent !== null ? consent === true : null;
+    this.consentPending = false;
+    this.renderConsentStatus();
+  }
+
+  /**
+   * Show the participant what they chose about being named in the lecturer's
+   * export, and -- until the quiz ends -- let them change it. Withdrawing has
+   * to be as easy as agreeing.
+   *
+   * Only ever shows what the server confirmed: a click sends `set_consent`
+   * and the text changes on `consent_updated`, not before.
+   */
+  renderConsentStatus() {
+    const box = document.getElementById('consent-status');
+    if (!box) return;
+    if (!this.recordsNamedResults || this.consent === null) {
+      box.hidden = true;
+      box.replaceChildren();
+      return;
+    }
+
+    const final = this.state === 'ended';
+    const text = document.createElement('span');
+    text.className = 'consent-status__text';
+    if (final) {
+      text.textContent = t(this.consent ? 'consent.wereIncluded' : 'consent.wasNotRecorded');
+    } else {
+      text.textContent = t(this.consent ? 'consent.willBeIncluded' : 'consent.willNotBeRecorded');
+    }
+    box.replaceChildren(text);
+    box.classList.toggle('consent-status--given', this.consent);
+
+    if (!final) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.id = 'consent-toggle';
+      button.className = 'btn btn--secondary consent-status__toggle';
+      button.textContent = t(this.consent ? 'consent.withdraw' : 'consent.give');
+      button.disabled = this.consentPending || this.reconnecting;
+      button.addEventListener('click', () => this.requestConsent(!this.consent));
+      box.append(button);
+    }
+    box.hidden = false;
+  }
+
+  requestConsent(consent) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.consentPending = true;
+    this.renderConsentStatus();
+    this.ws.send(JSON.stringify({ type: 'set_consent', consent }));
   }
 
   /** A short message above the content that outlives the next render. */
@@ -310,18 +397,24 @@ class QuizClient {
     const content = document.getElementById('content');
     const inProgress = status && status.state !== 'lobby';
     const missed = inProgress ? Math.max(0, status.currentQuestionIndex) : 0;
+    // Only when the quiz's author opted in. Never pre-ticked: consent is
+    // something the student gives, not something they have to undo.
+    const offerConsent = !!(status && status.recordsNamedResults === true);
 
     content.innerHTML = `
       <div id="room-state" class="room-state"></div>
       <form id="join-form">
-        <input type="text" id="name" class="input" placeholder="Enter your name" maxlength="50" required>
+        <input type="text" id="name" class="input" placeholder="${html('join.namePlaceholder')}" maxlength="50" required>
+        ${offerConsent ? `
+        <label class="consent-option" for="consent">
+          <input type="checkbox" id="consent" class="consent-option__box">
+          <span>${html('consent.label')}</span>
+        </label>` : ''}
         <button type="submit" class="btn btn--primary btn--full" id="join-btn"></button>
         <div id="name-error" class="error-text" style="display:none;margin-top:0.5rem;color:var(--error-color)"></div>
       </form>
       <p class="join-privacy" id="join-privacy">
-        So that you can carry on with your score if your connection drops, this
-        tab keeps a random session key. Nothing else is stored, and the key is
-        deleted when the quiz ends or the tab is closed.
+        ${html('privacy.join')}${offerConsent ? ` ${html('privacy.joinConsent')}` : ''}
       </p>
     `;
 
@@ -335,22 +428,23 @@ class QuizClient {
       stateEl.append(title);
     }
 
-    this.setHeading(inProgress ? 'Quiz in progress' : 'Join Quiz');
+    this.setHeading(t(inProgress ? 'join.headingInProgress' : 'join.heading'));
 
     const detail = document.createElement('div');
     detail.className = inProgress ? 'room-state__detail room-state__detail--live' : 'room-state__detail';
     if (inProgress) {
-      detail.textContent =
-        `Question ${Math.min(status.currentQuestionIndex + 1, status.totalQuestions)} of ${status.totalQuestions}` +
-        (missed > 0
-          ? ` — you have missed ${missed} question${missed === 1 ? '' : 's'} and cannot score on those.`
-          : '.');
+      const progress = {
+        current: Math.min(status.currentQuestionIndex + 1, status.totalQuestions),
+        total: status.totalQuestions,
+        count: missed
+      };
+      detail.textContent = t(missed > 0 ? 'join.progressMissed' : 'join.progress', progress);
     } else {
-      detail.textContent = 'Waiting for the quiz to start.';
+      detail.textContent = t('join.waitingForStart');
     }
     if (status) stateEl.append(detail);
 
-    document.getElementById('join-btn').textContent = inProgress ? 'Join now' : 'Join Quiz';
+    document.getElementById('join-btn').textContent = t(inProgress ? 'join.buttonInProgress' : 'join.button');
 
     document.getElementById('join-form').addEventListener('submit', (e) => {
       e.preventDefault();
@@ -360,26 +454,28 @@ class QuizClient {
 
       const validation = QuizClient.validateName(name);
       if (!validation.valid) {
-        errorEl.textContent = validation.error;
+        errorEl.textContent = t(`error.${validation.code}`, validation.params);
         errorEl.style.display = 'block';
         return;
       }
 
       errorEl.style.display = 'none';
-      this.join(validation.name);
+      const consentBox = document.getElementById('consent');
+      this.join(validation.name, !!(consentBox && consentBox.checked));
     });
   }
 
-  join(name) {
+  join(name, consent = false) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      this.showError('Connection lost. Please refresh the page.');
+      this.showError(t('connection.lost'));
       return;
     }
     this.ws.send(JSON.stringify({
       type: 'join_room',
       protocolVersion: PROTOCOL_VERSION,
       roomId: this.roomId,
-      name: name
+      name: name,
+      consent: consent
     }));
   }
 
@@ -409,13 +505,10 @@ class QuizClient {
     }
     if (missed.length === 0) return;
 
-    const list = missed.length === 1
-      ? `Question ${missed[0]}`
-      : `Questions ${missed.slice(0, -1).join(', ')} and ${missed[missed.length - 1]}`;
-    this.showNotice(
-      `${list} closed while you were reconnecting, so ` +
-      `${missed.length === 1 ? 'it scores' : 'they score'} nothing for you.`
-    );
+    this.showNotice(t('connection.missedQuestions', {
+      list: i18n.formatList(missed),
+      count: missed.length
+    }));
   }
 
   handleMessage(msg) {
@@ -428,7 +521,11 @@ class QuizClient {
           this.roomId = msg.roomId;
           if (typeof msg.practiceQuizId === 'string') this.practiceQuizId = msg.practiceQuizId;
           this.enterPracticeMode();
-          const params = new URLSearchParams({ practice: this.practiceQuizId, room: this.roomId });
+          const params = new URLSearchParams({
+            practice: this.practiceQuizId,
+            room: this.roomId,
+            ...i18n.langParam()
+          });
           history.replaceState(null, '', `${window.location.pathname}?${params}`);
         }
         this.participantId = msg.participantId;
@@ -442,10 +539,11 @@ class QuizClient {
         if (msg.quizTitle) this.quizTitle = msg.quizTitle;
         // Past the join screen the heading has no business still reading
         // "Join Quiz" -- from here on it names the quiz being played.
-        this.setHeading(this.quizTitle || 'Quiz');
+        this.setHeading(this.quizTitle || t('quiz.fallbackTitle'));
         this.showNotice(null);
+        this.updateConsent(msg.recordsNamedResults, msg.consent);
         // A practice game starts at once; its first question follows.
-        this.renderWaiting(this.practice ? 'Starting...' : undefined);
+        this.renderWaiting(this.practice ? t('status.starting') : undefined);
         break;
 
       case 'rejoined':
@@ -455,12 +553,15 @@ class QuizClient {
         this.participantId = msg.participantId;
         if (msg.practice) this.enterPracticeMode();
         if (msg.quizTitle) this.quizTitle = msg.quizTitle;
-        this.setHeading(this.quizTitle || 'Quiz');
+        this.setHeading(this.quizTitle || t('quiz.fallbackTitle'));
         this.rejoinContext = {
           previousIndex: this.questionIndex,
           previousOpen: this.state === 'question',
           answered: new Set(Array.isArray(msg.answeredQuestions) ? msg.answeredQuestions : [])
         };
+        // Back from the server, so a reload shows the choice again. On an
+        // ended quiz the game_ended that follows turns it final.
+        this.updateConsent(msg.recordsNamedResults, msg.consent);
         if (msg.state === 'lobby') {
           this.rejoinContext = null;
           this.state = 'joined';
@@ -482,14 +583,15 @@ class QuizClient {
         this.questionIndex = null;
         this.answerSubmitted = false;
         this.rejoinContext = null;
+        this.updateConsent(false, null);
         this.setReconnecting(false);
         this.state = 'join';
         if (this.practiceQuizId) {
           // Nothing to fall back to: a practice game cannot be joined.
-          this.renderPracticeProblem('This practice game has expired.', true);
+          this.renderPracticeProblem(t('practice.expired'), true);
           break;
         }
-        this.showNotice(msg.message || 'Your previous session has expired. Please join again.');
+        this.showNotice(t('error.rejoin_failed'));
         this.renderConnecting();
         this.ws.send(JSON.stringify({
           type: 'room_status',
@@ -515,7 +617,7 @@ class QuizClient {
           // Answered, dropped, came back: the server would refuse a second
           // answer, so the question must not be offered again.
           this.answerSubmitted = true;
-          this.renderWaiting('Answer submitted! Waiting for results...');
+          this.renderWaiting(t('status.answerSubmittedWaiting'));
           break;
         }
         if (sameQuestion && !this.answerSubmitted && document.getElementById('question-text')) {
@@ -524,7 +626,7 @@ class QuizClient {
           break;
         }
         if (answerWasLost) {
-          this.showNotice('Your answer did not reach the server before the connection dropped. Please answer again.');
+          this.showNotice(t('connection.answerLost'));
         }
         this.answerSubmitted = false;
         this.renderQuestion(msg.question, msg.questionIndex, msg.totalQuestions, msg.startTime);
@@ -551,6 +653,9 @@ class QuizClient {
         this.rejoinContext = null;
         // Nothing left to come back to.
         this.clearResumeToken();
+        // The choice is final now; say what it was, without the button.
+        this.consentPending = false;
+        this.renderConsentStatus();
         if (this.practice) {
           this.renderPracticeFinal(msg.summary);
         } else {
@@ -561,15 +666,20 @@ class QuizClient {
       case 'answer_accepted':
         // Ignore if results are already shown (e.g., question auto-ended)
         if (this.state !== 'results' && this.state !== 'ended') {
-          this.renderWaiting('Answer submitted! Waiting for results...');
+          this.renderWaiting(t('status.answerSubmittedWaiting'));
         }
+        break;
+
+      case 'consent_updated':
+        this.updateConsent(this.recordsNamedResults, msg.consent === true);
         break;
 
       case 'kicked':
         this.state = 'kicked';
         this.clearResumeToken();
+        this.updateConsent(false, null);
         this.setReconnecting(false);
-        this.showError('You have been removed from the quiz');
+        this.showError(t('join.kicked'));
         break;
 
       case 'room_status':
@@ -582,7 +692,16 @@ class QuizClient {
           this.state = 'fatal';
           clearTimeout(this.reconnectTimer);
           this.setReconnecting(false);
-          this.showError(msg.message);
+          this.showError(t('error.protocol_mismatch', { version: PROTOCOL_VERSION }));
+          break;
+        }
+        // A refused consent change (the quiz has just ended, say) belongs in
+        // the notice: wiping the screen for it would cost the student the
+        // final results they are looking at.
+        if (this.consentPending) {
+          this.consentPending = false;
+          this.showNotice(this.serverMessage(msg));
+          this.renderConsentStatus();
           break;
         }
         // While coming back -- "Too many connections" as a whole hall
@@ -595,7 +714,7 @@ class QuizClient {
         // server. The way on is the list, not this page.
         if (this.practiceQuizId && !this.participantId) {
           this.state = 'fatal';
-          this.renderPracticeProblem(msg.message, false);
+          this.renderPracticeProblem(this.serverMessage(msg), false);
           break;
         }
         // Before joining, an error belongs next to the form -- the student can
@@ -603,24 +722,34 @@ class QuizClient {
         if (this.state === 'join') {
           const errorEl = document.getElementById('name-error');
           if (errorEl) {
-            errorEl.textContent = msg.message;
+            errorEl.textContent = this.serverMessage(msg);
             errorEl.style.display = 'block';
             break;
           }
         }
-        this.showError(msg.message);
+        this.showError(this.serverMessage(msg));
         break;
     }
   }
 
-  renderWaiting(message = 'Waiting for the quiz to start...') {
+  /**
+   * A server error in this page's language: by its `code` where the resource
+   * files know it, else the server's own English text.
+   */
+  serverMessage(msg) {
+    const key = `error.${msg.code}`;
+    return msg.code && i18n.has(key) ? t(key, msg.params || {}) : msg.message;
+  }
+
+  renderWaiting(message = t('status.waitingForStart')) {
     const content = document.getElementById('content');
     content.innerHTML = `
       <div class="waiting">
         <div class="spinner"></div>
-        <p>${message}</p>
+        <p></p>
       </div>
     `;
+    content.querySelector('p').textContent = message;
   }
 
   renderQuestion(question, index, total, startTime) {
@@ -642,20 +771,33 @@ class QuizClient {
             <div class="option" data-index="${i}">${opt}</div>
           `).join('')}
         </div>
-        <button class="btn btn--primary btn--full" id="submit-btn" style="margin-top:1rem">Submit</button>
+        <button class="btn btn--primary btn--full" id="submit-btn" style="margin-top:1rem">${html('question.submit')}</button>
       `;
     } else if (question.type === 'estimation') {
       inputHtml = `
         <form id="answer-form">
-          <input type="number" id="answer" class="input" placeholder="Your estimate" step="any" required>
-          <button type="submit" class="btn btn--primary btn--full">Submit</button>
+          <input type="number" id="answer" class="input" placeholder="${html('question.estimatePlaceholder')}" step="any" required>
+          <button type="submit" class="btn btn--primary btn--full">${html('question.submit')}</button>
+        </form>
+      `;
+    } else if (question.type === 'short-answer') {
+      // A term, typed as the lecture spells it: autocorrect would "fix" it.
+      // No maxlength attribute -- that counts the raw input, spaces included;
+      // the limit is checked as the server measures it, below.
+      inputHtml = `
+        <form id="answer-form">
+          <input type="text" id="answer" class="input" placeholder="${html('question.termPlaceholder')}"
+            autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+            aria-describedby="answer-length" required>
+          <p class="answer-length" id="answer-length" aria-live="polite"></p>
+          <button type="submit" class="btn btn--primary btn--full" id="submit-btn">${html('question.submit')}</button>
         </form>
       `;
     }
 
     content.innerHTML = `
       <div class="question">
-        <div class="question__counter">Question ${index + 1} of ${total}</div>
+        <div class="question__counter">${html('question.counter', { current: index + 1, total })}</div>
         ${timerHtml}
         <div class="question__text" id="question-text">${question.text}</div>
         ${inputHtml}
@@ -704,6 +846,30 @@ class QuizClient {
         if (isNaN(answer)) return;
         this.submitAnswer(answer);
       });
+    } else if (question.type === 'short-answer') {
+      const input = document.getElementById('answer');
+      const hint = document.getElementById('answer-length');
+      const submitBtn = document.getElementById('submit-btn');
+      const expected = expectedLengthText(question.answerLength);
+      const maxLength = Number.isInteger(question.maxLength) && question.maxLength > 0 ? question.maxLength : null;
+
+      // measuredLength() is the server's own measure (see short-answer.js),
+      // so an answer this page lets through is never refused for its length.
+      const fits = () => {
+        const tooLong = maxLength !== null && measuredLength(input.value) > maxLength;
+        hint.textContent = tooLong ? t('question.answerTooLong') : expected;
+        hint.classList.toggle('answer-length--exceeded', tooLong);
+        submitBtn.disabled = tooLong;
+        return !tooLong;
+      };
+      fits();
+      input.addEventListener('input', fits);
+      document.getElementById('answer-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const answer = input.value.trim();
+        if (answer === '' || !fits()) return;
+        this.submitAnswer(answer);
+      });
     }
   }
 
@@ -722,11 +888,11 @@ class QuizClient {
 
     content.innerHTML = `
       <div class="results">
-        <div class="question__counter">Results - Question ${questionIndex + 1}</div>
+        <div class="question__counter">${html('results.counter', { number: questionIndex + 1 })}</div>
         ${this.renderFeedback(feedback)}
-        <div class="my-stats">Your rank: ${myRank} | Score: ${myEntry ? myEntry.score : 0}</div>
+        <div class="my-stats">${html('results.rankAndScore', { rank: myRank, score: myEntry ? Number(myEntry.score) : 0 })}</div>
         <div class="leaderboard">${listHtml}</div>
-        <p class="waiting-text">${waiting ? 'Waiting for next question...' : 'Quiz complete!'}</p>
+        <p class="waiting-text">${html(waiting ? 'results.waitingForNext' : 'results.complete')}</p>
       </div>
     `;
   }
@@ -742,7 +908,7 @@ class QuizClient {
     if (!feedback || !feedback.question) return '';
     const question = feedback.question;
     let detailHtml = '';
-    let verdict = 'You did not answer this question.';
+    let verdict = t('feedback.notAnswered');
     let verdictClass = 'feedback__verdict--none';
 
     if (question.type === 'multiple-choice') {
@@ -755,15 +921,15 @@ class QuizClient {
         </div>
       `;
       if (feedback.answered) {
-        verdict = feedback.isCorrect ? 'Correct!' : 'Not quite.';
+        verdict = t(feedback.isCorrect ? 'feedback.correct' : 'feedback.wrong');
         verdictClass = feedback.isCorrect ? 'feedback__verdict--correct' : 'feedback__verdict--wrong';
       }
     } else if (question.type === 'estimation') {
       if (feedback.answered) {
         const answer = Number(feedback.answer);
         detailHtml = `
-          <div class="feedback__estimate">Your answer: <strong>${
-            Number.isFinite(answer) ? answer.toLocaleString() : '-'
+          <div class="feedback__estimate">${html('feedback.yourAnswer')} <strong>${
+            Number.isFinite(answer) ? i18n.formatNumber(answer) : '-'
           }</strong></div>
         `;
       }
@@ -771,22 +937,42 @@ class QuizClient {
         // A practice estimate is scored by how far off it is, in bands; the
         // verdict names the band, never the distance or the direction.
         const points = Number(feedback.points) || 0;
-        const band = PRACTICE_BAND_VERDICTS[feedback.band];
-        verdict = band ? `${band}: ${points} points` : 'More than 50 % off: no points';
+        const band = PRACTICE_BANDS.has(feedback.band);
+        verdict = band
+          ? t('feedback.bandPoints', { band: t(`feedback.band.${feedback.band}`), count: points })
+          : t('feedback.bandMissed');
         verdictClass = feedback.band === 10 ? 'feedback__verdict--correct'
           : band ? 'feedback__verdict--partial' : 'feedback__verdict--wrong';
       } else if (feedback.answered) {
         const rank = Number(feedback.rank);
         const count = Number(feedback.answerCount);
         if (Number.isInteger(rank) && rank > 0 && Number.isInteger(count)) {
-          if (count === 1) verdict = 'Yours was the only estimate.';
-          else if (rank === 1) verdict = `Closest of all ${count} estimates!`;
-          else verdict = `#${rank} closest of ${count} estimates`;
-          // The top three score (see Room.scoreQuestion()).
+          if (count === 1) verdict = t('feedback.onlyEstimate');
+          else if (rank === 1) verdict = t('feedback.closest', { count });
+          else verdict = t('feedback.rank', { rank, count });
+          // Places 1 to 3 score; equally close estimates share a place and
+          // skip the ones after it (see Room.scoreQuestion()).
           verdictClass = rank <= 3 ? 'feedback__verdict--correct' : 'feedback__verdict--wrong';
         } else {
-          verdict = 'Your answer was recorded.';
+          verdict = t('feedback.recorded');
         }
+      }
+    } else if (question.type === 'short-answer') {
+      // The participant's own text: escaped, like every other participant
+      // input on this page.
+      if (feedback.answered && typeof feedback.answer === 'string') {
+        detailHtml = `
+          <div class="feedback__answer">${html('feedback.yourAnswer')} <strong>${this.escapeHtml(feedback.answer)}</strong></div>
+        `;
+      }
+      if (feedback.answered) {
+        verdict = t(feedback.isCorrect ? 'feedback.correct' : 'feedback.wrong');
+        verdictClass = feedback.isCorrect ? 'feedback__verdict--correct' : 'feedback__verdict--wrong';
+      }
+      // The presenter counted it as right after all; the results arrive
+      // again, and without this the verdict would just flip.
+      if (feedback.answered && feedback.isCorrect && feedback.acceptedByPresenter === true) {
+        verdict = t('feedback.acceptedByPresenter');
       }
     }
 
@@ -807,20 +993,22 @@ class QuizClient {
   renderPracticeResults(msg) {
     const content = document.getElementById('content');
     const myEntry = (msg.leaderboard || []).find(e => e.id === this.participantId);
-    const total = Number.isInteger(this.totalQuestions) ? ` of ${this.totalQuestions}` : '';
+    const counter = Number.isInteger(this.totalQuestions)
+      ? html('results.counterOfTotal', { number: msg.questionIndex + 1, total: this.totalQuestions })
+      : html('results.counter', { number: msg.questionIndex + 1 });
 
     content.innerHTML = `
       <div class="results">
-        <div class="question__counter">Results - Question ${msg.questionIndex + 1}${total}</div>
+        <div class="question__counter">${counter}</div>
         ${this.renderFeedback(msg.feedback)}
-        <div class="my-stats">Score: ${myEntry ? Number(myEntry.score) : 0}</div>
+        <div class="my-stats">${html('results.score', { score: myEntry ? Number(myEntry.score) : 0 })}</div>
         <p class="practice-countdown" id="practice-countdown" aria-live="off"></p>
         <button type="button" class="btn btn--primary btn--full" id="practice-next-btn"></button>
       </div>
     `;
 
     const button = document.getElementById('practice-next-btn');
-    button.textContent = msg.waiting ? 'Next question' : 'Show final score';
+    button.textContent = t(msg.waiting ? 'practice.nextQuestion' : 'practice.showFinalScore');
     button.addEventListener('click', () => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
       button.disabled = true;
@@ -831,7 +1019,7 @@ class QuizClient {
     const remainingMs = Number(msg.advanceInMs);
     if (!Number.isFinite(remainingMs)) return;
     const deadline = Date.now() + remainingMs;
-    const label = msg.waiting ? 'Next question in' : 'Final score in';
+    const label = msg.waiting ? 'practice.nextQuestionIn' : 'practice.finalScoreIn';
     const tick = () => {
       // The next render replaces this element; the interval goes with it.
       if (!countdown.isConnected) {
@@ -839,7 +1027,7 @@ class QuizClient {
         return;
       }
       const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
-      countdown.textContent = `${label} ${seconds} s`;
+      countdown.textContent = t(label, { seconds });
     };
     const interval = setInterval(tick, 250);
     tick();
@@ -855,9 +1043,9 @@ class QuizClient {
 
     content.innerHTML = `
       <div class="results">
-        <h2>Final Results</h2>
-        <div class="practice-summary__score">${score} <span>of ${maxScore} points</span></div>
-        <div class="my-stats">${correct} of ${total} question${total === 1 ? '' : 's'} answered correctly</div>
+        <h2>${html('results.finalHeading')}</h2>
+        <div class="practice-summary__score">${i18n.formatNumber(score)} <span>${html('practice.ofPoints', { count: maxScore })}</span></div>
+        <div class="my-stats">${html('practice.answeredCorrectly', { correct, count: total })}</div>
         <div class="practice-actions" id="practice-actions"></div>
       </div>
     `;
@@ -886,14 +1074,18 @@ class QuizClient {
     if (offerRestart && this.practiceQuizId) {
       const again = document.createElement('a');
       again.className = 'btn btn--primary btn--full';
-      again.href = `${window.location.pathname}?${new URLSearchParams({ practice: this.practiceQuizId })}`;
-      again.textContent = 'Play again';
+      again.href = `${window.location.pathname}?${new URLSearchParams({
+        practice: this.practiceQuizId,
+        ...i18n.langParam()
+      })}`;
+      again.textContent = t('practice.playAgain');
       container.append(again);
     }
     const list = document.createElement('a');
     list.className = 'btn btn--secondary btn--full';
-    list.href = PRACTICE_LIST_URL;
-    list.textContent = 'All practice quizzes';
+    const langQuery = new URLSearchParams(i18n.langParam()).toString();
+    list.href = langQuery ? `${PRACTICE_LIST_URL}?${langQuery}` : PRACTICE_LIST_URL;
+    list.textContent = t('practice.allQuizzes');
     container.append(list);
   }
 
@@ -912,10 +1104,10 @@ class QuizClient {
 
     content.innerHTML = `
       <div class="results">
-        <h2>Final Results</h2>
-        <div class="my-stats">Your rank: ${myRank} | Score: ${myEntry ? myEntry.score : 0}</div>
+        <h2>${html('results.finalHeading')}</h2>
+        <div class="my-stats">${html('results.rankAndScore', { rank: myRank, score: myEntry ? Number(myEntry.score) : 0 })}</div>
         <div class="leaderboard">${listHtml}</div>
-        <p class="waiting-text">Thank you for participating!</p>
+        <p class="waiting-text">${html('results.thanks')}</p>
       </div>
     `;
   }
@@ -930,7 +1122,7 @@ class QuizClient {
       // answer never arrived, the rejoin's `alreadyAnswered: false` says so
       // and the question is offered again.
       this.answerSubmitted = true;
-      this.renderWaiting('Answer submitted!');
+      this.renderWaiting(t('status.answerSubmitted'));
     }
   }
 

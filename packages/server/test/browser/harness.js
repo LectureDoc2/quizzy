@@ -34,9 +34,19 @@ export const LD_QUIZ_ROOT = join(
   dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'ld-quiz', 'src'
 );
 
+/**
+ * The server's own modules that the pages share with it (short-answer.js),
+ * imported as ../../src/ from /js/. Inlined by esbuild in production, like the
+ * protocol.
+ */
+export const SERVER_SRC_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src');
+
 const CONTENT_TYPES = {
   '.html': 'text/html',
   '.js': 'text/javascript',
+  // The locale files, imported as JSON modules: the browser refuses one
+  // served as anything else. In production esbuild inlines them.
+  '.json': 'application/json',
   '.css': 'text/css',
   '.woff2': 'font/woff2',
   '.woff': 'font/woff',
@@ -76,6 +86,9 @@ export async function startStaticServer(backendPort = null) {
       // walked the relative specifier up out of the component directory.
       root = LD_QUIZ_ROOT;
       path = path.slice('/ld-quiz/src'.length);
+    } else if (path.startsWith('/src/')) {
+      root = SERVER_SRC_ROOT;
+      path = path.slice('/src'.length);
     }
     try {
       const body = readFileSync(join(root, path));
@@ -134,6 +147,20 @@ export async function startStaticServer(backendPort = null) {
       await new Promise((resolve) => server.close(resolve));
     }
   };
+}
+
+/**
+ * A new page, in English unless `locale` says otherwise.
+ *
+ * Pinned because Playwright otherwise gives the page the machine's own locale,
+ * and the participant pages speak the browser's language: on a computer set
+ * to German, every assertion on English text would fail.
+ *
+ * @param {import('playwright').Browser} browser
+ * @param {import('playwright').BrowserContextOptions} [options]
+ */
+export function openPage(browser, { locale = 'en-US', ...options } = {}) {
+  return browser.newPage({ locale, ...options });
 }
 
 /**

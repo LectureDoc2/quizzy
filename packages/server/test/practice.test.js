@@ -11,6 +11,10 @@ import assert from 'node:assert';
 import { WebSocket } from 'ws';
 import { createQuizServer, GENERIC_REJECTION, PRACTICE_UNAVAILABLE } from '../src/server.js';
 import { buildPracticeCatalog } from '../src/practice-catalog.js';
+import { PracticeStats } from '../src/practice-stats.js';
+// In-process: these tests are about practice games, not rendering, and build
+// a catalog before every test. render-sandbox.test.js covers the sandbox.
+import { prepareQuiz } from '../src/quiz-pipeline.js';
 import { PROTOCOL_VERSION } from '../../ld-quiz/src/protocol.js';
 import { loopbackHost, originFor } from './loopback.js';
 
@@ -38,14 +42,14 @@ const QUIZZES = {
 };
 
 /** A catalog whose results screens last `resultsSeconds`. */
-function catalog(resultsSeconds) {
-  return buildPracticeCatalog({
+async function catalog(resultsSeconds) {
+  return (await buildPracticeCatalog({
     resultsSeconds,
     quizzes: [
       { id: 'two', category: 'Tests', file: 'two.json', description: 'Two of them' },
       { id: 'timed', file: 'timed.json' }
     ]
-  }, (file) => QUIZZES[file]).catalog;
+  }, (file) => QUIZZES[file], { prepareQuiz })).catalog;
 }
 
 const SHORT = 0.08;
@@ -56,11 +60,13 @@ describe('Practice mode (server, real sockets)', () => {
   let port;
   const host = loopbackHost();
   const sockets = [];
+  const practiceStats = new PracticeStats();
 
   before(async () => {
     quizServer = createQuizServer({
       limits: { maxPracticeGamesPerIp: 3, maxRoomsPerIp: 1 },
-      heartbeatIntervalMs: 60_000
+      heartbeatIntervalMs: 60_000,
+      practiceStats
     });
     port = await quizServer.listen(0, host);
   });
@@ -72,11 +78,20 @@ describe('Practice mode (server, real sockets)', () => {
     await quizServer.close();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     for (const roomId of [...quizServer.roomManager.rooms.keys()]) {
       quizServer.roomManager.removeRoom(roomId);
     }
-    quizServer.setPracticeCatalog(catalog(SHORT));
+    // After the rooms: removing an unfinished game counts it as abandoned.
+    practiceStats.games = {};
+    practiceStats.questions = {};
+    quizServer.setPracticeCatalog(await catalog(SHORT));
+  });
+
+  /** Today's statistics for a quiz. */
+  const counted = (quizId) => ({
+    games: Object.values(practiceStats.games)[0]?.[quizId],
+    questions: Object.values(practiceStats.questions)[0]?.[quizId]
   });
 
   /** Open a socket that buffers everything it receives; see server.test.js. */
@@ -185,7 +200,7 @@ describe('Practice mode (server, real sockets)', () => {
   });
 
   it('lets the student skip the rest of the countdown', async () => {
-    quizServer.setPracticeCatalog(catalog(LONG));
+    quizServer.setPracticeCatalog(await catalog(LONG));
     const { ws } = await startPractice();
     send(ws, { type: 'submit_answer', answer: [1] });
     const results = await waitFor(ws, 'results');
@@ -202,15 +217,15 @@ describe('Practice mode (server, real sockets)', () => {
   });
 
   it('keeps the countdown a game started with when the catalog is reloaded', async () => {
-    quizServer.setPracticeCatalog(catalog(LONG));
+    quizServer.setPracticeCatalog(await catalog(LONG));
     const { ws } = await startPractice();
-    quizServer.setPracticeCatalog(catalog(SHORT));
+    quizServer.setPracticeCatalog(await catalog(SHORT));
     send(ws, { type: 'submit_answer', answer: [1] });
     assert.ok((await waitFor(ws, 'results')).advanceInMs > (LONG - 5) * 1000);
   });
 
   it('waits on the results screen while the student is away, and resumes on rejoin', async () => {
-    quizServer.setPracticeCatalog(catalog(0.3));
+    quizServer.setPracticeCatalog(await catalog(0.3));
     const { ws, joined, room } = await startPractice();
     send(ws, { type: 'submit_answer', answer: [0, 2] });
     await waitFor(ws, 'results');
@@ -301,5 +316,50 @@ describe('Practice mode (server, real sockets)', () => {
     assert.strictEqual(quizServer.roomManager.getRoom(joined.roomId), undefined);
     const state = [...quizServer.ipState.values()][0];
     assert.strictEqual(state?.practiceGames ?? 0, 0);
+  });
+
+  it('counts a finished game, its score band and each question into the statistics', async () => {
+    const { ws } = await startPractice();
+    send(ws, { type: 'submit_answer', answer: [0, 2] });
+    await waitFor(ws, 'question');
+    send(ws, { type: 'submit_answer', answer: 100 });
+    await waitFor(ws, 'game_ended');
+    // Removed at once when its student leaves, but it was finished, not abandoned.
+    ws.close();
+    await sleep(100);
+
+    const { games, questions } = counted('two');
+    assert.deepStrictEqual(games, {
+      title: 'Two Questions', started: 1, finished: 1, abandoned: 0, scoreBands: [0, 0, 0, 1]
+    });
+    assert.deepStrictEqual(questions, [
+      { index: 0, text: 'Which?', shown: 1, answered: 1, correct: 1 },
+      { index: 1, text: 'How many?', shown: 1, answered: 1, correct: 0 }
+    ]);
+  });
+
+  it('counts a question nobody answered as shown, not answered', async () => {
+    const { ws } = await startPractice('timed');
+    await waitFor(ws, 'game_ended');
+    const { games, questions } = counted('timed');
+    assert.deepStrictEqual(questions, [{ index: 0, text: 'Quick!', shown: 1, answered: 0, correct: 0 }]);
+    assert.deepStrictEqual(games.scoreBands, [1, 0, 0, 0]);
+  });
+
+  it('counts a game whose student never came back as abandoned', async () => {
+    const { ws, joined } = await startPractice();
+    ws.terminate();
+    await sleep(100);
+    // Long after the resume token has expired.
+    quizServer.roomManager.sweep(Date.now() + 24 * 60 * 60 * 1000);
+    assert.strictEqual(quizServer.roomManager.getRoom(joined.roomId), undefined);
+    assert.deepStrictEqual(counted('two').games, {
+      title: 'Two Questions', started: 1, finished: 0, abandoned: 1, scoreBands: [0, 0, 0, 0]
+    });
+  });
+
+  it('never lists what the statistics are kept under', () => {
+    const listed = JSON.stringify(quizServer.practiceCatalog.publicList());
+    assert.ok(!listed.includes('questionLabels') && !listed.includes('Which?'));
   });
 });

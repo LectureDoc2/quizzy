@@ -6,6 +6,8 @@
 #   BACKEND_HOST    Host of the Node backend (default: localhost)
 #   BACKEND_PORT    Port of the Node backend (default: 3000)
 #   TLS_CONFIG      Path to a TLS snippet file (default: caddy/tls-auto.txt)
+#   CADDY_ADMIN     Address of Caddy's admin API (default: localhost:2019).
+#                   Production sets unix//run/caddy/admin.sock; see DEPLOY.md §10c.
 #
 # IPv6: an address literal must be bracketed, because the reverse_proxy targets
 # below append ":port". Setting BACKEND_HOST=::1 produces "::1:3000", which is
@@ -23,6 +25,10 @@
 	https_port {$HTTPS_PORT:443}
 	email michael.eichberg@dhbw.de
 	acme_ca https://certificates.dhbw.cloud/acme/directory
+	# The admin API can replace this whole configuration. On TCP it accepts
+	# that from every process on the machine, the backend included; in
+	# production it is a socket in a directory only caddy can enter.
+	admin {$CADDY_ADMIN:localhost:2019}
 }
 
 {$CADDY_HOST:localhost} {

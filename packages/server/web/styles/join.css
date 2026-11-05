@@ -69,9 +69,28 @@
     pointer-events: none;
   }
 
-  .feedback__estimate {
+  .feedback__estimate,
+  .feedback__answer {
     margin-top: var(--quiz-space-md);
     text-align: center;
+    overflow-wrap: anywhere;
+  }
+
+  /* The expected length of a short answer, under its input. Turns into a
+     warning once the answer is longer than any accepted one. */
+  .answer-length {
+    margin: calc(-1 * var(--quiz-space-xs)) 0 var(--quiz-space-sm);
+    font-size: 0.875rem;
+    color: var(--quiz-text-secondary);
+
+    &:empty {
+      display: none;
+    }
+  }
+
+  .answer-length--exceeded {
+    color: var(--quiz-danger-dark);
+    font-weight: 600;
   }
 
   .waiting-text {
@@ -130,6 +149,56 @@
     color: var(--quiz-text-secondary);
     margin-top: var(--quiz-space-md);
     text-align: center;
+  }
+
+  /* The optional consent to being named in the lecturer's export. Unticked
+     unless the student ticks it. */
+  .consent-option {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--quiz-space-xs);
+    font-size: 0.875rem;
+    color: var(--quiz-text);
+    margin-bottom: var(--quiz-space-sm);
+    cursor: pointer;
+  }
+
+  .consent-option__box {
+    flex: none;
+    width: 1.125rem;
+    height: 1.125rem;
+    margin: 0.125rem 0 0 0;
+    accent-color: var(--quiz-primary);
+  }
+
+  /* What the student chose, for the whole quiz. Outside #content, like the
+     notice, so no render wipes it. */
+  .consent-status {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--quiz-space-xs);
+    font-size: 0.875rem;
+    color: var(--quiz-text);
+    background: var(--quiz-surface-alt);
+    border: 1px solid var(--quiz-border);
+    border-radius: var(--quiz-radius-sm);
+    padding: var(--quiz-space-xs) var(--quiz-space-sm);
+    margin-bottom: var(--quiz-space-md);
+
+    &[hidden] {
+      display: none;
+    }
+  }
+
+  .consent-status--given {
+    border-color: var(--quiz-success);
+  }
+
+  .consent-status__toggle {
+    font-size: 0.875rem;
+    padding: 0.375rem var(--quiz-space-sm);
   }
 
   /* --- Practice mode ---------------------------------------------------- */

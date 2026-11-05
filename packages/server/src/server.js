@@ -3,8 +3,12 @@ import { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 import { pathToFileURL } from 'url';
 import { RoomManager } from './rooms.js';
-import { prepareQuiz } from './quiz-pipeline.js';
+import { matchOf } from './short-answer.js';
+// Not quiz-pipeline.js: KaTeX and highlight.js never run in this process. See
+// render-sandbox.js.
+import { createRenderSandbox, renderOptionsFromEnv } from './render-sandbox.js';
 import { loadPracticeCatalog, emptyPracticeCatalog, DEFAULT_PRACTICE_CATALOG_PATH } from './practice-catalog.js';
+import { openPracticeStats } from './practice-stats.js';
 import { validateName } from './name-validator.js';
 import { getServerAddresses } from './network-addresses.js';
 import { clientKey, parseForwardedFor, isLoopbackAddress, DEFAULT_IPV6_PREFIX_BITS } from './client-address.js';
@@ -164,6 +168,8 @@ function limitsFromEnv(env = process.env) {
 
 const ROOM_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
+// How much of a day's practice statistics a crash can cost; see practice-stats.js.
+const PRACTICE_STATS_FLUSH_INTERVAL_MS = 5 * 60 * 1000;
 
 /**
  * Build a quiz server without starting it.
@@ -188,6 +194,16 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
  *   deployment's catalog.
  * @param {number} [options.practiceResultsMs] Overrides the catalog's
  *   `resultsSeconds`, so that tests need not wait thirty seconds.
+ * @param {import('./practice-stats.js').PracticeStats} [options.practiceStats]
+ *   Where practice games are counted. None unless given, for the same reason
+ *   as the catalog: a test server must not count into the deployment's
+ *   statistics.
+ * @param {(quiz: unknown) => Promise<object>|object} [options.prepareQuiz]
+ *   Turns an uploaded quiz into a playable one. Defaults to a fresh render
+ *   sandbox (render-sandbox.js); the entry point passes the process-wide one.
+ *   Tests that are not about rendering may pass quiz-pipeline.js's in-process
+ *   function instead. Deliberately not configurable from the environment:
+ *   there is no switch that puts the renderers back into this process.
  */
 /**
  * How much to believe `X-Forwarded-For`, defaulting to the safe useful answer.
@@ -223,13 +239,15 @@ function createQuizServer(options = {}) {
     trustProxy = resolveTrustProxy(process.env.TRUST_PROXY),
     sweepIntervalMs = ROOM_SWEEP_INTERVAL_MS,
     ipv6PrefixBits = Number(process.env.IPV6_PREFIX_BITS) || DEFAULT_IPV6_PREFIX_BITS,
-    heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS
+    heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS,
+    prepareQuiz = createRenderSandbox().prepareQuiz
   } = options;
 
   // Replaced wholesale on reload (see setPracticeCatalog); running games keep
   // the quiz object they started with.
   let practiceCatalog = options.practiceCatalog || emptyPracticeCatalog();
   const practiceResultsMs = () => options.practiceResultsMs ?? practiceCatalog.resultsMs;
+  const practiceStats = options.practiceStats || null;
 
   const limits = { ...DEFAULT_LIMITS, ...(options.limits || {}) };
 
@@ -442,10 +460,14 @@ function createQuizServer(options = {}) {
     }
   }
 
-  function rejectAndMaybeClose(ws, message = GENERIC_REJECTION) {
-    ws.send(JSON.stringify({ type: 'error', message }));
+  /**
+   * @param {{code?: string, message: string}} [error] What to say. `code` lets
+   *   the join page show the message in the participant's language.
+   */
+  function rejectAndMaybeClose(ws, error = { code: 'session_unavailable', message: GENERIC_REJECTION }) {
+    ws.send(JSON.stringify({ type: 'error', ...error }));
     if (recordFailure(ws)) {
-      ws.send(JSON.stringify({ type: 'error', message: 'Too many attempts. Please wait a minute.' }));
+      ws.send(JSON.stringify({ type: 'error', code: 'rate_limited', message: 'Too many attempts. Please wait a minute.' }));
       ws.close();
     }
   }
@@ -460,7 +482,7 @@ function createQuizServer(options = {}) {
     const state = stateForKey(ws.clientKey);
     if (state.sockets >= limits.maxSocketsPerIp) {
       noteLimitHit('MAX_SOCKETS_PER_IP', limits.maxSocketsPerIp);
-      ws.send(JSON.stringify({ type: 'error', message: 'Too many connections. Please try again later.' }));
+      ws.send(JSON.stringify({ type: 'error', code: 'too_many_connections', message: 'Too many connections. Please try again later.' }));
       ws.close();
       return;
     }
@@ -523,6 +545,152 @@ function createQuizServer(options = {}) {
     }
   }
 
+  /** Give back a room slot reserved by openRoomOnce() that no room took. */
+  function releaseRoomSlot(key) {
+    const state = ipState.get(key);
+    if (!state) return;
+    state.rooms = Math.max(0, state.rooms - 1);
+    releaseKeyState(key);
+  }
+
+  /**
+   * presenterToken -> the room being opened for it, while its quiz renders.
+   *
+   * The presenter page re-sends `create_room` on every reconnect, and a deck
+   * with a flaky connection can do so several times before the first render
+   * is back. They all carry the same quiz (the token is derived from it), so
+   * they all wait for the same opening rather than each starting one -- and
+   * rather than each needing a room slot of its own.
+   */
+  const openingRooms = new Map();
+
+  /**
+   * Render the quiz and open its room, once per token however many sockets ask.
+   *
+   * The room slot is reserved before the render, not after: otherwise a client
+   * could have any number of renders in flight while it still "has" no rooms.
+   * The room is opened even if every socket that asked has gone by the time
+   * the render is back -- a presenter that reconnects resumes it, exactly as
+   * after any other disconnect, and the room TTLs clear it otherwise.
+   *
+   * @returns {{opening: Promise<{room: object, created: boolean, warnings: string[]} |
+   *   {errors: string[]} | {capacity: true}>, initiated: boolean}}
+   */
+  function openRoomOnce(presenterToken, quiz, creatorKey) {
+    const pending = openingRooms.get(presenterToken);
+    if (pending) return { opening: pending, initiated: false };
+
+    stateForKey(creatorKey).rooms++;
+    const opening = (async () => {
+      let prepared;
+      try {
+        // Validated, then code, markup and math -- in that order, in a worker
+        // process; see render-sandbox.js. The warnings go back to the presenter.
+        prepared = await prepareQuiz(quiz);
+      } catch (err) {
+        releaseRoomSlot(creatorKey);
+        throw err;
+      }
+      if (!prepared.valid) {
+        releaseRoomSlot(creatorKey);
+        return { errors: prepared.errors };
+      }
+
+      let opened;
+      try {
+        opened = roomManager.openRoom(presenterToken, prepared.quiz);
+      } catch {
+        releaseRoomSlot(creatorKey);
+        return { capacity: true };
+      }
+      if (opened.resumed) {
+        // Opened meanwhile by an earlier render of the same quiz; that room
+        // already counts against its creator.
+        releaseRoomSlot(creatorKey);
+        return { room: opened.room, created: false, warnings: [] };
+      }
+
+      opened.room.creatorKey = creatorKey;
+      if (prepared.warnings.length > 0) {
+        console.warn(`Quiz "${prepared.quiz.title}" needed changes before it could be shown:`);
+        for (const warning of prepared.warnings) console.warn(`  - ${warning}`);
+      }
+      return { room: opened.room, created: true, warnings: prepared.warnings };
+    })().finally(() => openingRooms.delete(presenterToken));
+
+    openingRooms.set(presenterToken, opening);
+    return { opening, initiated: true };
+  }
+
+  // Create-or-resume. The presenter page re-sends this on every reconnect,
+  // so it must be idempotent: see RoomManager.openRoom() and openRoomOnce().
+  async function handleCreateRoom(ws, msg) {
+    const { presenterToken, quiz } = msg;
+
+    if (typeof presenterToken !== 'string' || presenterToken.length < 32) {
+      rejectAndMaybeClose(ws, { message: 'Invalid presenter token.' });
+      return;
+    }
+
+    // Resuming: keep the room, its code, its participants and its scores.
+    // The quiz in the message is ignored -- the running room's copy wins.
+    let room = roomManager.openRoomIfPresent(presenterToken);
+    let resumed = room !== undefined;
+    let warnings = [];
+
+    if (!room) {
+      // Joining an opening already under way costs no slot; starting one does.
+      if (!openingRooms.has(presenterToken) && stateForKey(ws.clientKey).rooms >= limits.maxRoomsPerIp) {
+        noteLimitHit('MAX_ROOMS_PER_IP', limits.maxRoomsPerIp);
+        rejectAndMaybeClose(ws, { message: 'Too many open sessions from this address.' });
+        return;
+      }
+
+      const { opening, initiated } = openRoomOnce(presenterToken, quiz, ws.clientKey);
+      const outcome = await opening;
+
+      if (outcome.errors) {
+        safeSend(ws, {
+          type: 'error',
+          code: 'invalid_quiz',
+          message: 'The quiz was rejected:\n  ' + outcome.errors.join('\n  ')
+        });
+        return;
+      }
+      if (outcome.capacity) {
+        safeSend(ws, { type: 'error', code: 'server_at_capacity', message: 'The server is at capacity. Please try again later.' });
+        return;
+      }
+      // The presenter may have given up while the quiz was rendering; the
+      // room is there for them when they come back.
+      if (ws.readyState !== ws.OPEN) return;
+
+      room = outcome.room;
+      resumed = !(initiated && outcome.created);
+      if (!resumed) warnings = outcome.warnings;
+    }
+
+    room.addPresenter(ws);
+    ws.roomId = room.roomId;
+    ws.role = 'presenter';
+
+    room.onAutoEnd = (results) => announceResults(room, results);
+
+    safeSend(ws, {
+      type: 'room_created',
+      roomId: room.roomId,
+      quizTitle: room.quiz.title,
+      totalQuestions: room.quiz.questions.length,
+      warnings,
+      // Lets the presenter page say "reattached to RUNNING session" rather
+      // than pretending a fresh room was made.
+      resumed,
+      state: room.state,
+      currentQuestionIndex: room.currentQuestionIndex,
+      participantCount: room.getParticipantCount()
+    });
+  }
+
   function handleMessage(ws, data) {
     const dataSize = Buffer.byteLength(data);
     if (dataSize > MAX_QUIZ_SIZE) {
@@ -531,7 +699,7 @@ function createQuizServer(options = {}) {
     }
 
     if (!withinMessageRate(ws)) {
-      ws.send(JSON.stringify({ type: 'error', message: 'Too many messages. Slowing you down.' }));
+      ws.send(JSON.stringify({ type: 'error', code: 'too_many_messages', message: 'Too many messages. Slowing you down.' }));
       ws.close();
       return;
     }
@@ -555,83 +723,14 @@ function createQuizServer(options = {}) {
       }
 
       switch (msg.type) {
-        // Create-or-resume. The presenter page re-sends this on every reconnect,
-        // so it must be idempotent: see RoomManager.openRoom().
-        case 'create_room': {
-          const { presenterToken, quiz } = msg;
-
-          if (typeof presenterToken !== 'string' || presenterToken.length < 32) {
-            rejectAndMaybeClose(ws, 'Invalid presenter token.');
-            return;
-          }
-
-          const existing = roomManager.openRoomIfPresent(presenterToken);
-          let room;
-          let resumed;
-          let warnings = [];
-
-          if (existing) {
-            // Resuming: keep the room, its code, its participants and its scores.
-            // The quiz in the message is ignored -- the running room's copy wins.
-            room = existing;
-            resumed = true;
-          } else {
-            const ipLimits = stateForKey(ws.clientKey);
-            if (ipLimits.rooms >= limits.maxRoomsPerIp) {
-              noteLimitHit('MAX_ROOMS_PER_IP', limits.maxRoomsPerIp);
-              rejectAndMaybeClose(ws, 'Too many open sessions from this address.');
-              return;
-            }
-
-            // Validated, then code, markup and math -- in that order; see
-            // quiz-pipeline.js. The warnings go back to the presenter.
-            const prepared = prepareQuiz(quiz);
-            if (!prepared.valid) {
-              safeSend(ws, {
-                type: 'error',
-                code: 'invalid_quiz',
-                message: 'The quiz was rejected:\n  ' + prepared.errors.join('\n  ')
-              });
-              return;
-            }
-            warnings = prepared.warnings;
-            if (warnings.length > 0) {
-              console.warn(`Quiz "${prepared.quiz.title}" needed changes before it could be shown:`);
-              for (const warning of warnings) console.warn(`  - ${warning}`);
-            }
-
-            try {
-              ({ room } = roomManager.openRoom(presenterToken, prepared.quiz));
-            } catch {
-              ws.send(JSON.stringify({ type: 'error', message: 'The server is at capacity. Please try again later.' }));
-              return;
-            }
-            resumed = false;
-            ipLimits.rooms++;
-            room.creatorKey = ws.clientKey;
-          }
-
-          room.addPresenter(ws);
-          ws.roomId = room.roomId;
-          ws.role = 'presenter';
-
-          room.onAutoEnd = (results) => announceResults(room, results);
-        
-          ws.send(JSON.stringify({
-            type: 'room_created',
-            roomId: room.roomId,
-            quizTitle: room.quiz.title,
-            totalQuestions: room.quiz.questions.length,
-            warnings,
-            // Lets the presenter page say "reattached to RUNNING session" rather
-            // than pretending a fresh room was made.
-            resumed,
-            state: room.state,
-            currentQuestionIndex: room.currentQuestionIndex,
-            participantCount: room.getParticipantCount()
-          }));
+        // Asynchronous, because rendering a new quiz happens in another
+        // process. Nothing after this point may assume the room exists yet.
+        case 'create_room':
+          handleCreateRoom(ws, msg).catch((err) => {
+            console.error('create_room failed:', err);
+            safeSend(ws, { type: 'error', code: 'invalid_message', message: 'Invalid message' });
+          });
           break;
-        }
 
         /**
          * State of a room, so the join page can say "quiz in progress" before a
@@ -659,7 +758,9 @@ function createQuizServer(options = {}) {
             totalQuestions: room.quiz.questions.length,
             // -1 while the room is still in the lobby.
             currentQuestionIndex: room.currentQuestionIndex,
-            participantCount: room.getParticipantCount()
+            participantCount: room.getParticipantCount(),
+            // Whether the join form offers consent to being named in the export.
+            recordsNamedResults: room.recordsNamedResults()
           }));
           break;
         }
@@ -680,6 +781,7 @@ function createQuizServer(options = {}) {
           if (ws.role) {
             ws.send(JSON.stringify({
               type: 'error',
+              code: 'already_joined',
               message: 'This connection has already joined a quiz. Reload the page to join again.'
             }));
             return;
@@ -688,7 +790,12 @@ function createQuizServer(options = {}) {
           // Validate name first
           const nameValidation = validateName(name);
           if (!nameValidation.valid) {
-            ws.send(JSON.stringify({ type: 'error', message: nameValidation.error }));
+            ws.send(JSON.stringify({
+              type: 'error',
+              code: nameValidation.code,
+              params: nameValidation.params,
+              message: nameValidation.error
+            }));
             return;
           }
         
@@ -705,16 +812,18 @@ function createQuizServer(options = {}) {
             // Past the name check, so say something useful. This does confirm
             // the room existed, which is why it is not said before a join is
             // actually attempted -- and it still costs a failure budget slot.
-            ws.send(JSON.stringify({ type: 'error', message: QUIZ_FINISHED }));
+            ws.send(JSON.stringify({ type: 'error', code: 'quiz_finished', message: QUIZ_FINISHED }));
             recordFailure(ws);
             return;
           }
 
-          const participant = room.addParticipant(ws, nameValidation.name);
+          // Consent is opt-in: only a literal `true` counts, and only in a room
+          // whose quiz asks for it (Room.addParticipant() checks that too).
+          const participant = room.addParticipant(ws, nameValidation.name, msg.consent === true);
           ws.roomId = roomId;
           ws.role = 'participant';
           ws.participantId = participant.id;
-        
+
           ws.send(JSON.stringify({
             type: 'joined',
             participantId: participant.id,
@@ -722,7 +831,11 @@ function createQuizServer(options = {}) {
             quizTitle: room.quiz.title,
             // The only time the token is sent. It goes to its owner alone and
             // is never logged; see Room.resumeTokenFor().
-            resumeToken: room.resumeTokenFor(participant.id)
+            resumeToken: room.resumeTokenFor(participant.id),
+            // Echoed, so the page shows what was recorded rather than what it
+            // meant to send.
+            recordsNamedResults: room.recordsNamedResults(),
+            consent: participant.consent
           }));
 
           // Notify presenter
@@ -756,6 +869,7 @@ function createQuizServer(options = {}) {
           if (ws.role) {
             ws.send(JSON.stringify({
               type: 'error',
+              code: 'already_joined',
               message: 'This connection has already joined a quiz. Reload the page to join again.'
             }));
             return;
@@ -799,6 +913,9 @@ function createQuizServer(options = {}) {
             // questions closed while it was away rather than silently skipping
             // ahead. Only ever sent to its owner.
             answeredQuestions: participant.answers.map((a) => a.questionIndex),
+            // So that a reload shows the choice again; the page keeps no copy.
+            recordsNamedResults: room.recordsNamedResults(),
+            consent: participant.consent,
             ...(room.practice ? { practice: true, practiceQuizId: room.practiceQuizId } : {})
           }));
 
@@ -919,6 +1036,26 @@ function createQuizServer(options = {}) {
         }
 
         /**
+         * The presenter counts a short answer as right after all -- or, with
+         * `accepted: false`, takes that back. See Room.setAnswerAccepted().
+         * Everybody gets the results again: the participants concerned a new
+         * verdict, everybody the leaderboard it changed.
+         *
+         * A click that no longer applies -- from a results view that another
+         * window has moved past -- is ignored rather than answered with an
+         * error, which the control view would show in place of the room.
+         */
+        case 'accept_answer': {
+          const room = getRoomForPresenter(ws);
+          if (!room) return;
+
+          const accepted = msg.accepted === undefined ? true : msg.accepted;
+          const results = room.setAnswerAccepted(msg.questionIndex, msg.answer, accepted);
+          if (results) announceResults(room, results);
+          break;
+        }
+
+        /**
          * Start a practice game: one student, a quiz from the catalog, and no
          * presenter -- the server runs it (see schedulePracticeAdvance()).
          *
@@ -931,6 +1068,7 @@ function createQuizServer(options = {}) {
           if (ws.role) {
             ws.send(JSON.stringify({
               type: 'error',
+              code: 'already_joined',
               message: 'This connection has already joined a quiz. Reload the page to join again.'
             }));
             return;
@@ -945,7 +1083,7 @@ function createQuizServer(options = {}) {
           const ipLimits = stateForKey(ws.clientKey);
           if (ipLimits.practiceGames >= limits.maxPracticeGamesPerIp) {
             noteLimitHit('MAX_PRACTICE_GAMES_PER_IP', limits.maxPracticeGamesPerIp);
-            safeSend(ws, { type: 'error', message: 'Too many practice games from this address. Please try again later.' });
+            safeSend(ws, { type: 'error', code: 'practice_rate_limited', message: 'Too many practice games from this address. Please try again later.' });
             return;
           }
 
@@ -953,18 +1091,22 @@ function createQuizServer(options = {}) {
           try {
             room = roomManager.openPracticeRoom(entry.quiz);
           } catch {
-            safeSend(ws, { type: 'error', message: 'The server is at capacity. Please try again later.' });
+            safeSend(ws, { type: 'error', code: 'server_at_capacity', message: 'The server is at capacity. Please try again later.' });
             return;
           }
           ipLimits.practiceGames++;
           room.creatorKey = ws.clientKey;
           room.practiceQuizId = entry.id;
+          // What the game is counted under; see practice-stats.js.
+          room.practiceEntry = entry;
+          practiceStats?.gameStarted(entry);
           // Fixed for the game, like its quiz: a catalog reloaded mid-game
           // does not change how long this game's results stay up.
           room.practiceResultsMs = practiceResultsMs();
           // Results first arm the countdown, so that the results message can
           // carry it.
           room.onAutoEnd = (results) => {
+            countPracticeQuestion(room, results);
             schedulePracticeAdvance(room);
             announceResults(room, results);
           };
@@ -1011,7 +1153,7 @@ function createQuizServer(options = {}) {
           // reach the presenter's results view.
           const validation = room.validateAnswer(msg.answer);
           if (!validation.valid) {
-            ws.send(JSON.stringify({ type: 'error', message: validation.error }));
+            ws.send(JSON.stringify({ type: 'error', code: validation.code, message: validation.error }));
             return;
           }
 
@@ -1029,6 +1171,31 @@ function createQuizServer(options = {}) {
               count: room.currentAnswers.size,
               totalParticipants: room.getParticipantCount()
             });
+          }
+          break;
+        }
+
+        /**
+         * A participant gives or withdraws consent to having their name and
+         * final score in the export. Possible until the game ends; the reply
+         * is what the page shows, so it never displays a choice the server
+         * did not record.
+         */
+        case 'set_consent': {
+          const room = roomManager.getRoom(ws.roomId);
+          // The same guard as submit_answer: a kicked or superseded socket no
+          // longer speaks for anybody.
+          if (!room || ws.role !== 'participant' || !room.participants.has(ws)) return;
+
+          if (room.setConsent(ws.participantId, msg.consent)) {
+            ws.send(JSON.stringify({ type: 'consent_updated', consent: msg.consent }));
+          } else {
+            const refusal = !room.recordsNamedResults()
+              ? { code: 'consent_not_requested', message: 'This quiz does not record named results.' }
+              : room.state === 'ended'
+                ? { code: 'consent_closed', message: 'The quiz has finished, so your choice can no longer be changed.' }
+                : { code: 'consent_invalid', message: 'Invalid consent value' };
+            ws.send(JSON.stringify({ type: 'error', ...refusal }));
           }
           break;
         }
@@ -1095,7 +1262,7 @@ function createQuizServer(options = {}) {
          That is a bug worth seeing in the log, but never a reason to drop the
          other lectures running in this process. */
       console.error('WebSocket message error:', err);
-      safeSend(ws, { type: 'error', message: 'Invalid message' });
+      safeSend(ws, { type: 'error', code: 'invalid_message', message: 'Invalid message' });
     }
   }
 
@@ -1129,6 +1296,20 @@ function createQuizServer(options = {}) {
     } else {
       endGame(room);
     }
+  }
+
+  /**
+   * Count a closed practice question into the statistics. Every practice
+   * question closes through onAutoEnd -- answered, or at its time limit, even
+   * with the student gone -- so this sees each one exactly once.
+   */
+  function countPracticeQuestion(room, results) {
+    if (!practiceStats) return;
+    const [points = 0] = results.scores.values();
+    practiceStats.questionClosed(room.practiceEntry, room.currentQuestionIndex, {
+      answered: room.currentAnswers.size > 0,
+      points
+    });
   }
 
   /**
@@ -1214,7 +1395,8 @@ function createQuizServer(options = {}) {
   /**
    * Tell everybody that the current question has closed. Shared by the
    * presenter's End Question and by the room closing a question by itself
-   * (timer, or everybody answered). Each participant gets a message of their
+   * (timer, or everybody answered), and sent again whenever the presenter
+   * accepts a short answer after all. Each participant gets a message of their
    * own, since the feedback in it is about their answer.
    */
   function announceResults(room, results) {
@@ -1225,6 +1407,9 @@ function createQuizServer(options = {}) {
     room.sendToPresenter({
       type: 'question_results',
       questionIndex: room.currentQuestionIndex,
+      // How the control view groups the answers: the way they were compared.
+      // The presenter's alone; participants have no use for it.
+      match: matchOf(room.getCurrentQuestion()),
       answers: Array.from(room.currentAnswers.entries()).map(([pid, data]) => {
         const p = room.getParticipantById(pid);
         return {
@@ -1232,7 +1417,9 @@ function createQuizServer(options = {}) {
           name: p?.name || 'Unknown',
           answer: data.answer,
           points: results.scores.get(pid) || 0,
-          timestamp: data.timestamp
+          timestamp: data.timestamp,
+          // What the control view offers to take back; see accept_answer.
+          ...(data.acceptedByPresenter ? { acceptedByPresenter: true } : {})
         };
       }),
       leaderboard: results.leaderboard
@@ -1254,6 +1441,9 @@ function createQuizServer(options = {}) {
     room.clearQuestionTimer();
     room.clearAdvanceTimer();
     room.state = 'ended';
+    // Consent is frozen from here on; see Room.snapshotNamedResults().
+    room.snapshotNamedResults();
+    if (room.practice) practiceStats?.gameFinished(room.practiceEntry, room.getPracticeSummary());
     const finalLeaderboard = room.getLeaderboard();
 
     room.broadcastToParticipants({
@@ -1319,6 +1509,9 @@ function createQuizServer(options = {}) {
   }
 
   roomManager.onRoomRemoved = (room) => {
+    // A finished game is removed too, as soon as its student leaves; only one
+    // that never ended was abandoned.
+    if (room.practice && room.state !== 'ended') practiceStats?.gameAbandoned(room.practiceEntry);
     if (!room.creatorKey) return;
     const state = ipState.get(room.creatorKey);
     if (state) {
@@ -1453,8 +1646,19 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
    * running in this process.
    */
   const PRACTICE_CATALOG = process.env.PRACTICE_CATALOG || DEFAULT_PRACTICE_CATALOG_PATH;
-  const readPracticeCatalog = () => {
-    const { catalog, errors, warnings, missing } = loadPracticeCatalog(PRACTICE_CATALOG);
+
+  /*
+   * One render sandbox for the process, shared by the rooms and the catalog,
+   * so that its concurrency limit is a limit on the host and not per caller.
+   */
+  const renderSandbox = createRenderSandbox(renderOptionsFromEnv());
+  const { prepareQuiz } = renderSandbox;
+  console.log(renderSandbox.options.socketPath
+    ? `Quizzes are rendered by the worker service at ${renderSandbox.options.socketPath}.`
+    : 'Quizzes are rendered in sandboxed child processes.');
+
+  const readPracticeCatalog = async () => {
+    const { catalog, errors, warnings, missing } = await loadPracticeCatalog(PRACTICE_CATALOG, { prepareQuiz });
     if (missing) {
       console.log(`No practice catalog at ${PRACTICE_CATALOG}; practice mode is off.`);
     } else {
@@ -1465,10 +1669,58 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     return catalog;
   };
 
-  const quizServer = createQuizServer({ limits: limitsFromEnv(), practiceCatalog: readPracticeCatalog() });
+  /*
+   * Anonymous usage totals of the practice quizzes; see practice-stats.js.
+   * Off unless PRACTICE_STATS_DIR names a directory to keep them in -- the
+   * one place this process writes to.
+   */
+  const PRACTICE_STATS_DIR = process.env.PRACTICE_STATS_DIR || '';
+  const practiceStatsStore = PRACTICE_STATS_DIR ? openPracticeStats(PRACTICE_STATS_DIR) : null;
+  console.log(practiceStatsStore
+    ? `Practice statistics are kept in ${PRACTICE_STATS_DIR}.`
+    : 'Practice statistics are off (PRACTICE_STATS_DIR is not set).');
+
+  const quizServer = createQuizServer({
+    limits: limitsFromEnv(),
+    practiceCatalog: await readPracticeCatalog(),
+    practiceStats: practiceStatsStore?.stats,
+    prepareQuiz
+  });
+
+  if (practiceStatsStore) {
+    const flushPracticeStats = () => {
+      try {
+        practiceStatsStore.flush();
+      } catch (err) {
+        console.error('flushing the practice statistics failed:', err);
+      }
+    };
+    setInterval(flushPracticeStats, PRACTICE_STATS_FLUSH_INTERVAL_MS).unref();
+    // Node's default for these is to exit on the spot, which would lose the
+    // totals since the last flush on every `systemctl restart`.
+    for (const signal of ['SIGTERM', 'SIGINT']) {
+      process.on(signal, () => {
+        flushPracticeStats();
+        process.exit(0);
+      });
+    }
+  }
+
+  /* Rendering the catalog takes a moment now. Until the new one is complete
+     the old one stays in service, and a second SIGHUP in the meantime is
+     ignored rather than racing the first. */
+  let reloading = false;
   process.on('SIGHUP', () => {
+    if (reloading) {
+      console.log('SIGHUP: a reload of the practice catalog is already running.');
+      return;
+    }
+    reloading = true;
     console.log('SIGHUP: reloading the practice catalog.');
-    quizServer.setPracticeCatalog(readPracticeCatalog());
+    readPracticeCatalog()
+      .then((catalog) => quizServer.setPracticeCatalog(catalog))
+      .catch((err) => console.error('reloading the practice catalog failed:', err))
+      .finally(() => { reloading = false; });
   });
   quizServer.listen(PORT, HOST).then(() => {
     console.log(`Quizzy backend listening on ${HOST ? `${HOST}:${PORT}` : `port ${PORT}`}`);

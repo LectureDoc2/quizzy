@@ -179,7 +179,10 @@ export async function launchBrowser() {
     // alone, it surfaces as a failed `before` hook -- which the test runner
     // reports by cancelling every test beneath it, so the output is a column of
     // crosses against test names that are all perfectly fine. Say what actually
-    // happened instead.
+    // happened instead. The suites' after() hooks close the browser with
+    // `browser?.close()` for the same reason: a plain call throws on the browser
+    // that never launched, the servers started before it stay open, and the run
+    // hangs instead of ending with this message.
     throw new Error(
       'Chromium is not available, so the browser tests cannot run.\n' +
       '  Install it once:   pnpm --filter ld-quiz-server exec playwright install chromium\n' +

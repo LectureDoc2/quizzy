@@ -23,7 +23,7 @@ describe('Control view rendering (browser)', () => {
   });
 
   after(async () => {
-    await browser.close();
+    await browser?.close();
     await statics.close();
   });
 

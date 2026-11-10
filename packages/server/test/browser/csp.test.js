@@ -37,7 +37,7 @@ describe('Control page CSP (browser)', () => {
   });
 
   after(async () => {
-    await browser.close();
+    await browser?.close();
     await new Promise((resolve) => wss.close(resolve));
     await statics.close();
   });

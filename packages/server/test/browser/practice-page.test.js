@@ -54,7 +54,7 @@ describe('Practice (browser, full stack)', () => {
   });
 
   after(async () => {
-    await browser.close();
+    await browser?.close();
     await statics.close();
     await quizServer.close();
   });

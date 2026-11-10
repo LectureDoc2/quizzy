@@ -48,7 +48,7 @@ describe('Ordering questions (browser, full stack)', () => {
     for (const ws of sockets) {
       try { ws.terminate(); } catch { /* already gone */ }
     }
-    await browser.close();
+    await browser?.close();
     await statics.close();
     await quizServer.close();
   });

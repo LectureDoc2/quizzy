@@ -63,7 +63,7 @@ describe('Leaderboard layout (browser)', () => {
   });
 
   after(async () => {
-    await browser.close();
+    await browser?.close();
     await statics.close();
   });
 

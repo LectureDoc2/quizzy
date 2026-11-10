@@ -11,13 +11,13 @@
         "<code>String</code>",
         "<code>Integer</code>"
       ],
-      "correctIndices": [2,3],
+      "correctIndices": [2, 3],
       "timeLimit": 30
     },
     {
       "type": "short-answer",
       "text": "Wie kann der folgende String in Java-Code (d. h. als Java-Literal) geschrieben werden: <p><code>Ein \" und ein \\</code></p>",
-      "acceptedAnswers": ["Ein \\\" und ein \\\\\\\\","\"Ein \\\" und ein \\\\\\\\\""],
+      "acceptedAnswers": ["Ein \\\" und ein \\\\\\\\", "\"Ein \\\" und ein \\\\\\\\\""],
       "match": "exact",
       "timeLimit": 60
     },
@@ -38,21 +38,21 @@
     {
       "type": "short-answer",
       "text": "Mit welchem Schlüsselwort beende ich die Ausführung einer Schleife vorzeitig?",
-      "acceptedAnswers": ["break","break;"],
+      "acceptedAnswers": ["break", "break;"],
       "match": "strict",
       "timeLimit": 30
     },
     {
       "type": "short-answer",
       "text": "Mit welchem Schlüsselwort springe ich direkt zum nächsten Schleifendurchlauf?",
-      "acceptedAnswers": ["continue","continue;"],
+      "acceptedAnswers": ["continue", "continue;"],
       "match": "strict",
       "timeLimit": 30
     },
     {
       "type": "short-answer",
       "text": "In Java gibt es <code>switch</code>-Anweisungen und auch <code>switch</code>-?",
-      "acceptedAnswers": ["Ausdrücke","Ausdruck","expression","expressions"],
+      "acceptedAnswers": ["Ausdrücke", "Ausdruck", "expression", "expressions"],
       "timeLimit": 30
     },
     {
@@ -65,18 +65,14 @@
     {
       "type": "short-answer",
       "text": "Mit welchen Zeichen starten mehrzeilige Kommentare?",
-      "acceptedAnswers": ["/*","/**"],
+      "acceptedAnswers": ["/*", "/**"],
       "match": "exact",
       "timeLimit": 30
     },
     {
       "type": "ordering",
       "text": "Sortiere die folgenden Datentypen nach aufsteigendem Wertebereich:",
-      "options": [
-        "<code>byte</code>",
-        "<code>long</code>",
-        "<code>float</code>"
-      ],
+      "options": ["<code>byte</code>", "<code>long</code>", "<code>float</code>"],
       "timeLimit": 30
     },
     {
@@ -90,8 +86,9 @@
       ],
       "timeLimit": 30
     },
-    {"type": "multiple-choice",
-      "text" : "Werte welcher Datentypen können immer präzise durch ein <code>float</code>-Wert abgebildet werden?",
+    {
+      "type": "multiple-choice",
+      "text": "Werte welcher Datentypen können immer präzise durch ein <code>float</code>-Wert abgebildet werden?",
       "options": [
         "<code>int</code>",
         "<code>long</code>",
@@ -99,7 +96,7 @@
         "<code>short</code>",
         "<code>char</code>"
       ],
-      "correctIndices": [2,3,4],
+      "correctIndices": [2, 3, 4],
       "timeLimit": 30
     },
     {
@@ -109,8 +106,9 @@
       "match": "exact",
       "timeLimit": 30
     },
-    {"type": "multiple-choice",
-      "text" : "Welche Aussagen zu Datentypen in Java sind korrekt?",
+    {
+      "type": "multiple-choice",
+      "text": "Welche Aussagen zu Datentypen in Java sind korrekt?",
       "options": [
         "Eine implizite Konvertierung von <code>int</code> in <code>long</code> ist jederzeit möglich.",
         "Eine implizite Konvertierung von <code>long</code> in <code>double</code> ist nicht möglich, da nicht jede Zahl mit dem Datentyp <code>long</code> verlustfrei in ein <code>double</code>-Wert konvertiert werden kann.",
@@ -118,11 +116,12 @@
         "Bei der expliziten Konvertierung von <code>long</code> nach <code>int</code>, werden die höherwertigen 32 Bit einfach abgeschnitten.",
         "Ein Wahrheitswert kann jederzeit in ein <code>int</code> konvertiert werden mit Hilfe eines entsprechenden <i>Typecasts</i>."
       ],
-      "correctIndices": [0,3],
+      "correctIndices": [0, 3],
       "timeLimit": 60
     },
-    {"type": "multiple-choice",
-      "text" : "Welche der folgenden <b>Bezeichner sind für Variablen</b> gültig?",
+    {
+      "type": "multiple-choice",
+      "text": "Welche der folgenden <b>Bezeichner sind für Variablen</b> gültig?",
       "options": [
         "<code>PAYMENT-received</code>",
         "<code>payment2</code>",
@@ -130,11 +129,12 @@
         "<code>1payment</code>",
         "<code>_$payment</code>"
       ],
-      "correctIndices": [1,2,4],
+      "correctIndices": [1, 2, 4],
       "timeLimit": 30
     },
-    {"type": "multiple-choice",
-      "text" : "Welche Aussagen zu Operatoren in Java sind korrekt?",
+    {
+      "type": "multiple-choice",
+      "text": "Welche Aussagen zu Operatoren in Java sind korrekt?",
       "options": [
         "Operatoren können in Java vom Programmierer überladen werden.",
         "Alle Operatoren haben in Java eine fest definierte Priorität.",
@@ -144,7 +144,7 @@
         "Die Priorität eines Operators ist abhängig vom Verwendungszweck (z. B. hat der <code>+</code>-Operator eine andere Priorität, wenn er zum Verbinden von zwei Strings verwendet wird als zur Addition von zwei Zahlen.)",
         "Die Zuweisung ist ein Operator"
       ],
-      "correctIndices": [1,2,4,6],
+      "correctIndices": [1, 2, 4, 6],
       "timeLimit": 60
     },
     {
@@ -162,12 +162,13 @@
         "Immer <code>false</code>",
         "Entweder <code>true</code> oder eine Ausnahme/Fehler"
       ],
-      "comment" : "Der Ausdruck ist entweder wahr oder falsch oder generiert eine Ausnahme, wenn a == false und i == 0 gilt.",
+      "comment": "Der Ausdruck ist entweder wahr oder falsch oder generiert eine Ausnahme, wenn a == false und i == 0 gilt.",
       "correctIndices": [],
       "timeLimit": 45
     },
-    {"type": "multiple-choice",
-      "text" : "Welche Aussagen zu Schleifen in Java sind korrekt?",
+    {
+      "type": "multiple-choice",
+      "text": "Welche Aussagen zu Schleifen in Java sind korrekt?",
       "options": [
         "<code>for</code>-Schleifen können alle anderen Typen von Schleifen ersetzen (sind technisch gleich mächtig).",
         "<code>while</code>-Schleifen können alle anderen Typen von Schleifen ersetzen (sind technisch gleich mächtig).",
@@ -175,17 +176,19 @@
         "Schleifen können immer vorzeitig unterbrochen oder fortgesetzt werden; d. h. es muss nicht immer der ganze Schleifenkörper durchlaufen werden.",
         "Ich kann jede rekursive Methode unter Verwendung einer Schleife so implementieren, dass keine Rekursion mehr benötigt wird."
       ],
-      "correctIndices": [0,1,2,3,4],
+      "correctIndices": [0, 1, 2, 3, 4],
       "timeLimit": 60
     },
-    {"type": "short-answer",
-      "text" : "Wie heißt der Rückgabetyp einer Methode, wenn die Methode <b>nichts</b> zurückgeben will?",
-      "acceptedAnswers" : ["void"],
-      "match" : "exact",
+    {
+      "type": "short-answer",
+      "text": "Wie heißt der Rückgabetyp einer Methode, wenn die Methode <b>nichts</b> zurückgeben will?",
+      "acceptedAnswers": ["void"],
+      "match": "exact",
       "timeLimit": 30
     },
-    {"type": "multiple-choice",
-      "text" : "Welche Aussagen zu Methoden stimmen?",
+    {
+      "type": "multiple-choice",
+      "text": "Welche Aussagen zu Methoden stimmen?",
       "options": [
         "Die Java-Konvention für die Benennung von Methoden ist, dass Methodennamen immer mit einem Großbuchstaben beginnen.",
         "Methoden sind ein elementarer Baustein der Strukturierung von Programmen.",
@@ -194,7 +197,7 @@
         "Eine Methode in Java muss immer mindestens ein <code>return</code>-Anweisung haben.",
         "Eine Methode in Java muss immer mindestens ein <code>return</code>-Anweisung haben, wenn der Rückgabetyp ein primitiver Typ ist und die Methode normal endet."
       ],
-      "correctIndices": [1,2,5],
+      "correctIndices": [1, 2, 5],
       "timeLimit": 60
     }
   ]

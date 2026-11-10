@@ -223,7 +223,6 @@
 
         &:hover {
             background: var(--quiz-border);
-            border-color: var(--quiz-border-strong);
         }
     }
     .option--selected {

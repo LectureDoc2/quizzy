@@ -427,4 +427,5 @@ hyphens and apostrophes, starting with a letter.
 | Participant resume tokens | [PARTICIPANT-REATTACH.md](PARTICIPANT-REATTACH.md) |
 | Deployment, systemd units, limits | [DEPLOY.md](DEPLOY.md) §3, §10–§13 |
 | Moving an existing server to the hardened layout | [UPDATE.md](UPDATE.md) §7 |
+| Security updates of Ubuntu, Node.js and Caddy; advisories to follow | [UPDATE.md](UPDATE.md) §5a, §5b |
 | Render sandbox implementation | `packages/server/src/render-sandbox.js`, `render-worker.js` |

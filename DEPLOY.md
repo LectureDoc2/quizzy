@@ -233,8 +233,9 @@ sudo apt install -y caddy
 ```
 
 The package creates the **`caddy` system user** and an enabled `caddy.service`,
-which section 11 points at our configuration. Caddy keeps receiving security updates
-through `apt`.
+which section 11 points at our configuration. Caddy keeps receiving updates through
+`apt`, automatically once [UPDATE.md §5a](UPDATE.md#5a-automatic-security-updates-once)
+is set up.
 
 ### 6b. DNS-01 profile — built with the RFC2136 module
 
@@ -792,6 +793,14 @@ cd /srv/quizzy && pnpm --filter ld-quiz-server test
 
 It binds to whichever loopback family the host provides, so a failure there means
 the host's networking is not what you think it is.
+
+**Then set up security updates**, before the first lecture. Ubuntu updates itself,
+but Node.js and Caddy only once
+[UPDATE.md §5a](UPDATE.md#5a-automatic-security-updates-once) allows their
+repositories. Those updates restart the backend when Node.js changed, by default
+between 6:00 and 7:00. [UPDATE.md §5b](UPDATE.md#5b-knowing-when-to-act) lists the
+few announcements that say when something needs you, such as a reboot or a rebuild
+of the `dns-01` Caddy binary.
 
 ---
 

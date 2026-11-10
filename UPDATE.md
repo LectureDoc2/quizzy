@@ -16,7 +16,8 @@ steps below say which of them restart something:
 | §2 Caddyfile or TLS snippet changed | no — but connected clients reconnect |
 | §3 Changing the practice quizzes | no |
 | §4 Changing the configuration | backend: **yes**; Caddy: no, but clients reconnect |
-| §5 System packages, Node.js and Caddy | when Node.js changed: **yes** |
+| §5 System packages, Node.js and Caddy | when Node.js or a library it uses changed: **yes** |
+| §5a Automatic security updates (every morning, 6:00–7:00) | on mornings when Node.js or a library it uses changed: **yes** |
 | §7 Moving to the hardened layout (once) | **yes** — restarts the backend |
 
 ---
@@ -165,25 +166,141 @@ Running lectures survive it; connected clients reconnect.
 
 ## 5. System packages, Node.js and Caddy
 
+Once §5a is set up, security updates install themselves. To update by hand, pick a
+time **when no lecture is running**:
+
 ```bash
 sudo apt update && sudo apt upgrade
 ```
 
 This also updates Node.js (from the NodeSource repository) and, on the `http-01`
-profile, Caddy. The backend keeps running on the old Node.js until it is restarted:
+profile, Caddy. **It can restart the backend by itself.** Ubuntu Server ships
+`needrestart`, which runs after every `apt` transaction and restarts each service
+whose program or libraries were just replaced. That includes the backend whenever
+Node.js changed, or a library Node.js uses (glibc, for one). Caddy's package restarts
+Caddy when Caddy is upgraded, which running lectures survive; connected clients
+reconnect. On a host without `needrestart` (`dpkg -s needrestart` says), the backend
+keeps running on the old Node.js until you restart it:
 
 ```bash
 sudo systemctl restart quizzy-backend
 ```
+
+`sudo needrestart -r l` lists what is still running replaced code, without
+restarting anything.
 
 To move to another Node.js major version, run the NodeSource setup script of that
 line (DEPLOY.md §5, e.g. `setup_26.x` instead of `setup_24.x`), then
 `sudo apt install -y nodejs`, check `node --version`, and restart the backend.
 
 **`dns-01` profile only:** Caddy runs as `/usr/local/bin/caddy`, which `apt` never
-touches (DEPLOY.md §6b). Rebuild it when a Caddy release matters to you: repeat
-part 2 of DEPLOY.md §6b, which fetches the latest `xcaddy`, builds the latest Caddy
-release and installs it, then `sudo systemctl restart caddy`.
+touches (DEPLOY.md §6b). Rebuild it when a Caddy or Go release matters to you (§5b
+says when): repeat part 2 of DEPLOY.md §6b, which fetches the latest `xcaddy`, builds
+the latest Caddy release and installs it, then `sudo systemctl restart caddy`.
+Check the new binary as described at the end of §5b.
+
+### 5a. Automatic security updates (once)
+
+Ubuntu installs its own security updates every morning, because `unattended-upgrades`
+is enabled on a fresh server. It takes them only from Ubuntu's archive, though.
+Node.js and Caddy come from the NodeSource and Cloudsmith repositories (DEPLOY.md §5,
+§6), which are left out until you allow them:
+
+```bash
+sudo tee /etc/apt/apt.conf.d/51quizzy-unattended-upgrades >/dev/null <<'EOF'
+// Also upgrade Node.js (NodeSource, DEPLOY.md §5) and Caddy (Cloudsmith,
+// DEPLOY.md §6) automatically. See UPDATE.md §5a.
+Unattended-Upgrade::Origins-Pattern {
+        "site=deb.nodesource.com";
+        "origin=cloudsmith/caddy/stable";
+};
+EOF
+```
+
+(If Node.js came from Ubuntu itself, the fallback in DEPLOY.md §5, it is covered
+already; the `site=` line then does nothing.) Check that the daily run is on, and
+that both patterns are now allowed:
+
+```bash
+apt-config dump APT::Periodic::Unattended-Upgrade              # ... "1";
+sudo unattended-upgrade --dry-run --debug 2>&1 | grep 'Allowed origins'
+systemctl list-timers apt-daily-upgrade.timer                  # the next run
+```
+
+What that means:
+
+- **Every release is installed, not only security fixes.** Neither repository has a
+  separate security channel. For Node.js that stays within its major line: the
+  NodeSource repository of DEPLOY.md §5 holds only 24.x, and an LTS line takes no
+  breaking changes. Caddy gets every stable release. Moving to another Node.js major
+  version stays a manual step (§5).
+- **It restarts the backend.** The run starts between 6:00 and 7:00
+  (`apt-daily-upgrade.timer`). When it replaced Node.js or a library Node.js uses,
+  `needrestart` (§5) restarts the backend, which ends whatever lectures and practice
+  games are running then. Ubuntu's own updates did that before this step too, glibc
+  for one; the file only adds Node.js to the reasons. 6:00 is before the first
+  lecture. If lectures can run that early, move the run:
+
+  ```bash
+  sudo systemctl edit apt-daily-upgrade.timer
+  ```
+
+  ```ini
+  [Timer]
+  OnCalendar=
+  OnCalendar=*-*-* 03:00
+  RandomizedDelaySec=30m
+  ```
+
+- **No cooldown.** Unlike the npm dependencies (SECURITY_ARCHITECTURE.md §10), a
+  Node.js or Caddy release is installed within about a day of its publication. That
+  trusts the two repositories' signing keys, as every manual `apt upgrade` does. To
+  keep Node.js and Caddy manual instead, leave the file out; the announcements in
+  §5b then tell you when to run §5.
+- **Reboots stay manual.** Kernel updates are installed, but take effect only after
+  a reboot, which ends every lecture, so you choose when. `/var/run/reboot-required`
+  exists when one is due, and `/var/run/reboot-required.pkgs` says which packages
+  want it. Livepatch, part of Ubuntu Pro, applies most kernel security fixes without
+  a reboot (`sudo pro attach <token>`, then `sudo pro enable livepatch`). Ubuntu
+  Pro is free for personal use on up to five machines; for a DHBW server, ask
+  whether DHBW has a subscription.
+- **The `dns-01` Caddy binary is not covered** (DEPLOY.md §6b). §5b says when to
+  rebuild it.
+
+`/var/log/unattended-upgrades/unattended-upgrades.log` records what each run
+installed.
+
+### 5b. Knowing when to act
+
+Automatic updates install fixes. What they leave to you: reboots, Node.js major
+versions, the `dns-01` Caddy binary, and Quizzy's own dependencies. These channels
+tell you when one of them needs you. All of them post rarely:
+
+| for | subscribe to | when it posts |
+|---|---|---|
+| Node.js | the announcement-only [nodejs-sec](https://groups.google.com/g/nodejs-sec) list, or the feed `https://nodejs.org/en/feed/vulnerability.xml` | Security releases are announced about a week ahead, with the highest severity for each release line. With §5a, the fixed 24.x release arrives within a day (`node --version`). A line past its end of life gets no fix: move to a supported one (§5) |
+| Caddy | on GitHub, `caddyserver/caddy` → Watch → Custom → Releases; advisories are under its Security tab | `http-01`: nothing to do, §5a installs it. `dns-01`: rebuild (§5) |
+| Go (`dns-01` only) | [golang-announce](https://groups.google.com/g/golang-announce) | Fixes in Go's standard library (`net/http`, `crypto/tls`, …) reach a Caddy binary only when it is rebuilt with the fixed Go: rebuild (§5) |
+| Ubuntu, including the kernel | Ubuntu Security Notices: the [ubuntu-security-announce](https://lists.ubuntu.com/mailman/listinfo/ubuntu-security-announce) list, or the feed `https://ubuntu.com/security/notices/rss.xml` | Usually nothing, because §5a installed it. Reboot when one is due (§5a). Follow these, not upstream kernel CVEs: the kernel project publishes thousands a year, and a notice says which ones affect this release and how urgent they are |
+| Quizzy's dependencies | Dependabot alerts on the repository (Settings → Code security, where Dependabot security updates are switched on too) | Fix it in the repository (SECURITY_ARCHITECTURE.md §10), then §1 |
+
+**Checking the `dns-01` Caddy binary.** `govulncheck` reads the Go version and
+module versions built into a binary and looks them up in Go's vulnerability
+database. Install it once, with the Go from DEPLOY.md §6b:
+
+```bash
+go install golang.org/x/vuln/cmd/govulncheck@latest
+~/go/bin/govulncheck -mode=binary /usr/local/bin/caddy
+```
+
+"No vulnerabilities found" means there is nothing to do. Otherwise rebuild (§5) and
+run it again. If a finding in the standard library is still there, the Go that
+built Caddy is older than the fix (the report says "Fixed in: go1.…"). Build with
+that release instead, which the `go` command downloads by itself:
+
+```bash
+GOTOOLCHAIN=go1.X.Y ~/go/bin/xcaddy build --with github.com/caddy-dns/rfc2136
+```
 
 ---
 
@@ -199,6 +316,7 @@ Errors from `pnpm install` or `pnpm build` (`ERR_PNPM_…`) are covered in
 | `git pull` → `Your local changes … would be overwritten` | A file was edited inside `/srv/quizzy`, e.g. `pnpm-workspace.yaml` by pnpm or the practice catalog by hand | `sudo git status` shows which. Discard with `sudo git checkout <file>`; keep a server-only catalog outside the checkout (§3) |
 | Every new quiz is refused with "could not be prepared for display" | The render worker fails | [DEPLOY.md §14](DEPLOY.md#14-troubleshooting-quick-reference) |
 | `systemctl reload caddy` fails | Caddy rejected the new configuration and kept the old one | `sudo journalctl -u caddy -n 20`; validate as in §2 |
+| The backend restarted with nobody restarting it, between 6:00 and 7:00 or during an `apt upgrade` | `needrestart` restarted it after an upgrade replaced Node.js or a library it uses (§5) | Expected. `/var/log/unattended-upgrades/` says what was installed. Run §5 when no lecture is running; if lectures start that early, move the automatic run (§5a) |
 
 ---
 

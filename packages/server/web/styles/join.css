@@ -7,10 +7,24 @@
     padding: var(--quiz-space-md);
   }
 
+  /* On a phone every line above the question counts: what fits the screen
+     needs no scrolling, and so never meets the browser's bottom bar (see
+     .quiz-footer). Larger screens keep some air above the card. */
   .container {
     width: 100%;
     max-width: 480px;
-    margin-top: 2rem;
+  }
+
+  @media (min-width: 600px) {
+    .container {
+      margin-top: 2rem;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .container.card {
+      padding: var(--quiz-space-md);
+    }
   }
 
   h1 {
@@ -19,11 +33,27 @@
     text-align: center;
   }
 
-  .room-code {
-    text-align: center;
+  /* Room and progress, under everything else: useful, never urgent. The space
+     it takes is what keeps the last button (Submit) clear of the browser's
+     bottom bar once the page is scrolled to its end. iOS Safari draws the page
+     on underneath that bar, but a tap there goes to Safari, which only brings
+     its toolbar back (measured: the bottom 58pt with the bar shrunk). Keep at
+     least that much below Submit; test/browser/submit-reach.test.js checks. */
+  .quiz-footer {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: var(--quiz-space-xs);
+    margin-top: var(--quiz-space-lg);
+    padding-top: var(--quiz-space-sm);
+    border-top: 1px solid var(--quiz-border);
+    font-size: 0.8125rem;
     color: var(--quiz-text-secondary);
-    font-size: 0.875rem;
-    margin-bottom: var(--quiz-space-lg);
+
+    /* Nothing to show yet (a practice game starting): no lone rule. */
+    &:not(:has(> :not([hidden]))) {
+      border-top-color: transparent;
+    }
   }
 
   .results {
@@ -96,6 +126,31 @@
   .waiting-text {
     color: var(--quiz-text-secondary);
     margin-top: var(--quiz-space-md);
+  }
+
+  /* Submit under the options of a multiple-choice or ordering question.
+     It stays in place: pinned to the viewport, it moved with Safari's toolbar,
+     away from under the finger that was about to press it. */
+  .question__submit {
+    margin-top: var(--quiz-space-md);
+  }
+
+  /* The time left on a timed question, inside Submit (see renderQuestion()).
+     Equal-width digits, so the label does not twitch every second. */
+  .submit__time {
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    /* A word space from "Submit", not the button's wider gap for icons. */
+    margin-left: calc(0.25em - var(--quiz-space-xs));
+  }
+
+  /* The last five seconds. */
+  .btn.submit--urgent:not(:disabled) {
+    background: var(--quiz-danger);
+
+    &:hover {
+      background: var(--quiz-danger-dark);
+    }
   }
 
   .room-state {
@@ -512,10 +567,6 @@
     clip-path: inset(50%);
     white-space: nowrap;
     border: 0;
-  }
-
-  .ordering__submit {
-    margin-top: var(--quiz-space-md);
   }
 
   /* The participant's own order, on the results screen. */

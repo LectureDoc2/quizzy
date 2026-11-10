@@ -13,12 +13,17 @@
 <body>
   <div class="container card">
     <h1 id="page-title" data-i18n="join.heading"></h1>
-    <div class="room-code"><span data-i18n="join.room"></span> <span id="room-id">-</span></div>
     <!-- Outside #content, so that no render* call wipes them. -->
     <div id="connection-banner" class="connection-banner" role="status" data-i18n="connection.banner" hidden></div>
     <div id="notice" class="notice" role="status" hidden></div>
     <div id="consent-status" class="consent-status" role="status" hidden></div>
     <div id="content"></div>
+    <!-- Room and progress: useful, never urgent. Down here they also keep the
+         last button on the page clear of the browser's bottom bar; see join.css. -->
+    <footer class="quiz-footer">
+      <span id="question-progress" hidden></span>
+      <span class="room-code"><span data-i18n="join.room"></span> <span id="room-id">-</span></span>
+    </footer>
   </div>
   <script type="module" src="/js/quiz-client.js"></script>
 </body>

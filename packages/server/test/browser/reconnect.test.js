@@ -206,7 +206,7 @@ describe('Participant reattach (browser, full stack)', () => {
     await reconnected(page);
     await page.waitForFunction(() => /Pick UDP/.test(document.getElementById('content').textContent));
     assert.match(await text(page, '#notice'), /Question 1 closed while you were reconnecting/);
-    assert.match(await text(page, '.question__counter'), /Question 2 of 3/);
+    assert.match(await text(page, '#question-progress'), /Question 2 of 3/);
   });
 
   it('survives the reload button with name and score intact', async () => {

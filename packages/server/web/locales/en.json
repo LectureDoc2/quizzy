@@ -50,6 +50,7 @@
 
   "question.counter": "Question {current} of {total}",
   "question.submit": "Submit",
+  "question.timeLeft": "({seconds} sec. left)",
   "question.estimatePlaceholder": "Your estimate",
   "question.termPlaceholder": "Your answer",
   "question.expectedLength": "Expected length: {min}–{max} characters",

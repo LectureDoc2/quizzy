@@ -162,6 +162,17 @@ class QuizClient {
   }
 
   /**
+   * "Question 3 of 10" in the footer, or nothing. Like the heading it is
+   * outside #content, so it stays through the results until the next question.
+   */
+  showProgress(text) {
+    const progress = document.getElementById('question-progress');
+    if (!progress) return;
+    progress.textContent = text || '';
+    progress.hidden = !text;
+  }
+
+  /**
    * Switch the page to a practice game. There is no room code to show --
    * nobody else can join -- and nothing on the page is about other players.
    */
@@ -394,6 +405,7 @@ class QuizClient {
    */
   renderJoinForm(status = null) {
     this.state = 'join';
+    this.showProgress(null);
     if (status && status.quizTitle) this.quizTitle = status.quizTitle;
     const content = document.getElementById('content');
     const inProgress = status && status.state !== 'lobby';
@@ -756,13 +768,12 @@ class QuizClient {
   renderQuestion(question, index, total, startTime) {
     const content = document.getElementById('content');
     const timeLimit = question.timeLimit || 0;
-    let timerHtml = '';
-
-    if (timeLimit > 0) {
-      const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      const remaining = Math.max(0, timeLimit - elapsed);
-      timerHtml = `<div class="timer ${remaining <= 5 ? 'timer--urgent' : ''}" id="timer">${remaining}</div>`;
-    }
+    // The time left sits in Submit itself, where the student looks when
+    // answering, rather than in a line of its own above the question. Hidden
+    // from screen readers, which would otherwise hear the button renamed
+    // every second; its name stays "Submit".
+    const submitLabel = html('question.submit') +
+      (timeLimit > 0 ? ' <span class="submit__time" aria-hidden="true"></span>' : '');
 
     let inputHtml = '';
     if (question.type === 'multiple-choice') {
@@ -772,13 +783,13 @@ class QuizClient {
             <div class="option" data-index="${i}">${opt}</div>
           `).join('')}
         </div>
-        <button class="btn btn--primary btn--full" id="submit-btn" style="margin-top:1rem">${html('question.submit')}</button>
+        <button class="btn btn--primary btn--full question__submit" id="submit-btn">${submitLabel}</button>
       `;
     } else if (question.type === 'estimation') {
       inputHtml = `
         <form id="answer-form">
           <input type="number" id="answer" class="input" placeholder="${html('question.estimatePlaceholder')}" step="any" required>
-          <button type="submit" class="btn btn--primary btn--full">${html('question.submit')}</button>
+          <button type="submit" class="btn btn--primary btn--full" id="submit-btn">${submitLabel}</button>
         </form>
       `;
     } else if (question.type === 'short-answer') {
@@ -791,7 +802,7 @@ class QuizClient {
             autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
             aria-describedby="answer-length" required>
           <p class="answer-length" id="answer-length" aria-live="polite"></p>
-          <button type="submit" class="btn btn--primary btn--full" id="submit-btn">${html('question.submit')}</button>
+          <button type="submit" class="btn btn--primary btn--full" id="submit-btn">${submitLabel}</button>
         </form>
       `;
     } else if (question.type === 'ordering') {
@@ -813,32 +824,38 @@ class QuizClient {
           `).join('')}
         </ol>
         <p class="ordering__status" id="ordering-status" aria-live="polite"></p>
-        <button class="btn btn--primary btn--full ordering__submit" id="submit-btn">${html('question.submit')}</button>
+        <button class="btn btn--primary btn--full question__submit" id="submit-btn">${submitLabel}</button>
       `;
     }
 
     content.innerHTML = `
       <div class="question">
-        <div class="question__counter">${html('question.counter', { current: index + 1, total })}</div>
-        ${timerHtml}
         <div class="question__text" id="question-text">${question.text}</div>
         ${inputHtml}
       </div>
     `;
+    // In the footer, not above the question: on a phone every line up there
+    // pushes Submit further down.
+    this.showProgress(t('question.counter', { current: index + 1, total }));
 
     if (timeLimit > 0) {
-      const timerEl = document.getElementById('timer');
-      const interval = setInterval(() => {
+      const submitBtn = document.getElementById('submit-btn');
+      const time = submitBtn.querySelector('.submit__time');
+      // False once there is nothing more to count: the time is up, or the
+      // question has been replaced.
+      const tick = () => {
+        if (!time.isConnected) return false;
         const elapsed = Math.floor((Date.now() - startTime) / 1000);
         const remaining = Math.max(0, timeLimit - elapsed);
-        if (timerEl) {
-          timerEl.textContent = remaining;
-          if (remaining <= 5)           timerEl.classList.add('timer--urgent');
-        }
-        if (remaining <= 0) {
-          clearInterval(interval);
-        }
-      }, 1000);
+        time.textContent = t('question.timeLeft', { seconds: remaining });
+        submitBtn.classList.toggle('submit--urgent', remaining <= 5);
+        return remaining > 0;
+      };
+      if (tick()) {
+        const interval = setInterval(() => {
+          if (!tick()) clearInterval(interval);
+        }, 1000);
+      }
     }
 
     if (question.type === 'multiple-choice') {

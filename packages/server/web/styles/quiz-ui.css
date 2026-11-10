@@ -192,17 +192,6 @@
         color: var(--quiz-text);
     }
 
-    .timer {
-        font-size: 1.5rem;
-        font-weight: 600;
-        color: var(--quiz-primary);
-        margin: var(--quiz-space-xs) 0;
-
-        &.timer--urgent {
-            color: var(--quiz-danger);
-        }
-    }
-
     .options {
         display: flex;
         flex-direction: column;

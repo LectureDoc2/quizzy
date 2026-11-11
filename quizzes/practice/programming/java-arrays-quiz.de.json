@@ -1,0 +1,364 @@
+{
+  "title": "Java - Felder (Arrays)\n(Programmierung 1 - Prof. Dr. Michael Eichberg)",
+  "secret": "WUZYDWu8HH7tGI7lEptC2Ys34ob-K0DviUPutD8jm6N_MtyYuz7O-2niZBlL0fxT",
+  "questions": [
+    {
+      "type": "multiple-choice",
+      "text": "Welche der folgenden Deklarationen bzw. Initialisierungen eines Feldes sind gültiger Java-Code?",
+      "options": [
+        "<code>int[12] a;</code>",
+        "<code>int[] a = new int[12];</code>",
+        "<code>int a[] = new int[12];</code>",
+        "<code>int[] a = new int[3]{1, 2, 3};</code>",
+        "<code>int[] a = new int[]{1, 2, 3};</code>",
+        "<code>int a = new int[12];</code>",
+        "<code>var a = new int[]{1, 2, 3};</code>"
+      ],
+      "correctIndices": [1, 2, 4, 6],
+      "timeLimit": 60
+    },
+    {
+      "type": "short-answer",
+      "text": "Die Anzahl der Tage pro Monat wird in einem Feld gespeichert (Januar zuerst):\n```java\nint[] daysPerMonth =\n    {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};\n```\nMit welchem Index greift man auf die Tage des <b>Dezembers</b> zu?",
+      "acceptedAnswers": ["11"],
+      "match": "strict",
+      "timeLimit": 30
+    },
+    {
+      "type": "short-answer",
+      "text": "Mit welchem Ausdruck greift man auf das <b>letzte</b> Element eines beliebigen (nicht leeren) Feldes <code>a</code> zu?",
+      "acceptedAnswers": ["a\\[a.length - 1\\][;]", "a\\[a.length-1\\][;]", "a\\[a.length -1\\][;]", "a\\[a.length- 1\\][;]"],
+      "match": "exact",
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Welchen Inhalt hat das Feld nach der folgenden Anweisung?\n```java\nString[] names = new String[3];\n```\n",
+      "options": [
+        "<code>{ \"\", \"\", \"\" }</code>",
+        "<code>{ null, null, null }</code>",
+        "Die Variable <code>names</code> hat den Wert <code>null</code>.",
+        "Es gibt einen Compilerfehler, da die Elemente nicht initialisiert wurden."
+      ],
+      "correctIndices": [1],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Welche Aussagen zu (eindimensionalen) Feldern in Java sind korrekt?",
+      "options": [
+        "Alle Elemente eines Feldes haben denselben Datentyp.",
+        "Die Größe eines Feldes kann nach der Erzeugung z. B. mittels <code>a.length = 20;</code> geändert werden.",
+        "Bei einer <code>for-each</code>-Schleife steht der Index des aktuellen Elements nicht direkt zur Verfügung.",
+        "Der Index des ersten Elements eines Feldes ist 1.",
+        "Nach <code>int[] a = new int[5];</code> haben alle Elemente den Wert <code>0</code>.",
+        "Ein Feld der Länge 0 (<code>new int[0]</code>) ist nicht erlaubt.",
+        "Java prüft bei jedem Zugriff, ob der Index gültig ist. Ein Lesen oder Schreiben außerhalb der Feldgrenzen ist daher nicht möglich."
+      ],
+      "correctIndices": [0, 2, 4, 6],
+      "timeLimit": 75
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Was passiert bei der Ausführung des folgenden Codes?\n```java\nint[] a = {10, 20, 30};\nfor (int i = 0; i <= a.length; i++) {\n    IO.println(a[i]);\n}\n```\n",
+      "options": [
+        "Es werden <code>10</code>, <code>20</code> und <code>30</code> ausgegeben; danach endet das Programm normal.",
+        "Es gibt einen Compilerfehler.",
+        "Es werden <code>10</code>, <code>20</code>, <code>30</code> und <code>0</code> ausgegeben.",
+        "Es werden <code>10</code>, <code>20</code> und <code>30</code> ausgegeben; danach wird eine <code>ArrayIndexOutOfBoundsException</code> ausgelöst.",
+        "Es wird nichts ausgegeben, da sofort eine Ausnahme ausgelöst wird."
+      ],
+      "correctIndices": [3],
+      "timeLimit": 75
+    },
+    {
+      "type": "short-answer",
+      "text": "Was gibt der folgende Code aus?\n```java\nint[] a = {3, 1, 4, 1, 5, 9, 2, 6};\nint sum = 0;\nfor (int i = 1; i < a.length; i += 2) {\n    sum += a[i];\n}\nIO.println(sum);\n```\n",
+      "acceptedAnswers": ["17"],
+      "match": "strict",
+      "timeLimit": 60
+    },
+    {
+      "type": "ordering",
+      "text": "Bringen Sie die Anweisungen in die richtige Reihenfolge, um die Elemente <code>a[i]</code> und <code>a[j]</code> eines Feldes zu vertauschen:",
+      "options": [
+        "<code>int tmp = a[i];</code>",
+        "<code>a[i] = a[j];</code>",
+        "<code>a[j] = tmp;</code>"
+      ],
+      "timeLimit": 30
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Was gibt der folgende Code aus?\n```java\nint[] a = {1, 2, 3};\nIO.println(a);\n```\n",
+      "options": [
+        "Etwas wie <code>[I@4e50df2e</code> (Typkennung und Hashcode)",
+        "<code>[1, 2, 3]</code>",
+        "<code>{1, 2, 3}</code>",
+        "<code>1 2 3</code>"
+      ],
+      "correctIndices": [0],
+      "timeLimit": 30
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Welche Aussagen zu Feldern als Referenzdatentypen sind korrekt?",
+      "options": [
+        "Eine Feldvariable speichert die Werte aller Elemente direkt in der Variablen.",
+        "Der Speicher eines Feldes muss explizit freigegeben werden (z. B. mit <code>delete</code>).",
+        "Ein Feld, auf das keine Referenz mehr existiert, wird automatisch entfernt (Garbage Collection).",
+        "<code>clone()</code> erzeugt eine tiefe Kopie, d. h. bei einem Feld von Feldern werden auch die inneren Felder kopiert.",
+        "Zwei Variablen können dasselbe Feld referenzieren."
+      ],
+      "correctIndices": [2, 4],
+      "timeLimit": 60
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Gegeben sei:\n```java\nfinal int[] a = {1, 2, 3};\n```\nWelche der folgenden Anweisungen sind danach (jeweils einzeln betrachtet) erlaubt?",
+      "options": [
+        "<code>a[0] = 42;</code>",
+        "<code>a = new int[3];</code>",
+        "<code>a = null;</code>",
+        "<code>a[2]++;</code>",
+        "<code>int[] b = a; b[1] = 0;</code>"
+      ],
+      "correctIndices": [0, 3, 4],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Gegeben sei:\n```java\nint[] a = {1, 2, 3};\nint[] b = {1, 2, 3};\nint[] c = a;\n```\nWelche der folgenden Ausdrücke liefern <code>true</code>?",
+      "options": [
+        "<code>a == b</code>",
+        "<code>a == c</code>",
+        "<code>Arrays.equals(a, b)</code>",
+        "<code>a.equals(b)</code>",
+        "<code>b != c</code>"
+      ],
+      "correctIndices": [1, 2, 4],
+      "timeLimit": 60
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Sei <code>a</code> ein Feld vom Typ <code>int[]</code>. Nach welchen Anweisungen referenziert <code>b</code> ein <b>neues</b> Feld mit demselben Inhalt wie <code>a</code>?",
+      "options": [
+        "<code>int[] b = a;</code>",
+        "<code>int[] b = a.clone();</code>",
+        "<code>final int[] b = a;</code>"
+      ],
+      "correctIndices": [1],
+      "timeLimit": 60
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Was gibt der folgende Code aus?\n```java\nint[][] m = {{1, 2}, {3, 4}};\nint[][] c = m.clone();\nc[0][0] = 9;\nc[1] = new int[]{7, 7};\nIO.println(m[0][0] + \" \" + m[1][0]);\n```\n",
+      "options": [
+        "<code>1 3</code>",
+        "<code>9 7</code>",
+        "<code>9 3</code>",
+        "<code>1 7</code>"
+      ],
+      "correctIndices": [2],
+      "timeLimit": 90
+    },
+    {
+      "type": "short-answer",
+      "text": "Was gibt der folgende Code aus?\n```java\nvoid reset(int[] a) {\n    a = new int[a.length];\n}\n\nvoid incrementAll(int[] a) {\n    for (int i = 0; i < a.length; i++) { a[i]++; }\n}\n\nvoid main() {\n    int[] x = {1, 2, 3};\n    incrementAll(x);\n    reset(x);\n    incrementAll(x);\n    IO.println(x[2]);\n}\n```\n",
+      "acceptedAnswers": ["5"],
+      "match": "strict",
+      "timeLimit": 90
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Welche Aussagen zu Feldern als Methodenparameter bzw. Rückgabewert sind korrekt?",
+      "options": [
+        "Änderungen an den Elementen eines übergebenen Feldes sind nach dem Aufruf auch für den Aufrufer sichtbar.",
+        "Eine Methode kann ein Feld zurückgeben, z. B. <code>int[] getLengths(String[] strings)</code>.",
+        "Beim Aufruf wird eine Kopie des gesamten Feldes an die Methode übergeben.",
+        "Weist die Methode dem Parameter ein neues Feld zu, so referenziert danach auch die Variable des Aufrufers das neue Feld.",
+        "Über ein Feld kann eine Methode mehrere Werte (desselben Typs) zurückgeben."
+      ],
+      "correctIndices": [0, 1, 4],
+      "timeLimit": 60
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Ein Programm wird wie folgt gestartet:\n```bash\n$ java BMI.java 83.1 1.89\n```\nWelche Aussagen über den Parameter <code>args</code> von <code>void main(String[] args)</code> sind korrekt?",
+      "options": [
+        "<code>args[0]</code> enthält den Namen des Programms (<code>BMI.java</code>).",
+        "<code>args[0]</code> ist der <code>double</code>-Wert <code>83.1</code>.",
+        "<code>args.length</code> hat den Wert <code>2</code>.",
+        "Um mit dem Gewicht zu rechnen, muss <code>args[0]</code> umgewandelt werden, z. B. mit <code>Double.parseDouble(args[0])</code>.",
+        "<code>args[1]</code> ist der <code>String</code> <code>\"1.89\"</code>."
+      ],
+      "correctIndices": [2, 3, 4],
+      "timeLimit": 60
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Gegeben ist <code>int[][] sales = new int[10][12];</code> (10 Jahre mit je 12 Monaten). Welche Werte haben <code>sales.length</code> und <code>sales[3].length</code>?",
+      "options": [
+        "<code>12</code> und <code>10</code>",
+        "<code>10</code> und <code>12</code>",
+        "<code>120</code> und <code>12</code>",
+        "<code>10</code> und <code>10</code>"
+      ],
+      "correctIndices": [1],
+      "timeLimit": 30
+    },
+    {
+      "type": "short-answer",
+      "text": "Wie viele <code>int</code>-Werte werden durch <code>new int[3][4][5]</code> insgesamt angelegt?",
+      "acceptedAnswers": ["60"],
+      "match": "strict",
+      "timeLimit": 30
+    },
+    {
+      "type": "short-answer",
+      "text": "Gegeben sei:\n```java\nint[][][] a = {\n    {{1, 2, 3}, {4, 5, 6, 7}},\n    {{8, 9, 10}, {11, 12, 13, 14}}\n};\n```\nWelchen Wert hat <code>a[1][0][2]</code>?",
+      "acceptedAnswers": ["10"],
+      "match": "strict",
+      "timeLimit": 45
+    },
+    {
+      "type": "short-answer",
+      "text": "Gegeben sei:\n```java\nint[][][] a = {\n    {{1, 2, 3}, {4, 5, 6, 7}},\n    {{8, 9, 10}, {11, 12, 13, 14}}\n};\nvar x = a[0];\n```\nWelchen Typ hat <code>x</code>?",
+      "acceptedAnswers": ["int\\[\\]\\[\\]", "int \\[\\]\\[\\]"],
+      "match": "exact",
+      "timeLimit": 45
+    },
+    {
+      "type": "ordering",
+      "text": "Gegeben ist <code>int[][] a = {{1, 2, 3}, {4, 5, 6, 7}};</code><br>Sortieren Sie die Ausdrücke aufsteigend nach ihrem Wert:",
+      "options": [
+        "<code>a.length</code>",
+        "<code>a[0].length</code>",
+        "<code>a[1].length</code>",
+        "<code>a[1][2]</code>",
+        "<code>a[1][3]</code>"
+      ],
+      "timeLimit": 60
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Welche der folgenden Anweisungen sind gültig (kompilieren)?",
+      "options": [
+        "<code>int[][] a = new int[][3];</code>",
+        "<code>int[][] a = new int[3][];</code>",
+        "<code>int[][] a = {{1}, {2, 3}, {}};</code>",
+        "<code>int a[][] = new int[2][2];</code>",
+        "<code>int[][] a = new int[2, 3];</code>"
+      ],
+      "correctIndices": [1, 2, 3],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Was passiert bei der Ausführung des folgenden Codes?\n```java\nint[][] a = new int[2][];\na[0][0] = 1;\n```\n",
+      "options": [
+        "<code>a[0][0]</code> hat danach den Wert <code>1</code>.",
+        "Es wird eine <code>ArrayIndexOutOfBoundsException</code> ausgelöst.",
+        "Es wird eine <code>NullPointerException</code> ausgelöst, da <code>a[0]</code> den Wert <code>null</code> hat.",
+        "Es gibt einen Compilerfehler, da die Größe der zweiten Dimension fehlt."
+      ],
+      "correctIndices": [2],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Welche der folgenden Methodendeklarationen sind gültig?",
+      "options": [
+        "<code>void f(int... values)</code>",
+        "<code>void f(int... values, String s)</code>",
+        "<code>void f(int values...)</code>",
+        "<code>void f(String s, int... values)</code>",
+        "<code>void f(int... a, int... b)</code>"
+      ],
+      "correctIndices": [0, 3],
+      "timeLimit": 45
+    },
+    {
+      "type": "short-answer",
+      "text": "Welchen Typ hat der Parameter <code>strings</code> innerhalb der Methode <code>void printAll(String separator, String... strings)</code>?",
+      "acceptedAnswers": ["String\\[\\]", "String \\[\\]", "java.lang.String\\[\\]", "java.lang.String \\[\\]"],
+      "match": "exact",
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Welche der folgenden Aufrufe der Methode <code>double sum(double... values)</code> kompilieren?",
+      "options": [
+        "<code>sum(new int[]{1, 2})</code>",
+        "<code>sum(1.5, 2.5, 3.5)</code>",
+        "<code>sum(\"1\", \"2\")</code>",
+        "<code>sum()</code>",
+        "<code>sum(new double[]{1.0, 2.0})</code>",
+        "<code>sum(1, 2, 3)</code>"
+      ],
+      "correctIndices": [1, 3, 4, 5],
+      "timeLimit": 60
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Gegeben ist die folgende Methode:\n```java\ndouble sum(double... values) {\n    double result = 0;\n    for (double v : values) { result += v; }\n    return result;\n}\n```\nWas passiert bei <code>IO.println(sum());</code>?",
+      "options": [
+        "Es wird <code>0.0</code> ausgegeben.",
+        "Es wird eine <code>NullPointerException</code> ausgelöst.",
+        "Es gibt einen Compilerfehler, da mindestens ein Argument übergeben werden muss.",
+        "Es wird <code>null</code> ausgegeben."
+      ],
+      "correctIndices": [0],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Gegeben ist die folgende Methode:\n```java\ndouble sum(double... values) {\n    double result = 0;\n    for (double v : values) { result += v; }\n    return result;\n}\n```\nWas passiert bei <code>IO.println(sum(null));</code>?",
+      "options": [
+        "Es wird <code>0.0</code> ausgegeben.",
+        "Es wird <code>null</code> ausgegeben.",
+        "Es gibt einen Compilerfehler.",
+        "Es wird eine <code>NullPointerException</code> ausgelöst."
+      ],
+      "correctIndices": [3],
+      "timeLimit": 45
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Welche Aussagen zu Methoden mit einer variablen Anzahl von Parametern (varargs) sind korrekt?",
+      "options": [
+        "Eine Methode kann beliebig viele varargs-Parameter haben.",
+        "Der Compiler erzeugt beim Aufruf ein Feld, das die übergebenen Argumente enthält.",
+        "Eine varargs-Methode kann auch direkt mit einem passenden Feld aufgerufen werden.",
+        "<code>double sum(double... values)</code> und <code>double sum(double[] values)</code> können gemeinsam definiert werden (Überladung).",
+        "Der varargs-Parameter muss der letzte Parameter der Methode sein."
+      ],
+      "correctIndices": [1, 2, 4],
+      "timeLimit": 60
+    },
+    {
+      "type": "multiple-choice",
+      "text": "Gegeben ist die folgende Methode:\n```java\nint[] join(int[]... arrays) {\n    int totalLength = 0;\n    for (int[] a : arrays) {\n        totalLength += a.length;\n    }\n    int[] result = new int[totalLength];\n    int index = 0;\n    for (int[] a : arrays) {\n        for (int i : a) {\n            result[index++] = i;\n        }\n    }\n    return result;\n}\n```\nWelche Aussagen sind korrekt?",
+      "options": [
+        "Das Ergebnis referenziert dasselbe Feld wie das erste Argument.",
+        "<code>join(new int[]{1}, null)</code> liefert <code>int[1] { 1 }</code>.",
+        "Die Methode verändert die übergebenen Felder.",
+        "<code>join()</code> (ohne Argumente) liefert ein leeres Feld der Länge 0.",
+        "<code>join(new int[]{1, 2}, new int[]{}, new int[]{3})</code> liefert <code>int[3] { 1, 2, 3 }</code>."
+      ],
+      "correctIndices": [3, 4],
+      "timeLimit": 90
+    },
+    {
+      "type": "ordering",
+      "text": "Bringen Sie die Schritte der Methode <code>int[] join(int[]... arrays)</code> in die richtige Reihenfolge:",
+      "options": [
+        "Die Gesamtlänge aller übergebenen Felder bestimmen",
+        "Ein neues Feld mit der Gesamtlänge erzeugen",
+        "Die Elemente aller Felder nacheinander in das neue Feld kopieren",
+        "Das neue Feld zurückgeben"
+      ],
+      "timeLimit": 45
+    }
+  ]
+}

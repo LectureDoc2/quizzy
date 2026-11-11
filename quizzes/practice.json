@@ -37,6 +37,12 @@
       "description": "Java - Einführung (Selbstlernquiz für Programmierung 1 - Prof. Dr. Michael Eichberg)"
     },
     {
+      "id": "java-arrays",
+      "category": "Programming",
+      "file": "practice/programming/java-arrays-quiz.de.json",
+      "description": "Java - Felder (Arrays) (Selbstlernquiz für Programmierung 1 - Prof. Dr. Michael Eichberg)"
+    },
+    {
       "id": "java-konzepte",
       "category": "Programming",
       "file": "practice/programming/java-konzepte-quiz.de.json",

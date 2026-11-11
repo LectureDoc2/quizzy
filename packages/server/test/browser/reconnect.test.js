@@ -172,21 +172,27 @@ describe('Participant reattach (browser, full stack)', () => {
     assert.match(await text(page, '.my-stats'), /Score: 100/);
   });
 
-  it('lands an answered-then-dropped student on "waiting", not on the question again', async () => {
+  it('keeps an answered-then-dropped student on the question, answered and still changeable', async () => {
     await joinBob();
     const page = await joinInPage();
     await startGame();
     await page.waitForSelector('.option');
     await page.click('.option[data-index="0"]');
     await page.click('#submit-btn');
-    await page.waitForFunction(() => /Answer submitted/.test(document.getElementById('content').textContent));
+    await page.waitForFunction(() => document.getElementById('submit-btn').textContent === 'Submitted ✓');
 
     dropConnection();
     await bannerShown(page);
     await reconnected(page);
 
-    assert.match(await text(page, '#content'), /Answer submitted/);
-    assert.strictEqual(await page.$('.option'), null, 'the answered question was offered again');
+    assert.deepStrictEqual(
+      await page.evaluate(() => [...document.querySelectorAll('.option--selected')].map((n) => n.dataset.index)),
+      ['0'],
+      'the answer given is still what the page shows'
+    );
+    assert.strictEqual(await text(page, '#submit-btn'), 'Submitted ✓');
+    assert.strictEqual(await page.evaluate(() => document.getElementById('resubmit-note').hidden), false);
+    assert.strictEqual(await text(page, '#notice'), '', 'nothing was lost, so nothing to say');
   });
 
   it('says which question closed while it was away', async () => {
@@ -238,18 +244,28 @@ describe('Participant reattach (browser, full stack)', () => {
     assert.ok(!page.url().includes(before.session[key]), 'the token must never be in the URL');
   });
 
-  it('reloads onto "waiting" if the student had already answered the open question', async () => {
+  it('reloads onto the answered question, with the answer back and still changeable', async () => {
     await joinBob();
     const page = await joinInPage();
     await startGame();
     await page.waitForSelector('.option');
     await page.click('.option[data-index="0"]');
     await page.click('#submit-btn');
-    await page.waitForFunction(() => /Answer submitted/.test(document.getElementById('content').textContent));
+    await page.waitForFunction(() => document.getElementById('submit-btn').textContent === 'Submitted ✓');
 
     await page.reload();
-    await page.waitForFunction(() => /Answer submitted/.test(document.getElementById('content').textContent));
-    assert.strictEqual(await page.$('.option'), null);
+    await page.waitForFunction(() => document.getElementById('submit-btn')?.textContent === 'Submitted ✓');
+    assert.deepStrictEqual(
+      await page.evaluate(() => [...document.querySelectorAll('.option--selected')].map((n) => n.dataset.index)),
+      ['0'],
+      'the reload lost the answer the server holds'
+    );
+
+    await page.click('.option[data-index="0"]');
+    await page.click('.option[data-index="1"]');
+    await page.click('#submit-btn');
+    await page.waitForFunction(() => document.getElementById('submit-btn').textContent === 'Resubmitted ✓');
+    assert.deepStrictEqual(room().getShownAnswer(participantNamed('Alice Adams').participant.id), [1]);
   });
 
   it('forgets the session key once the quiz has ended', async () => {

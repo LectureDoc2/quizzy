@@ -67,6 +67,7 @@ describe('Room', () => {
     const room = new Room('ABC123', 'token', quiz);
     const mockWs = { readyState: 1 };
     const p = room.addParticipant(mockWs, 'Alice');
+    room.addParticipant({ readyState: 1 }, 'Bob');
 
     // Before game starts
     assert.strictEqual(room.submitAnswer(p.id, [0]), false);
@@ -74,12 +75,79 @@ describe('Room', () => {
     room.startGame();
     assert.strictEqual(room.submitAnswer(p.id, [0]), true);
 
-    // Duplicate answer
-    assert.strictEqual(room.submitAnswer(p.id, [0]), false);
+    // A second answer replaces the first while the question is open
+    assert.strictEqual(room.submitAnswer(p.id, [1]), 'replaced');
 
     // After question ends
     room.endQuestion();
     assert.strictEqual(room.submitAnswer(p.id, [0]), false);
+  });
+
+  describe('resubmission while others are still answering', () => {
+    const QUIZ = { title: 'Test', questions: [{ type: 'multiple-choice', text: 'Q1', options: ['A', 'B', 'C'], correctIndices: [0] }] };
+
+    function roomWith(...names) {
+      const room = new Room('ABC123', 'token', QUIZ);
+      const ended = [];
+      room.onAutoEnd = (results) => ended.push(results);
+      const participants = names.map((name) => room.addParticipant({ readyState: 1 }, name));
+      room.startGame();
+      return { room, ended, participants };
+    }
+
+    it('replaces the answer and its time, and the last one is scored', () => {
+      const { room, participants: [alice] } = roomWith('Alice', 'Bob');
+      const realNow = Date.now;
+      try {
+        Date.now = () => 1_000;
+        room.submitAnswer(alice.id, [1]);
+        Date.now = () => 2_000;
+        assert.strictEqual(room.submitAnswer(alice.id, [0]), 'replaced');
+      } finally {
+        Date.now = realNow;
+      }
+      assert.deepStrictEqual(room.currentAnswers.get(alice.id), { answer: [0], timestamp: 2_000 });
+      assert.strictEqual(room.currentAnswers.size, 1, 'still one answer from Alice');
+      assert.strictEqual(room.endQuestion().scores.get(alice.id), 100);
+    });
+
+    it('never closes the question; the last first answer still does', () => {
+      const { room, ended, participants: [alice, bob] } = roomWith('Alice', 'Bob');
+      room.submitAnswer(alice.id, [1]);
+      room.submitAnswer(alice.id, [2]);
+      room.submitAnswer(alice.id, [0]);
+      assert.strictEqual(room.state, 'question');
+      assert.strictEqual(ended.length, 0);
+
+      room.submitAnswer(bob.id, [1]);
+      assert.strictEqual(room.state, 'results');
+      assert.strictEqual(ended.length, 1);
+      assert.strictEqual(ended[0].scores.get(alice.id), 100, 'the replacement is what was scored');
+    });
+
+    it('is refused once the question has closed, and changes nothing', () => {
+      const { room, participants: [alice, bob] } = roomWith('Alice', 'Bob');
+      room.submitAnswer(alice.id, [1]);
+      room.submitAnswer(bob.id, [1]);
+      assert.strictEqual(room.state, 'results');
+      assert.strictEqual(room.submitAnswer(alice.id, [0]), false);
+      assert.deepStrictEqual(room.currentAnswers.get(alice.id).answer, [1]);
+      assert.strictEqual(room.getParticipantById(alice.id).score, 0);
+    });
+
+    it('refuses a malformed replacement and keeps the earlier answer', () => {
+      const { room, participants: [alice] } = roomWith('Alice', 'Bob');
+      room.submitAnswer(alice.id, [1]);
+      assert.strictEqual(room.submitAnswer(alice.id, [7]), false);
+      assert.deepStrictEqual(room.currentAnswers.get(alice.id).answer, [1]);
+    });
+
+    it('getShownAnswer gives the answer back, or null before one', () => {
+      const { room, participants: [alice] } = roomWith('Alice', 'Bob');
+      assert.strictEqual(room.getShownAnswer(alice.id), null);
+      room.submitAnswer(alice.id, [2, 0, 2]);
+      assert.deepStrictEqual(room.getShownAnswer(alice.id), [0, 2], 'normalized, as stored');
+    });
   });
 
   it('submitAnswer auto-ends when all participants answered', () => {
@@ -952,7 +1020,9 @@ describe('Participant reattach', () => {
     room.reattachParticipant(room.resumeTokenFor(p.id), socket());
 
     assert.ok(room.currentAnswers.has(p.id));
-    assert.strictEqual(room.submitAnswer(p.id, [0]), false, 'a second answer must be refused');
+    assert.deepStrictEqual(room.getShownAnswer(p.id), [1], 'their answer, to be shown again');
+    assert.strictEqual(room.submitAnswer(p.id, [0]), 'replaced', 'and it may still be changed');
+    assert.deepStrictEqual(room.getShownAnswer(p.id), [0]);
   });
 
   it('refuses unknown, malformed and expired tokens', () => {
@@ -1426,6 +1496,18 @@ describe('Short-answer questions', () => {
     assert.strictEqual(results.scores.get(carol.id), 0);
   });
 
+  it('matches a replaced answer again', () => {
+    const { room, participants: [alice, bob] } = shortAnswerRoom('Alice', 'Bob');
+    room.submitAnswer(alice.id, 'Overriding');
+    assert.strictEqual(room.currentAnswers.get(alice.id).correct, false);
+    room.submitAnswer(alice.id, '  Overloading   of methods ');
+    assert.deepStrictEqual(room.currentAnswers.get(alice.id).answer, 'Overloading of methods');
+    assert.strictEqual(room.currentAnswers.get(alice.id).correct, true);
+    assert.strictEqual(room.getShownAnswer(alice.id), 'Overloading of methods');
+    room.submitAnswer(bob.id, 'Overriding');
+    assert.deepStrictEqual([alice, bob].map((p) => p.score), [100, 0]);
+  });
+
   it('tells a participant whether they were right, but not what was right', () => {
     const { room, participants: [alice, bob] } = shortAnswerRoom('Alice', 'Bob');
     room.submitAnswer(alice.id, 'Overloading');
@@ -1731,6 +1813,23 @@ describe('Ordering questions', () => {
     assert.deepStrictEqual(bad.question.options, shown);
     assert.notDeepStrictEqual(bad.question.options, ITEMS);
     assert.deepStrictEqual(bad.answer, [0, 1, 2, 3]);
+  });
+
+  it('gives a participant back their order as shown, and takes a changed one', () => {
+    const { room, participants: [alice, bob] } = orderingRoom('Alice', 'Bob');
+    const wrong = answerFor(room, [ITEMS[1], ITEMS[0], ITEMS[2], ITEMS[3]]);
+    const right = answerFor(room, ITEMS);
+    room.submitAnswer(alice.id, wrong);
+    assert.deepStrictEqual(room.getShownAnswer(alice.id), wrong, 'positions as shown, never the authored order');
+    assert.deepStrictEqual(room.currentAnswers.get(alice.id).answer, [1, 0, 2, 3]);
+
+    assert.strictEqual(room.submitAnswer(alice.id, right), 'replaced');
+    assert.deepStrictEqual(room.getShownAnswer(alice.id), right);
+    assert.deepStrictEqual(room.currentAnswers.get(alice.id).answer, [0, 1, 2, 3]);
+
+    room.submitAnswer(bob.id, [0, 1, 2, 3]);
+    assert.strictEqual(room.state, 'results');
+    assert.deepStrictEqual([alice, bob].map((p) => p.score), [100, 0]);
   });
 
   it('records how often each item was put in its place, without names', () => {

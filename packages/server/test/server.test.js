@@ -752,6 +752,8 @@ describe('Server integration', () => {
       // that identity could answer the same question again, and the first one
       // -- which the presenter's results still referred to -- stopped
       // resolving to anybody and showed up as a phantom 'Unknown' row.
+      // A second answer from the socket is now Alice changing her own answer,
+      // which is allowed while the question is open -- never a second one.
       send(alice.ws, { type: 'join_room', roomId, name: 'Alice Adams' });
       await waitFor(alice.ws, 'error');
       send(alice.ws, { type: 'submit_answer', answer: [1] });
@@ -764,8 +766,10 @@ describe('Server integration', () => {
       assert.strictEqual(msg.answers.length, 2, 'two people answered, so there are two answers');
       assert.ok(!msg.answers.some((a) => a.name === 'Unknown'),
         'the presenter must never be shown a row it cannot name');
-      assert.strictEqual(msg.answers.filter((a) => a.name === 'Alice Adams').length, 1);
-      assert.strictEqual(msg.leaderboard.find((p) => p.name === 'Alice Adams').score, 100);
+      const aliceRows = msg.answers.filter((a) => a.name === 'Alice Adams');
+      assert.strictEqual(aliceRows.length, 1);
+      assert.deepStrictEqual(aliceRows[0].answer, [1], 'her changed answer, as her own');
+      assert.strictEqual(msg.leaderboard.length, 2, 'and still two people on the board');
     });
   });
 
@@ -866,7 +870,7 @@ describe('Server integration', () => {
       assert.strictEqual(results.leaderboard.find((e) => e.name === 'Alice Adams').score, 100);
     });
 
-    it('lands an answered-then-dropped participant on "waiting", and refuses a second answer', async () => {
+    it('gives an answered-then-dropped participant their answer back, and takes a changed one', async () => {
       const presenter = await openRoom();
       const { roomId } = presenter.created;
       const alice = await joinRoom(roomId, 'Alice Adams');
@@ -881,17 +885,43 @@ describe('Server integration', () => {
       const question = await waitFor(back.ws, 'question');
       assert.strictEqual(question.alreadyAnswered, true);
       assert.strictEqual(question.questionIndex, 0);
+      assert.deepStrictEqual(question.yourAnswer, [1], 'so the page can show it again');
 
+      presenter.ws.inbox.length = 0;
       send(back.ws, { type: 'submit_answer', answer: [0, 2] });
+      const accepted = await waitFor(back.ws, 'answer_accepted');
+      assert.strictEqual(accepted.replaced, true);
       await settle();
-      assert.ok(!back.ws.inbox.some((m) => m.type === 'answer_accepted'), 'a second answer was accepted');
+      assert.ok(!presenter.ws.inbox.some((m) => m.type === 'answer_count'),
+        'a replacement does not change the count of answers');
 
       const results = waitFor(presenter.ws, 'question_results');
       send(bob.ws, { type: 'submit_answer', answer: [1] });
       const msg = await results;
-      assert.deepStrictEqual(msg.answers.find((a) => a.name === 'Alice Adams').answer, [1],
-        'the first answer must stand');
+      assert.deepStrictEqual(msg.answers.find((a) => a.name === 'Alice Adams').answer, [0, 2],
+        'the changed answer counts');
+      assert.strictEqual(msg.answers.find((a) => a.name === 'Alice Adams').points, 100);
       assert.strictEqual(msg.answers.length, 2);
+    });
+
+    it('refuses a changed answer once the question has closed, and says which one counted', async () => {
+      const presenter = await openRoom();
+      const { roomId } = presenter.created;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      const bob = await joinRoom(roomId, 'Bob Brown');
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(alice.ws, 'question');
+      send(alice.ws, { type: 'submit_answer', answer: [1] });
+      await waitFor(alice.ws, 'answer_accepted');
+      send(bob.ws, { type: 'submit_answer', answer: [1] });
+      const results = await waitFor(alice.ws, 'results');
+      assert.deepStrictEqual(results.feedback.answer, [1]);
+
+      send(alice.ws, { type: 'submit_answer', answer: [0, 2] });
+      const refusal = await waitFor(alice.ws, 'error');
+      assert.strictEqual(refusal.code, 'no_open_question');
+      const room = quizServer.roomManager.getRoom(roomId);
+      assert.deepStrictEqual(room.currentAnswers.get(alice.reply.participantId).answer, [1]);
     });
 
     it('offers the open question again to somebody who had not answered yet', async () => {

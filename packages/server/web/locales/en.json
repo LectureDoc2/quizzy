@@ -14,6 +14,7 @@
   "connection.lost": "Connection lost. Please refresh the page.",
   "connection.superseded": "This quiz was continued in another tab or window.",
   "connection.answerLost": "Your answer did not reach the server before the connection dropped. Please answer again.",
+  "connection.changeLost": "Your changed answer did not reach the server before the connection dropped. Your earlier answer still counts; press Resubmit to send the change again.",
   "connection.missedQuestions": {
     "one": "Question {list} closed while you were reconnecting, so it scores nothing for you.",
     "other": "Questions {list} closed while you were reconnecting, so they score nothing for you."
@@ -51,6 +52,11 @@
   "question.counter": "Question {current} of {total}",
   "question.submit": "Submit",
   "question.timeLeft": "({seconds} sec. left)",
+  "question.sending": "Sending…",
+  "question.submitted": "Submitted ✓",
+  "question.resubmit": "Resubmit",
+  "question.resubmitted": "Resubmitted ✓",
+  "question.resubmitNote": "You can still change your answer while others are answering. The round may end at any moment.",
   "question.estimatePlaceholder": "Your estimate",
   "question.termPlaceholder": "Your answer",
   "question.expectedLength": "Expected length: {min}–{max} characters",

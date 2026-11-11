@@ -81,8 +81,12 @@ Invariants, each covered by a test:
    a lift.
 2. **`currentAnswers` is keyed by `participantId` and is untouched by
    detach/attach.** A student who answered, dropped and came back gets the
-   question replayed with `alreadyAnswered: true`, and the page shows "Answer
-   submitted", not the question again.
+   question replayed with `alreadyAnswered: true` and `yourAnswer`, the answer
+   the server holds. The page shows the question again with that answer in
+   place, marked "Submitted ✓", and the student may still change it while the
+   question is open. A changed answer that was sent but never arrived shows up
+   as a `yourAnswer` other than the one sent; the page says so and offers to
+   resubmit.
 3. **A kick purges before it closes the socket**, so the page's own automatic
    reconnect cannot undo it.
 4. **One socket, one role.** The `if (ws.role)` guard of `join_room` also

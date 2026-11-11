@@ -55,8 +55,10 @@ const reducedMotion = () =>
  * @param {(item: HTMLElement, position: number, total: number) => void} [options.onMove]
  *   called after an item was moved to a new position (0-based), by a drag or a
  *   button; for announcing the move.
- * @returns {{ order: () => number[] }} `order()` is the items' data-index
- *   values in their current order.
+ * @returns {{ order: () => number[], setOrder: (order: number[]) => void }}
+ *   `order()` is the items' data-index values in their current order;
+ *   `setOrder()` puts the items in such an order again (an answer given
+ *   before a reload), without animation and without calling onMove.
  */
 export function attachSortable(list, { onMove } = {}) {
   const items = () => Array.from(list.children);
@@ -319,6 +321,16 @@ export function attachSortable(list, { onMove } = {}) {
   updateButtons();
 
   return {
-    order: () => items().map((item) => Number(item.dataset.index))
+    order: () => items().map((item) => Number(item.dataset.index)),
+    setOrder(order) {
+      if (drag || !Array.isArray(order)) return;
+      const byIndex = new Map(items().map((item) => [Number(item.dataset.index), item]));
+      // Only a complete order: a partial one would leave the rest wherever
+      // they happened to be, an order nobody chose.
+      if (order.length !== byIndex.size || new Set(order).size !== order.length ||
+        !order.every((index) => byIndex.has(index))) return;
+      for (const index of order) list.appendChild(byIndex.get(index));
+      updateButtons();
+    }
   };
 }

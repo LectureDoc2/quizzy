@@ -10,6 +10,7 @@ A real-time, embeddable quiz application designed for integration with any HTML-
 - **Presenter Control**: Separate control window with session management and reconnection support
 - **Participant QR Code Join**: Participants scan a QR code or use a short link to join
 - **Participant Reconnect**: A participant whose connection drops, or who reloads the page, carries on with the same name and score
+- **Changing an Answer**: After Submit the question stays on screen. Until everybody has answered (or the time is up, or the presenter ends the question), a participant can change their answer and resubmit it; the last answer that reaches the server counts
 - **Results Export**: After the quiz, the control window exports a per-question summary as CSV. A quiz can also ask participants for consent to include their name and final score ([`recordNamedResults`](#quiz-json-format))
 - **Practice Mode**: Students play quizzes from a server-side catalog on their own, without a presenter; the server runs the game ([below](#practice-mode))
 - **Math Formula Support**: Server-based KaTeX rendering for quiz questions and answers
@@ -500,7 +501,9 @@ Messages that open a conversation (`create_room`, `join_room`, `rejoin_room`,
 - `rejoin_room`: Come back as an existing participant after a dropped connection or a reload
   - `roomId`: Room to rejoin
   - `resumeToken`: The token received in `joined`
-- `submit_answer`: Submit an answer
+- `submit_answer`: Submit an answer, or a changed one: while the question is open, a second
+  answer replaces the first. The question closes once every connected participant has answered,
+  so a change made before that counts; one that arrives later is refused with `no_open_question`
   - `answer`: Array of option indices (multiple-choice), a number (estimation), a string
     (short-answer; no longer than the question's `maxLength`, spacing collapsed and umlauts written out),
     or for ordering every index of the question's `options` as received, once each, in the
@@ -524,7 +527,8 @@ Messages that open a conversation (`create_room`, `join_room`, `rejoin_room`,
 - `question_started`: Next question is active; includes `questionIndex` and `question`
 - `question_results`: Question ended; includes `questionIndex`, `answers`, and `leaderboard`. Sent
   again after `accept_answer`; an answer the presenter accepted carries `acceptedByPresenter: true`
-- `answer_count`: Live count of submitted answers during a question
+- `answer_count`: Live count of submitted answers during a question. A changed answer does not
+  change the count, and sends none
 - `participant_joined` / `participant_left`: Participant count updates, as above
 - `participants_list`: Reply to `get_participants`; each entry has `id`, `name`, `score` and `connected`
 - `game_ended` / `results_export`: The quiz ended, or reply to `export_results`; `statistics` holds the
@@ -543,11 +547,15 @@ Messages that open a conversation (`create_room`, `join_room`, `rejoin_room`,
 - `consent_updated`: Reply to an accepted `set_consent`; includes `consent`
 - `rejoin_failed`: The token is unknown or expired, or the room is gone. Join again as a new participant
 - `question`: New question available; includes `questionIndex`, `totalQuestions`, `question`, `startTime`,
-  and `alreadyAnswered` when it is replayed to somebody who has already answered. `question` carries
+  and `alreadyAnswered` when it is replayed to somebody who has already answered, with `yourAnswer`,
+  their answer as they gave it (for ordering, in the shown order), so the page can show it again and
+  offer to change it. `question` carries
   `type`, `text`, `options` and `timeLimit`, and for a short-answer question `answerLength: { min, max }`
   and `maxLength`, derived from the accepted answers — never the answers themselves. An ordering
   question's `options` are shuffled, the same for everybody in the room and never in the correct
   order
+- `answer_accepted`: The answer arrived while the question was open; `replaced: true` if it replaced
+  an earlier one. Not sent for the answer that closes the question: `results` follows instead
 - `results`: Round results with `leaderboard`, `questionIndex`, and `waiting`. In a practice game
   also `practice: true`, `totalQuestions` and `advanceInMs` (time left on the countdown), and an estimate's
   `feedback` carries `band` (10, 25, 50 or `null`) and `points` instead of a rank. Sent again when the

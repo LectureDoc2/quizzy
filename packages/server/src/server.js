@@ -1157,8 +1157,15 @@ function createQuizServer(options = {}) {
             return;
           }
 
-          const success = room.submitAnswer(ws.participantId, msg.answer);
-          if (success) {
+          // A second answer replaces the first while the question is open; see
+          // Room.submitAnswer().
+          const outcome = room.submitAnswer(ws.participantId, msg.answer);
+          if (outcome === 'replaced') {
+            // The page says "Resubmitted" only once this arrives, so a
+            // replacement lost on a dying connection is not shown as counted.
+            // No answer_count: the presenter's count has not changed.
+            ws.send(JSON.stringify({ type: 'answer_accepted', replaced: true }));
+          } else if (outcome) {
             // Only send answer_accepted if the question is still active.
             // If auto-end triggered, the client will receive 'results' instead.
             if (room.state === 'question') {
@@ -1342,19 +1349,23 @@ function createQuizServer(options = {}) {
    * the latest results, or the final board. Shared by a first join (a
    * latecomer) and a rejoin.
    *
-   * `alreadyAnswered` is what keeps a student who answered, dropped and came
-   * back from being shown a question they can no longer answer -- the server
-   * would refuse a second answer, so the page must not invite one.
+   * `alreadyAnswered` tells a student who answered, dropped and came back that
+   * their answer arrived; `yourAnswer` is that answer, as they gave it, so the
+   * page can show it again -- and offer to change it, which the server accepts
+   * while the question is open. It is also how the page notices that a changed
+   * answer sent just before the drop never arrived.
    */
   function sendRoomState(ws, room, participantId) {
     if (room.state === 'question') {
+      const alreadyAnswered = room.currentAnswers.has(participantId);
       safeSend(ws, {
         type: 'question',
         questionIndex: room.currentQuestionIndex,
         totalQuestions: room.quiz.questions.length,
         question: room.getPublicQuestion(),
         startTime: room.currentQuestionStartTime,
-        alreadyAnswered: room.currentAnswers.has(participantId)
+        alreadyAnswered,
+        ...(alreadyAnswered ? { yourAnswer: room.getShownAnswer(participantId) } : {})
       });
     } else if (room.state === 'results') {
       const results = room.scoreQuestion(room.getCurrentQuestion());

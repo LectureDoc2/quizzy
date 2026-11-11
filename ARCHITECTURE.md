@@ -267,6 +267,12 @@ sequenceDiagram
     A-->>P: answer_accepted
     A-->>K: answer_count
 
+    opt changed while others are still answering
+    P->>A: submit_answer
+    Note over A: replaces the earlier answer;<br/>the count stays as it is
+    A-->>P: answer_accepted { replaced }
+    end
+
     Note over A: ends on the time limit, or once<br/>every present participant has answered
     A-->>D: question_results
     A-->>K: question_results

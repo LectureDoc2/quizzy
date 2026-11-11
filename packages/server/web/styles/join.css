@@ -153,6 +153,49 @@
     }
   }
 
+  /* Answered, with the question still open (see renderQuestion()): the note
+     says the answer may still be changed, and the button below it -- smaller,
+     to make room, but still a full touch target -- says whether the answer on
+     screen is the one that counts. It stays the last thing above the footer,
+     so it keeps clear of Safari's bottom bar like Submit did. */
+  .resubmit-note {
+    margin: var(--quiz-space-md) 0 0;
+    padding: var(--quiz-space-sm);
+    font-size: 0.875rem;
+    color: var(--quiz-text);
+    background: var(--quiz-resubmit-tint);
+    border: 1px solid var(--quiz-resubmit);
+    border-radius: var(--quiz-radius-sm);
+  }
+
+  .btn.submit--answered {
+    display: flex;
+    width: fit-content;
+    min-width: 60%;
+    min-height: 2.75rem;
+    margin: var(--quiz-space-xs) auto 0;
+    font-size: 0.9375rem;
+  }
+
+  /* Nothing to send: what is on screen is what counts. */
+  .btn.submit--done:disabled {
+    background: var(--quiz-surface-alt);
+    color: var(--quiz-success-dark);
+    border: 1px solid var(--quiz-border);
+    opacity: 1;
+    cursor: default;
+  }
+
+  /* Changed, and not sent yet. */
+  .btn.submit--resubmit:not(:disabled) {
+    background: var(--quiz-resubmit);
+    color: var(--quiz-resubmit-text);
+
+    &:hover {
+      background: var(--quiz-resubmit-hover);
+    }
+  }
+
   .room-state {
     text-align: center;
     margin-bottom: var(--quiz-space-lg);
@@ -254,6 +297,7 @@
   .consent-status__toggle {
     font-size: 0.875rem;
     padding: 0.375rem var(--quiz-space-sm);
+    width: 100%;
   }
 
   /* --- Practice mode ---------------------------------------------------- */

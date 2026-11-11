@@ -568,9 +568,23 @@ class Room {
     return { valid: false, code: 'invalid_answer', error: 'Unsupported question type' };
   }
 
+  /**
+   * Take a participant's answer to the open question, or replace the one they
+   * gave before.
+   *
+   * A second answer replaces the first for as long as the question is open.
+   * Students do press Submit by accident, and a question stays open only while
+   * somebody who is still in the room has not answered (or until the timer or
+   * the presenter closes it): the last answer to come in closes the question,
+   * so nobody waits any longer for a correction than they would have anyway.
+   * Nothing is lost by the replacement -- scoring never looks at the time of an
+   * answer, and the statistics are taken when the question closes.
+   *
+   * @returns {false|true|'replaced'} false if refused; 'replaced' if an
+   *   earlier answer was replaced, which leaves the count of answers as it was
+   */
   submitAnswer(participantId, answer) {
     if (this.state !== 'question') return false;
-    if (this.currentAnswers.has(participantId)) return false;
 
     // Validated here as well as at the transport layer, so that no caller can
     // place an unvalidated value into currentAnswers.
@@ -578,6 +592,7 @@ class Room {
     if (!validation.valid) return false;
     answer = validation.answer;
 
+    const replaced = this.currentAnswers.has(participantId);
     const record = { answer, timestamp: Date.now() };
     // Matched now rather than when the question closes: closing can happen in
     // a timer callback, and should not have to match a whole hall's answers.
@@ -586,6 +601,10 @@ class Room {
       record.correct = matchesAcceptedAnswer(question, answer);
     }
     this.currentAnswers.set(participantId, record);
+
+    // A replacement leaves the same people waited for, so it can never be what
+    // closes the question.
+    if (replaced) return 'replaced';
 
     // Close the question as soon as nobody who is still in the room is being
     // waited for. Comparing currentAnswers.size against participants.size was
@@ -620,6 +639,27 @@ class Room {
       if (!this.currentAnswers.has(participant.id)) awaited++;
     }
     return awaited;
+  }
+
+  /**
+   * A participant's answer to the current question as they gave it, or null
+   * if they have not answered.
+   *
+   * Their page can show this again -- after a reload, while they may still
+   * change it, and on the results screen. The same as what is stored, except
+   * for an ordering question: stored are the authored indices (see
+   * validateAnswer()), but the participant only knows the positions the items
+   * were shown in, and the authored order is the correct one, never sent.
+   *
+   * @returns {number|number[]|string|null}
+   */
+  getShownAnswer(participantId) {
+    const submitted = this.currentAnswers.get(participantId);
+    if (submitted === undefined) return null;
+    if (this.getCurrentQuestion()?.type !== 'ordering') return submitted.answer ?? null;
+    if (!Array.isArray(submitted.answer) || !Array.isArray(this.currentOrder)) return null;
+    const shownAt = invertOrder(this.currentOrder);
+    return submitted.answer.map((item) => shownAt[item]);
   }
 
   endQuestion() {
@@ -1013,18 +1053,15 @@ class Room {
         options: Array.isArray(question.options) ? question.options : undefined
       },
       answered: submitted !== undefined,
-      answer: submitted?.answer ?? null
+      answer: this.getShownAnswer(participantId)
     };
 
     if (question.type === 'ordering') {
       // The items as they were shown, and the answer as positions in that
-      // list. The authored order is the correct one, so it is never sent.
+      // list (see getShownAnswer()). The authored order is the correct one, so
+      // it is never sent.
       const order = Array.isArray(this.currentOrder) ? this.currentOrder : [];
       feedback.question.options = order.map((item) => question.options[item]);
-      const shownAt = invertOrder(order);
-      feedback.answer = Array.isArray(submitted?.answer)
-        ? submitted.answer.map((item) => shownAt[item])
-        : null;
     }
 
     if (question.type === 'multiple-choice' || question.type === 'short-answer' || question.type === 'ordering') {

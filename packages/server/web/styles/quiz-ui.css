@@ -16,6 +16,14 @@
         --quiz-danger-alpha-5: rgba(220, 38, 38, 0.05);
         --quiz-danger-alpha-20: rgba(220, 38, 38, 0.2);
 
+        /* Resubmit, a changed answer that does not count yet. Orange with
+           dark text, so that it cannot be taken for the red, white-lettered
+           "time is almost up" (danger); text contrast 5.2:1 (hover 6.5:1). */
+        --quiz-resubmit: #f97316;
+        --quiz-resubmit-hover: #fb923c;
+        --quiz-resubmit-text: #1e293b;
+        --quiz-resubmit-tint: #fff7ed;
+
         --quiz-warning: #ca8a04;
 
         --quiz-bg: #f8fafc;

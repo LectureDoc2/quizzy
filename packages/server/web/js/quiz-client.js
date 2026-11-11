@@ -57,6 +57,15 @@ function expectedLengthText(answerLength) {
     : t('question.expectedLength', { min, max });
 }
 
+/**
+ * Whether two answers are the same: an answer on screen and one already sent.
+ * Answers are numbers, strings and arrays of numbers -- in the same form on
+ * both sides, see renderQuestion() -- so their JSON is a fair comparison.
+ */
+function sameAnswer(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 class QuizClient {
   constructor() {
     this.ws = null;
@@ -77,6 +86,10 @@ class QuizClient {
     // how a rejoin works out what happened while the page was away.
     this.questionIndex = null;
     this.answerSubmitted = false;
+    // The question on screen (see renderQuestion()), and the answer last sent
+    // for it: { answer, confirmed, replaced }, or null before Submit.
+    this.questionView = null;
+    this.submission = null;
     this.rejoinContext = null;
     // A practice game: one student, no presenter, the server moves it on.
     // practiceQuizId comes from `?practice=` and names the catalog entry.
@@ -622,20 +635,45 @@ class QuizClient {
         }
         const sameQuestion = this.state === 'question' && this.questionIndex === msg.questionIndex;
         const answerWasLost = sameQuestion && this.answerSubmitted && !msg.alreadyAnswered;
+        // Back on the question that was on screen when the connection dropped.
+        const onScreen = sameQuestion && this.questionView?.isOnScreen() === true;
+        // What this page last sent for it, before the connection dropped.
+        const sent = sameQuestion ? this.submission : null;
         this.state = 'question';
         this.questionIndex = msg.questionIndex;
         this.totalQuestions = msg.totalQuestions;
 
-        if (msg.alreadyAnswered) {
-          // Answered, dropped, came back: the server would refuse a second
-          // answer, so the question must not be offered again.
+        if (msg.alreadyAnswered && msg.yourAnswer === undefined) {
+          // A server that does not say what the answer was cannot be offered
+          // a changed one either.
           this.answerSubmitted = true;
           this.renderWaiting(t('status.answerSubmittedWaiting'));
           break;
         }
-        if (sameQuestion && !this.answerSubmitted && document.getElementById('question-text')) {
-          // Back on the question that was on screen when the connection
-          // dropped: keep it, and whatever the student had already selected.
+        if (msg.alreadyAnswered) {
+          // Answered, dropped, came back: the answer arrived, and may still be
+          // changed. What the server holds is what counts.
+          this.answerSubmitted = true;
+          if (!onScreen) {
+            this.renderQuestion(msg.question, msg.questionIndex, msg.totalQuestions, msg.startTime, msg.yourAnswer);
+            break;
+          }
+          // Whatever the student has on screen stays there; if it is not what
+          // the server holds, the button offers to resubmit it.
+          if (sent && !sameAnswer(sent.answer, msg.yourAnswer)) {
+            this.showNotice(t('connection.changeLost'));
+          }
+          this.submission = {
+            answer: msg.yourAnswer,
+            confirmed: true,
+            replaced: sent?.replaced === true && sameAnswer(sent.answer, msg.yourAnswer)
+          };
+          this.questionView.refresh();
+          break;
+        }
+        if (onScreen && !this.answerSubmitted) {
+          // Not answered yet: keep the question, and whatever the student had
+          // already selected.
           break;
         }
         if (answerWasLost) {
@@ -643,6 +681,11 @@ class QuizClient {
         }
         this.answerSubmitted = false;
         this.renderQuestion(msg.question, msg.questionIndex, msg.totalQuestions, msg.startTime);
+        // The answer that never arrived, back on screen to be sent again.
+        if (answerWasLost && sent) {
+          this.questionView.setAnswer(sent.answer);
+          this.questionView.refresh();
+        }
         break;
       }
 
@@ -678,7 +721,14 @@ class QuizClient {
 
       case 'answer_accepted':
         // Ignore if results are already shown (e.g., question auto-ended)
-        if (this.state !== 'results' && this.state !== 'ended') {
+        if (this.state !== 'question') break;
+        if (this.submission && this.questionView?.isOnScreen()) {
+          // Only now "Submitted ✓": an answer sent on a connection that was
+          // already dead must not look as if it had counted.
+          this.submission.confirmed = true;
+          this.submission.replaced = msg.replaced === true;
+          this.questionView.refresh();
+        } else {
           this.renderWaiting(t('status.answerSubmittedWaiting'));
         }
         break;
@@ -706,6 +756,13 @@ class QuizClient {
           clearTimeout(this.reconnectTimer);
           this.setReconnecting(false);
           this.showError(t('error.protocol_mismatch', { version: PROTOCOL_VERSION }));
+          break;
+        }
+        // An answer that crossed the question closing -- a resubmission sent
+        // as the last student answered, say. The results that closed it have
+        // already replaced the question, and show which answer counted; an
+        // error screen in their place would only hide that.
+        if (msg.code === 'no_open_question' && this.state !== 'question') {
           break;
         }
         // A refused consent change (the quiz has just ended, say) belongs in
@@ -765,7 +822,16 @@ class QuizClient {
     content.querySelector('p').textContent = message;
   }
 
-  renderQuestion(question, index, total, startTime) {
+  /**
+   * Show a question, ready to be answered.
+   *
+   * The question stays on screen once it is answered: until everybody has
+   * answered (or the timer or the presenter closes it), the student may change
+   * their answer and send it again, and the server takes the last one. See
+   * Room.submitAnswer(). `submitted`, if given, is an answer the server already
+   * holds -- a reload after answering -- shown again in that state.
+   */
+  renderQuestion(question, index, total, startTime, submitted) {
     const content = document.getElementById('content');
     const timeLimit = question.timeLimit || 0;
     // The time left sits in Submit itself, where the student looks when
@@ -774,6 +840,8 @@ class QuizClient {
     // every second; its name stays "Submit".
     const submitLabel = html('question.submit') +
       (timeLimit > 0 ? ' <span class="submit__time" aria-hidden="true"></span>' : '');
+    // Directly above the button, once there is an answer that may be changed.
+    const resubmitNote = `<p class="resubmit-note" id="resubmit-note" role="status" hidden>${html('question.resubmitNote')}</p>`;
 
     let inputHtml = '';
     if (question.type === 'multiple-choice') {
@@ -783,12 +851,14 @@ class QuizClient {
             <div class="option" data-index="${i}">${opt}</div>
           `).join('')}
         </div>
+        ${resubmitNote}
         <button class="btn btn--primary btn--full question__submit" id="submit-btn">${submitLabel}</button>
       `;
     } else if (question.type === 'estimation') {
       inputHtml = `
         <form id="answer-form">
           <input type="number" id="answer" class="input" placeholder="${html('question.estimatePlaceholder')}" step="any" required>
+          ${resubmitNote}
           <button type="submit" class="btn btn--primary btn--full" id="submit-btn">${submitLabel}</button>
         </form>
       `;
@@ -802,6 +872,7 @@ class QuizClient {
             autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
             aria-describedby="answer-length" required>
           <p class="answer-length" id="answer-length" aria-live="polite"></p>
+          ${resubmitNote}
           <button type="submit" class="btn btn--primary btn--full" id="submit-btn">${submitLabel}</button>
         </form>
       `;
@@ -824,6 +895,7 @@ class QuizClient {
           `).join('')}
         </ol>
         <p class="ordering__status" id="ordering-status" aria-live="polite"></p>
+        ${resubmitNote}
         <button class="btn btn--primary btn--full question__submit" id="submit-btn">${submitLabel}</button>
       `;
     }
@@ -838,11 +910,14 @@ class QuizClient {
     // pushes Submit further down.
     this.showProgress(t('question.counter', { current: index + 1, total }));
 
+    const submitBtn = document.getElementById('submit-btn');
+    const note = document.getElementById('resubmit-note');
+
     if (timeLimit > 0) {
-      const submitBtn = document.getElementById('submit-btn');
       const time = submitBtn.querySelector('.submit__time');
-      // False once there is nothing more to count: the time is up, or the
-      // question has been replaced.
+      // False once there is nothing more to count: the time is up, the
+      // question has been replaced, or it has been answered -- which takes the
+      // time out of the button (see refresh() below).
       const tick = () => {
         if (!time.isConnected) return false;
         const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -858,11 +933,65 @@ class QuizClient {
       }
     }
 
+    // Provided by the question type below: the answer as it stands on screen
+    // (null while there is none that could be sent), putting an earlier answer
+    // back on screen, and whether something else keeps Submit disabled.
+    let readAnswer = () => null;
+    let setAnswer = () => {};
+    let blocked = () => false;
+
+    // null until this question is answered; then the last answer sent, and
+    // whether the server has confirmed it. See submitAnswer().
+    this.submission = null;
+
+    /**
+     * Bring the button (and the note above it) in line with the answer on
+     * screen. Before the first answer: Submit, with the time left. Once
+     * answered there is no time left to show -- the question may close the
+     * moment the last student answers -- and the button says whether what is
+     * on screen is what the server holds: "Submitted ✓" (nothing to send), or
+     * Resubmit, in its own colour, once the answer has been changed. A changed
+     * answer that is never resubmitted does not count, and must not look as if
+     * it did.
+     */
+    const refresh = () => {
+      if (!submitBtn.isConnected) return;
+      const submission = this.submission;
+      if (submission === null) {
+        submitBtn.disabled = blocked();
+        return;
+      }
+      submitBtn.classList.remove('submit--urgent');
+      submitBtn.classList.add('submit--answered');
+      if (!submission.confirmed) {
+        submitBtn.classList.remove('submit--resubmit', 'submit--done');
+        submitBtn.textContent = t('question.sending');
+        submitBtn.disabled = true;
+        return;
+      }
+      note.hidden = false;
+      const answer = readAnswer();
+      const changed = !sameAnswer(answer, submission.answer);
+      submitBtn.classList.toggle('submit--resubmit', changed);
+      submitBtn.classList.toggle('submit--done', !changed);
+      submitBtn.textContent = changed
+        ? t('question.resubmit')
+        : t(submission.replaced ? 'question.resubmitted' : 'question.submitted');
+      submitBtn.disabled = !changed || answer === null || blocked();
+    };
+
+    const send = () => {
+      const answer = readAnswer();
+      if (answer === null || blocked()) return;
+      const submission = this.submission;
+      if (submission !== null && (!submission.confirmed || sameAnswer(answer, submission.answer))) return;
+      this.submitAnswer(answer);
+    };
+
     if (question.type === 'multiple-choice') {
       const selected = new Set();
-      const optionsEl = document.getElementById('options');
-      const submitBtn = document.getElementById('submit-btn');
-      optionsEl.querySelectorAll('.option').forEach(btn => {
+      const optionEls = Array.from(document.getElementById('options').querySelectorAll('.option'));
+      optionEls.forEach(btn => {
         btn.addEventListener('click', () => {
           const idx = parseInt(btn.dataset.index);
           if (selected.has(idx)) {
@@ -872,18 +1001,35 @@ class QuizClient {
             selected.add(idx);
             btn.classList.add('option--selected');
           }
+          refresh();
         });
       });
-      submitBtn.addEventListener('click', () => {
-        const answer = Array.from(selected).sort((a, b) => a - b);
-        this.submitAnswer(answer);
-      });
+      // An empty selection is an answer too ("I don't know"), as before.
+      readAnswer = () => Array.from(selected).sort((a, b) => a - b);
+      setAnswer = (answer) => {
+        if (!Array.isArray(answer)) return;
+        selected.clear();
+        for (const btn of optionEls) {
+          const idx = parseInt(btn.dataset.index);
+          const on = answer.includes(idx);
+          if (on) selected.add(idx);
+          btn.classList.toggle('option--selected', on);
+        }
+      };
+      submitBtn.addEventListener('click', send);
     } else if (question.type === 'estimation') {
+      const input = document.getElementById('answer');
+      readAnswer = () => {
+        const answer = parseFloat(input.value);
+        return Number.isFinite(answer) ? answer : null;
+      };
+      setAnswer = (answer) => {
+        if (typeof answer === 'number' && Number.isFinite(answer)) input.value = String(answer);
+      };
+      input.addEventListener('input', refresh);
       document.getElementById('answer-form').addEventListener('submit', (e) => {
         e.preventDefault();
-        const answer = parseFloat(document.getElementById('answer').value);
-        if (isNaN(answer)) return;
-        this.submitAnswer(answer);
+        send();
       });
     } else if (question.type === 'ordering') {
       const status = document.getElementById('ordering-status');
@@ -895,15 +1041,15 @@ class QuizClient {
             position: position + 1,
             total
           });
+          refresh();
         }
       });
-      document.getElementById('submit-btn').addEventListener('click', () => {
-        this.submitAnswer(sortable.order());
-      });
+      readAnswer = () => sortable.order();
+      setAnswer = (answer) => sortable.setOrder(answer);
+      submitBtn.addEventListener('click', send);
     } else if (question.type === 'short-answer') {
       const input = document.getElementById('answer');
       const hint = document.getElementById('answer-length');
-      const submitBtn = document.getElementById('submit-btn');
       const expected = expectedLengthText(question.answerLength);
       const maxLength = Number.isInteger(question.maxLength) && question.maxLength > 0 ? question.maxLength : null;
 
@@ -913,18 +1059,42 @@ class QuizClient {
         const tooLong = maxLength !== null && measuredLength(input.value) > maxLength;
         hint.textContent = tooLong ? t('question.answerTooLong') : expected;
         hint.classList.toggle('answer-length--exceeded', tooLong);
-        submitBtn.disabled = tooLong;
         return !tooLong;
       };
       fits();
-      input.addEventListener('input', fits);
+      blocked = () => !fits();
+      // Spacing collapsed as the server stores it, so that an answer given
+      // before a reload compares equal to the same text typed again.
+      readAnswer = () => {
+        const answer = input.value.replace(/\s+/g, ' ').trim();
+        return answer === '' ? null : answer;
+      };
+      setAnswer = (answer) => {
+        if (typeof answer !== 'string') return;
+        input.value = answer;
+        fits();
+      };
+      input.addEventListener('input', () => {
+        fits();
+        refresh();
+      });
       document.getElementById('answer-form').addEventListener('submit', (e) => {
         e.preventDefault();
-        const answer = input.value.trim();
-        if (answer === '' || !fits()) return;
-        this.submitAnswer(answer);
+        send();
       });
     }
+
+    this.questionView = {
+      isOnScreen: () => submitBtn.isConnected,
+      refresh,
+      setAnswer
+    };
+
+    if (submitted !== undefined && submitted !== null) {
+      setAnswer(submitted);
+      this.submission = { answer: submitted, confirmed: true, replaced: false };
+    }
+    refresh();
   }
 
   renderResults(leaderboard, questionIndex, waiting, feedback) {
@@ -1191,6 +1361,11 @@ class QuizClient {
     `;
   }
 
+  /**
+   * Send an answer, or a changed one: the server takes the last answer that
+   * arrives while the question is open. The question stays on screen, with the
+   * button saying "Sending…" until the server confirms (see answer_accepted).
+   */
   submitAnswer(answer) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({
@@ -1199,9 +1374,11 @@ class QuizClient {
       }));
       // Provisional: a socket can look open and already be dead. If the
       // answer never arrived, the rejoin's `alreadyAnswered: false` says so
-      // and the question is offered again.
+      // and the question is offered again; a changed answer that never
+      // arrived shows up as a `yourAnswer` other than the one sent.
       this.answerSubmitted = true;
-      this.renderWaiting(t('status.answerSubmitted'));
+      this.submission = { answer, confirmed: false, replaced: this.submission !== null };
+      this.questionView?.refresh();
     }
   }
 

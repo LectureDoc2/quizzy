@@ -14,6 +14,7 @@
   "connection.lost": "Die Verbindung wurde unterbrochen. Bitte laden Sie die Seite neu.",
   "connection.superseded": "Dieses Quiz wurde in einem anderen Tab oder Fenster fortgesetzt.",
   "connection.answerLost": "Ihre Antwort hat den Server vor dem Verbindungsabbruch nicht erreicht. Bitte antworten Sie erneut.",
+  "connection.changeLost": "Ihre geänderte Antwort hat den Server vor dem Verbindungsabbruch nicht erreicht. Es zählt weiterhin Ihre vorherige Antwort; drücken Sie „Erneut absenden“, um die Änderung noch einmal zu senden.",
   "connection.missedQuestions": {
     "one": "Frage {list} wurde geschlossen, während die Verbindung wiederhergestellt wurde. Sie bringt Ihnen deshalb keine Punkte.",
     "other": "Die Fragen {list} wurden geschlossen, während die Verbindung wiederhergestellt wurde. Sie bringen Ihnen deshalb keine Punkte."
@@ -51,6 +52,11 @@
   "question.counter": "Frage {current} von {total}",
   "question.submit": "Absenden",
   "question.timeLeft": "(noch {seconds} Sek.)",
+  "question.sending": "Wird gesendet …",
+  "question.submitted": "Abgeschickt ✓",
+  "question.resubmit": "Erneut absenden",
+  "question.resubmitted": "Erneut abgeschickt ✓",
+  "question.resubmitNote": "Sie können Ihre Antwort noch ändern, solange andere noch antworten. Die Runde kann jederzeit enden.",
   "question.estimatePlaceholder": "Ihre Schätzung",
   "question.termPlaceholder": "Ihre Antwort",
   "question.expectedLength": "Erwartete Länge: {min}–{max} Zeichen",

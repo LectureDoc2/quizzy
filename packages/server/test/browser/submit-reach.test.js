@@ -170,11 +170,36 @@ describe('Question screen on a phone (browser, full stack)', () => {
       return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
     });
     await page.touchscreen.tap(centre.x, centre.y);
-    await page.waitForFunction(
-      () => document.getElementById('content').textContent.includes('Answer submitted'),
-      null,
-      { timeout: 3000 }
-    );
+    // The only participant: their answer closes the question.
+    await page.waitForSelector('.results', { timeout: 3000 });
+  });
+
+  it('leaves room under Resubmit, with the note above it, at the end of a long question', async () => {
+    const { page, roomId } = await onQuestion(LONG['multiple-choice'], PHONES['a small phone']);
+    // Somebody still answering, so the question stays open once answered.
+    const bob = connectSocket(`${originFor('ws', loopbackHost(), backendPort)}/ws`);
+    sockets.push(bob);
+    await bob.opened;
+    bob.sendJson({ type: 'join_room', roomId, name: 'Bob Brown' });
+    await bob.take('joined');
+
+    await page.tap('#options .option:first-child');
+    await page.tap('#submit-btn');
+    await page.waitForFunction(() => document.getElementById('submit-btn').textContent === 'Submitted ✓');
+    await page.tap('#options .option:nth-child(2)');
+    await page.waitForSelector('#submit-btn.submit--resubmit:not(:disabled)');
+
+    const at = await submitAtEnd(page);
+    assert.ok(at.bottom <= at.innerHeight - CLEARANCE_PX,
+      `Resubmit ends at ${at.bottom}, within ${CLEARANCE_PX}px of the bottom edge (${at.innerHeight})`);
+    assert.ok(at.onTop, 'something covers Resubmit');
+    const note = await page.evaluate(() => {
+      const box = document.getElementById('resubmit-note').getBoundingClientRect();
+      const button = document.getElementById('submit-btn').getBoundingClientRect();
+      return { above: box.bottom <= button.top, height: button.height };
+    });
+    assert.ok(note.above, 'the note is not above the button');
+    assert.ok(note.height >= 44, `Resubmit is ${note.height}px tall, less than a touch target`);
   });
 
   it('starts the question near the top, with room and progress in the footer', async () => {

@@ -883,6 +883,24 @@ class QuizControl {
     return holder.textContent.replace(/\s+/g, " ").trim();
   }
 
+  /**
+   * When the quiz was played, in the lecturer's own time zone: YYYY-MM-DD and
+   * HH:MM, which a spreadsheet reads as a date and a time whatever its locale.
+   */
+  static localDate(epochMs) {
+    const d = new Date(epochMs);
+    if (!Number.isFinite(d.getTime())) return "";
+    const two = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+  }
+
+  static localTime(epochMs) {
+    const d = new Date(epochMs);
+    if (!Number.isFinite(d.getTime())) return "";
+    const two = (n) => String(n).padStart(2, "0");
+    return `${two(d.getHours())}:${two(d.getMinutes())}`;
+  }
+
   /** Quote a CSV field per RFC 4180. */
   static csvField(value) {
     if (value === null || value === undefined) return "";
@@ -942,6 +960,10 @@ class QuizControl {
 
     rows.push(QuizControl.csvRow(["Quiz", stats.quizTitle]));
     rows.push(QuizControl.csvRow(["Room", stats.roomId]));
+    // The name the session was started under -- typically the course.
+    rows.push(QuizControl.csvRow(["Session", QuizControl.csvText(stats.sessionName || "")]));
+    rows.push(QuizControl.csvRow(["Date", QuizControl.localDate(stats.playedAt)]));
+    rows.push(QuizControl.csvRow(["Time", QuizControl.localTime(stats.playedAt)]));
     rows.push(QuizControl.csvRow(["Questions played", `${stats.questions.length} of ${stats.totalQuestions}`]));
     rows.push("");
 

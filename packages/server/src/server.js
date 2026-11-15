@@ -170,6 +170,8 @@ function limitsFromEnv(env = process.env) {
 }
 
 const ROOM_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+// The presenter's session name only labels the results export.
+const MAX_SESSION_NAME_LENGTH = 80;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 // How much of a day's practice statistics a crash can cost; see practice-stats.js.
 const PRACTICE_STATS_FLUSH_INTERVAL_MS = 5 * 60 * 1000;
@@ -579,7 +581,7 @@ function createQuizServer(options = {}) {
    * @returns {{opening: Promise<{room: object, created: boolean, warnings: string[]} |
    *   {errors: string[]} | {capacity: true}>, initiated: boolean}}
    */
-  function openRoomOnce(presenterToken, quiz, creatorKey) {
+  function openRoomOnce(presenterToken, quiz, creatorKey, sessionName = '') {
     const pending = openingRooms.get(presenterToken);
     if (pending) return { opening: pending, initiated: false };
 
@@ -614,6 +616,7 @@ function createQuizServer(options = {}) {
       }
 
       opened.room.creatorKey = creatorKey;
+      opened.room.sessionName = sessionName;
       if (prepared.warnings.length > 0) {
         // Markup that was scrubbed, and options that probably do not do what
         // the author means; see quiz-pipeline.js.
@@ -625,6 +628,20 @@ function createQuizServer(options = {}) {
 
     openingRooms.set(presenterToken, opening);
     return { opening, initiated: true };
+  }
+
+  /**
+   * The name the presenter started the session under, as a label for the
+   * results export. Optional, never shown to participants, and not what
+   * authenticates anybody -- that is the token.
+   */
+  function sessionNameFrom(value) {
+    if (typeof value !== 'string') return '';
+    return value
+      .replace(/[\p{Cc}\p{Cf}]+/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, MAX_SESSION_NAME_LENGTH);
   }
 
   // Create-or-resume. The presenter page re-sends this on every reconnect,
@@ -651,7 +668,7 @@ function createQuizServer(options = {}) {
         return;
       }
 
-      const { opening, initiated } = openRoomOnce(presenterToken, quiz, ws.clientKey);
+      const { opening, initiated } = openRoomOnce(presenterToken, quiz, ws.clientKey, sessionNameFrom(msg.presenterName));
       const outcome = await opening;
 
       if (outcome.errors) {

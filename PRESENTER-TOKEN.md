@@ -34,9 +34,10 @@ Two consequences worth keeping in mind:
   questions they watched on screen; the *password strength* is what stops them
   decrypting it. Both must hold. (PBKDF2 is at 600 000 iterations.)
 - **The presenter name is isolation, not confidentiality.** It stops two lecturers
-  sharing a quiz file from sharing a session. The server only ever receives the
-  hash, but it also holds the quiz, and names are low-entropy — so it could recover
-  the name trivially if it wanted to. Do not treat that field as secret.
+  sharing a quiz file from sharing a session. The server authenticates by the hash
+  alone, but the name is no secret from it: `create_room` also carries it as
+  `presenterName`, kept in RAM with the room and returned only to the presenter,
+  as a label in the results export. Do not treat that field as secret.
 
 ---
 

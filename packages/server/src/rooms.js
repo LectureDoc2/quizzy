@@ -165,6 +165,11 @@ class Room {
     this.currentOrder = null;
     this.presenterWss = new Set();
     this.createdAt = Date.now();
+    // When the first question was put up, and the name the presenter started
+    // the session under (typically the course). Both only label the results
+    // export; see getStatistics().
+    this.startedAt = null;
+    this.sessionName = '';
     this.questionTimer = null;
     this.onAutoEnd = null; // callback(results) -> void
     // Timestamp at which the room last became connectionless, or null while
@@ -590,6 +595,7 @@ class Room {
   }
 
   startGame() {
+    this.startedAt = Date.now();
     this.state = 'question';
     this.currentQuestionIndex = 0;
     this.startQuestion();
@@ -1091,6 +1097,10 @@ class Room {
     return {
       quizTitle: this.quiz.title,
       roomId: this.roomId,
+      sessionName: this.sessionName,
+      // Epoch milliseconds; the control window formats it in the lecturer's
+      // time zone, which the server does not know.
+      playedAt: this.startedAt ?? this.createdAt,
       totalQuestions: this.quiz.questions.length,
       questions: this.questionStats.map(s => ({ ...s })),
       recordResults: this.recordMode(),

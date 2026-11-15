@@ -9,10 +9,17 @@ quiz server's version, nor to `PROTOCOL_VERSION` in `src/protocol.js`; see
 
 ## Unreleased
 
-No change to the element, its attributes, or the wire protocol.
+No change to the element or its attributes. `create_room` gains an optional
+field; `PROTOCOL_VERSION` is unchanged, as servers ignore fields they do not know.
 
 ### Changed
 
+- **`create_room` carries the presenter name as `presenterName`.** The server
+  keeps it with the room and puts it at the top of the results CSV, next to
+  the date and time the quiz was played, so a lecturer who starts each
+  session under the course's name can tell the exports apart. The name is as
+  typed (case kept); the presenter token is still derived from the
+  normalized form.
 - **The console message for a quiz's warnings no longer says "removed markup".**
   The server now also warns about quiz options that probably do not do what
   the author means (an estimation question in a quiz that records all answers,

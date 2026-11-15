@@ -71,8 +71,11 @@ describe('Results export (browser, full stack)', () => {
     const token = tokenFor('michael', QUIZ);
 
     const presenter = await socket();
-    presenter.sendJson({ type: 'create_room', presenterToken: token, quiz: QUIZ });
+    presenter.sendJson({
+      type: 'create_room', presenterToken: token, presenterName: '  =Networks\u0000 WS 26/27 ', quiz: QUIZ
+    });
     const room = await presenter.take('room_created');
+    const before = Date.now();
 
     const students = [];
     for (const name of ['Alice Adams', 'Bob Brown', 'Carol Clark']) {
@@ -117,6 +120,15 @@ describe('Results export (browser, full stack)', () => {
 
     const lines = csv.split('\r\n');
     assert.ok(csv.includes('Networking Basics'), 'quiz title missing');
+    // The session name as given when the room was opened, tidied, and kept
+    // from being read as a formula; then when the game was played, in the
+    // browser's local time.
+    assert.strictEqual(lines[2], "Session,'=Networks WS 26/27");
+    const [, date] = lines[3].match(/^Date,(\d{4}-\d{2}-\d{2})$/) || [];
+    const [, time] = lines[4].match(/^Time,(\d{2}:\d{2})$/) || [];
+    assert.ok(date && time, `date and time missing: ${lines[3]} / ${lines[4]}`);
+    const played = new Date(`${date}T${time}:00`).getTime();
+    assert.ok(played > before - 120_000 && played <= Date.now(), `played at ${date} ${time}`);
     assert.ok(!/Alice|Bob|Carol/.test(csv), 'CSV must not contain participant names');
     assert.ok(!csv.includes('Final results'), 'a quiz that does not ask for consent names nobody');
     assert.ok(!/<b>|<p>/.test(csv), 'question HTML should be reduced to plain text');

@@ -299,6 +299,7 @@ class QuizHost extends HTMLElement {
       try {
         this.quiz = JSON.parse(await decryptAESGCMPBKDF(this.quiz, password));
         this.presenterName = name;
+        this.sessionName = QuizHost.displayPresenterName(nameInput.value);
         QuizHost.savePresenterName(nameInput.value);
         await this.connectWebSocket();
       } catch (e) {
@@ -323,6 +324,19 @@ class QuizHost extends HTMLElement {
       .trim()
       .replace(/\s+/g, " ")
       .toLowerCase();
+  }
+
+  /**
+   * The presenter name as typed, tidied but with its case kept. Sent along
+   * with `create_room` so that the results export can say which session --
+   * typically which course -- it belongs to. The token is still derived from
+   * the normalized form.
+   */
+  static displayPresenterName(name) {
+    return String(name || "")
+      .normalize("NFKC")
+      .trim()
+      .replace(/\s+/g, " ");
   }
 
   /**
@@ -452,6 +466,7 @@ class QuizHost extends HTMLElement {
 
     if (errorEl) errorEl.style.display = "none";
     this.presenterName = name;
+    this.sessionName = QuizHost.displayPresenterName(input.value);
     QuizHost.savePresenterName(input.value);
     await this.connectWebSocket();
   }
@@ -528,6 +543,8 @@ class QuizHost extends HTMLElement {
         type: "create_room",
         protocolVersion: PROTOCOL_VERSION,
         presenterToken: this.presenterToken,
+        // Only for the results export; see displayPresenterName().
+        presenterName: this.sessionName || this.presenterName || undefined,
         quiz: this.quiz,
       });
       const payloadSize = new TextEncoder().encode(payload).length;

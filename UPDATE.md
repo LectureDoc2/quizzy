@@ -295,12 +295,22 @@ go install golang.org/x/vuln/cmd/govulncheck@latest
 
 "No vulnerabilities found" means there is nothing to do. Otherwise rebuild (§5) and
 run it again. If a finding in the standard library is still there, the Go that
-built Caddy is older than the fix (the report says "Fixed in: go1.…"). Build with
-that release instead, which the `go` command downloads by itself:
+built Caddy is older than the fix (the report says "Fixed in: go1.…"; Ubuntu's
+`golang-go` package is often months behind). Build with a newer release instead,
+which the `go` command downloads by itself. `go1.X.Y` below is a placeholder:
+replace it with the current release named at <https://go.dev/dl/>, which must be at
+least the highest "Fixed in" of the report:
 
 ```bash
+cd ~/caddy-build        # not /srv/quizzy, see DEPLOY.md §6b
 GOTOOLCHAIN=go1.X.Y ~/go/bin/xcaddy build --with github.com/caddy-dns/rfc2136
+sudo install -o root -g root -m 0755 ./caddy /usr/local/bin/caddy
+sudo systemctl restart caddy
 ```
+
+A finding under "Module:" (`golang.org/x/net`, `google.golang.org/grpc`, …) is in a
+library whose version Caddy's own release pins. A newer Go does not change it; it
+goes away with the Caddy release that raises that version.
 
 ---
 

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!--
+    Quizzy's icon: one tile per question type, in the palette of quiz-ui.css.
+      top left      multiple choice   a check mark
+      top right     estimation        "approximately equal"
+      bottom left   ordering          bars sorted by length
+      bottom right  short answer      an input field with text and a cursor
+    The PNG and ICO files next to it are rendered from this file by
+    tools/render-icons.js; re-run that after changing it.
+  -->
+  <rect x="2" y="2" width="28" height="28" rx="7" fill="#2563eb"/>
+  <rect x="34" y="2" width="28" height="28" rx="7" fill="#f97316"/>
+  <rect x="2" y="34" width="28" height="28" rx="7" fill="#16a34a"/>
+  <rect x="34" y="34" width="28" height="28" rx="7" fill="#7c3aed"/>
+  <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9.5 16.5l5 5 9-10" stroke-width="4.5"/>
+    <path d="M40 13.5q4-4.5 8 0t8 0M40 21q4-4.5 8 0t8 0" stroke-width="3.5"/>
+    <path d="M9 41.5h5M9 48h10M9 54.5h15" stroke-width="4"/>
+    <rect x="38.5" y="40.5" width="21" height="15" rx="3.5" stroke-width="2.5"/>
+    <path d="M43 48h6" stroke-width="3.5"/>
+    <path d="M53.5 44v8" stroke-width="2.5"/>
+  </g>
+</svg>

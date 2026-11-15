@@ -40,14 +40,76 @@ const LIMITS = {
 
 const QUESTION_TYPES = new Set(['multiple-choice', 'estimation', 'short-answer', 'ordering']);
 
+/**
+ * What a quiz records about its participants for the lecturer's export; the
+ * first is the default. See Room.recordMode().
+ *
+ *   "none"   nothing that names anybody
+ *   "named"  name and final score of the participants who agree to it
+ *   "all"    name and every answer of every participant, for grading
+ */
+const RECORD_MODES = ['none', 'named', 'all'];
+
+/**
+ * What a participant is told about how everybody stands; the first is the
+ * default. See Room.leaderboardMode().
+ *
+ *   "complete"   the leaderboard, with everybody's name and score
+ *   "rank-only"  their own score and place, and how many take part
+ *   "none"       their own score
+ */
+const LEADERBOARD_MODES = ['complete', 'rank-only', 'none'];
+
+/**
+ * The options of a quiz as a whole. Listed so that a key which differs from
+ * one of them only in case can be refused: the validator ignores properties it
+ * does not know, and a `leaderBoard: "none"` that is silently ignored shows a
+ * graded quiz's results to the whole room.
+ */
+const QUIZ_OPTIONS = ['recordResults', 'leaderboard', 'showCorrectAnswers'];
+
+const oneOf = (values) => values.map((value) => `"${value}"`).join(', ');
+
 const isPlainObject = (value) =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
  * @param {unknown} quiz
- * @returns {{valid: boolean, errors: string[]}} `errors` is empty iff valid.
+ * @returns {{valid: boolean, errors: string[], warnings: string[]}} `errors`
+ *   is empty iff valid. `warnings` are about a quiz that can be played as it
+ *   is, but probably not as its author means it; they never make it invalid,
+ *   and are only collected for a quiz that is valid.
  */
 export function validateQuiz(quiz) {
+  const result = checkQuiz(quiz);
+  return { ...result, warnings: result.valid ? quizWarnings(quiz) : [] };
+}
+
+/**
+ * What an author should know about a valid quiz. Phrased like the errors --
+ * `question N: ...` -- so that locateQuizMessages() finds the line.
+ *
+ * @param {object} quiz A quiz that passed validation.
+ * @returns {string[]}
+ */
+function quizWarnings(quiz) {
+  const warnings = [];
+  if (quiz.recordResults === 'all') {
+    quiz.questions.forEach((question, index) => {
+      if (question.type !== 'estimation' || warnings.length >= 20) return;
+      warnings.push(
+        `question ${index + 1}: is an estimation question in a quiz that records all answers ` +
+        '("recordResults": "all"). In a live quiz an estimate is scored by its place among ' +
+        "everybody's estimates (100 / 50 / 25 points for the three closest, 0 for everyone " +
+        'else), so the recorded points depend on the other participants and not only on this ' +
+        "participant's answer."
+      );
+    });
+  }
+  return warnings;
+}
+
+function checkQuiz(quiz) {
   const errors = [];
 
   /* Report several problems at once. A lecturer fixing a quiz five minutes
@@ -70,11 +132,25 @@ export function validateQuiz(quiz) {
     }
   }
 
-  /* Opts the quiz in to asking each participant whether their name and final
-     score may appear in the lecturer's export. Strictly a boolean: a string
-     "false" must not switch on something that collects personal data. */
-  if (quiz.recordNamedResults !== undefined && typeof quiz.recordNamedResults !== 'boolean') {
-    fail('recordNamedResults must be true or false.');
+  /* What the lecturer's export may say about a participant. Strictly one of
+     the strings: anything else must not switch on -- or, in a graded quiz,
+     silently leave off -- something that collects personal data. */
+  if (quiz.recordNamedResults !== undefined) {
+    /* Ignored, the old key would quietly stop recording anything. */
+    fail('recordNamedResults was replaced by recordResults: write "recordResults": "named" for "recordNamedResults": true, and leave it out for "recordNamedResults": false.');
+  }
+  if (quiz.recordResults !== undefined && !RECORD_MODES.includes(quiz.recordResults)) {
+    fail(`recordResults must be one of ${oneOf(RECORD_MODES)}.`);
+  }
+  if (quiz.leaderboard !== undefined && !LEADERBOARD_MODES.includes(quiz.leaderboard)) {
+    fail(`leaderboard must be one of ${oneOf(LEADERBOARD_MODES)}.`);
+  }
+  if (quiz.showCorrectAnswers !== undefined && typeof quiz.showCorrectAnswers !== 'boolean') {
+    fail('showCorrectAnswers must be true or false.');
+  }
+  for (const key of Object.keys(quiz)) {
+    const option = QUIZ_OPTIONS.find((name) => name !== key && name.toLowerCase() === key.toLowerCase());
+    if (option) fail(`${key} is not an option of a quiz; write it as ${option}.`);
   }
 
   if (!Array.isArray(quiz.questions)) {
@@ -300,4 +376,4 @@ export function locateQuizMessages(text, messages) {
   });
 }
 
-export { LIMITS as QUIZ_LIMITS };
+export { LIMITS as QUIZ_LIMITS, RECORD_MODES, LEADERBOARD_MODES };

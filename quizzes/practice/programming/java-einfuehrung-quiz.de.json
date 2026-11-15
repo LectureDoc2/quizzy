@@ -1,6 +1,7 @@
 {
   "title": "Java - Einführung\n(Programmierung 1 - Prof. Dr. Michael Eichberg)",
   "secret": "9Nt41wHmbjxl1kaa54wza2oSFTamKvi7IuEsLIa1sHCrb0XDzK7dqc7SHELyX9NTU",
+  "showCorrectAnswers": true,
   "questions": [
     {
       "type": "multiple-choice",

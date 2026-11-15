@@ -11,7 +11,8 @@ A real-time, embeddable quiz application designed for integration with any HTML-
 - **Participant QR Code Join**: Participants scan a QR code or use a short link to join
 - **Participant Reconnect**: A participant whose connection drops, or who reloads the page, carries on with the same name and score
 - **Changing an Answer**: After Submit the question stays on screen. Until everybody has answered (or the time is up, or the presenter ends the question), a participant can change their answer and resubmit it; the last answer that reaches the server counts
-- **Results Export**: After the quiz, the control window exports a per-question summary as CSV. A quiz can also ask participants for consent to include their name and final score ([`recordNamedResults`](#quiz-json-format))
+- **Results Export**: After the quiz, the control window exports a per-question summary as CSV. A quiz can also ask participants for consent to include their name and final score, or — for graded quizzes — record every participant's name and answers ([`recordResults`](#quiz-json-format))
+- **Graded Quizzes**: A quiz can keep the leaderboard from its participants ([`leaderboard`](#quiz-json-format)), show each participant the correct answer after a question ([`showCorrectAnswers`](#quiz-json-format)), and record all answers by name for grading; names are then unique. Nothing is stored permanently: the lecturer downloads the results when the quiz ends
 - **Practice Mode**: Students play quizzes from a server-side catalog on their own, without a presenter; the server runs the game ([below](#practice-mode))
 - **Math Formula Support**: Server-based KaTeX rendering for quiz questions and answers
 - **Syntax-highlighted Code**: Server-based highlight.js rendering of fenced code blocks in 14 languages
@@ -244,7 +245,9 @@ component asks of the host page.
 ```json
 {
   "title": "Quiz Title",
-  "recordNamedResults": true,
+  "recordResults": "named",
+  "leaderboard": "complete",
+  "showCorrectAnswers": false,
   "questions": [
     {
       "type": "multiple-choice",
@@ -305,11 +308,44 @@ component asks of the host page.
   quotes and dashes (iOS and macOS "smart punctuation"), `…`, and no-break or
   zero-width spaces.
 - `timeLimit`: Optional countdown timer in seconds
-- `recordNamedResults`: Optional, `true` or `false` (default `false`). When `true`, the join page
-  offers an **unticked, optional** checkbox by which a participant agrees that their name and final
-  score appear in the results CSV. Participants can see their choice throughout the quiz and change it
-  until the quiz ends. The CSV then gets a section listing name and final score of those who agreed,
-  and nobody else; answers to individual questions are never included. Has no effect in practice mode.
+- `recordResults`: Optional; what the results CSV says about individual participants. Has no effect
+  in practice mode.
+  - `"none"` (default): nothing; the CSV is an anonymous per-question summary.
+  - `"named"`: the join page offers an **unticked, optional** checkbox by which a participant agrees
+    that their name and final score appear in the results CSV. Participants can see their choice
+    throughout the quiz and change it until the quiz ends. The CSV then gets a section listing name
+    and final score of those who agreed, and nobody else; answers to individual questions are not
+    included.
+  - `"all"`: for **graded quizzes**. The name (or matriculation number) and every answer of every
+    participant are recorded, with the points each answer scored. Nobody is asked: the join page
+    says so above the name field, before anybody joins, and keeps saying it during the quiz. The CSV
+    gets a section with one row per participant. In this mode
+    - a **name can be used only once**: a second participant with the same name (case and spacing
+      aside) is refused. The name stays taken for the whole quiz, also while its participant is
+      disconnected. Somebody who cannot get back in under their name — a dead phone, a closed tab —
+      asks the lecturer, who removes the old entry in the control view's participant list; that
+      frees the name, and what the entry answered so far stays in the CSV, marked as removed;
+    - a participant who leaves stays in the results, however long ago they left;
+    - the validator warns about estimation questions: in a live quiz an estimate is scored by its
+      place among everybody's estimates, so its points depend on the other participants.
+
+  Nothing is stored permanently in any mode. The results live in the server's memory and leave it
+  only in the CSV the lecturer downloads once the quiz has ended; the server discards them shortly
+  after the control window is closed.
+
+- `leaderboard`: Optional; what a **participant** is told about how everybody stands. The lecturer's
+  control view always shows the leaderboard. Has no effect in practice mode.
+  - `"complete"` (default): the leaderboard, with names and scores.
+  - `"rank-only"`: their own score and place, and how many take part. Nobody else's name or score
+    is sent to them. Equal scores share a place.
+  - `"none"`: their own score only. For small groups, where a place already says how the others did.
+
+  A participant always sees how their own answers were judged. Note that the verdict on a live
+  estimation question is a place among all estimates, whatever this option says.
+- `showCorrectAnswers`: Optional, `true` or `false` (default `false`). When `true`, a participant's
+  results screen also shows the correct answer to the question that just closed: the correct
+  options, the correct number, the accepted answers (optional parts written out), or the correct
+  order. It is only ever sent once the question has closed. Also applies in practice mode.
 
 ### Code blocks
 
@@ -494,8 +530,10 @@ Messages that open a conversation (`create_room`, `join_room`, `rejoin_room`,
 - `join_room`: Join a room with a name
   - `roomId`: Room to join
   - `name`: Participant display name
-  - `consent`: Optional; only `true` counts, and only if the quiz sets `recordNamedResults`. Agrees to
-    name and final score appearing in the results export
+  - `consent`: Optional; only `true` counts, and only if the quiz sets `"recordResults": "named"`.
+    Agrees to name and final score appearing in the results export
+  - Refused with the error code `name_taken` when the quiz sets `"recordResults": "all"` and the
+    name is in use
 - `set_consent`: Give or withdraw that consent; allowed until the quiz ends
   - `consent`: `true` or `false`
 - `rejoin_room`: Come back as an existing participant after a dropped connection or a reload
@@ -521,7 +559,7 @@ Messages that open a conversation (`create_room`, `join_room`, `rejoin_room`,
   connection, `participant_joined` carries `rejoined: true` for a return.
 
 **Server → Control Window (`quiz-control.js`):**
-- `control_connected`: Initial state after connecting; includes `roomId`, `state`, `quizTitle`, `totalQuestions`, `currentQuestionIndex`, `question`, `participantCount`, `reconnectingCount`, `leaderboard`
+- `control_connected`: Initial state after connecting; includes `roomId`, `state`, `quizTitle`, `totalQuestions`, `currentQuestionIndex`, `question`, `participantCount`, `reconnectingCount`, `leaderboard`, and `options` — the quiz's `recordResults`, `leaderboard` and `showCorrectAnswers` as the room applies them
 - `sessions_list`: List of active sessions when no `roomId` was provided
 - `game_started`: Quiz started; includes `questionIndex` and `question`
 - `question_started`: Next question is active; includes `questionIndex` and `question`
@@ -530,19 +568,25 @@ Messages that open a conversation (`create_room`, `join_room`, `rejoin_room`,
 - `answer_count`: Live count of submitted answers during a question. A changed answer does not
   change the count, and sends none
 - `participant_joined` / `participant_left`: Participant count updates, as above
-- `participants_list`: Reply to `get_participants`; each entry has `id`, `name`, `score` and `connected`
+- `participants_list`: Reply to `get_participants`; each entry has `id`, `name`, `score` and `connected`.
+  A quiz with `"recordResults": "all"` also lists those who are gone for good but left answers
+  (`left: true`) and those the presenter removed (`removed: true`)
 - `game_ended` / `results_export`: The quiz ended, or reply to `export_results`; `statistics` holds the
-  per-question summary, `recordsNamedResults`, and `namedResults` — `{ name, score }` of the participants
-  who consented, or `null` before the quiz has ended or when the quiz does not ask
+  per-question summary, `recordResults` (`none`, `named` or `all`), `recordsNamedResults`, and
+  `namedResults` — `{ name, score }` of the participants who consented, or `null` before the quiz has
+  ended or when the quiz does not ask. With `"recordResults": "all"`, once the quiz has ended,
+  `individualResults` lists every participant as `{ name, score, answers, removed? }`, each answer as
+  `{ questionIndex, answer, points, acceptedByPresenter? }`; `null` otherwise
 
 **Server → Participant (`quiz-client.js`):**
 - `room_status`: Reply to `room_status`; includes `state`, `quizTitle`, `totalQuestions`,
-  `currentQuestionIndex`, `participantCount` and `recordsNamedResults` (whether to offer consent)
+  `currentQuestionIndex`, `participantCount`, `recordsNamedResults` (whether to offer consent) and
+  `recordResults` (`all`: say that name and answers are recorded)
 - `joined`: Successfully joined; includes `participantId`, `quizTitle` and `resumeToken` (a secret
   sent only to this participant, kept in the tab's `sessionStorage`, and used by `rejoin_room`), and
-  `recordsNamedResults` and `consent` as the server recorded them
+  `recordsNamedResults`, `recordResults` and `consent` as the server recorded them
 - `rejoined`: Reply to a successful `rejoin_room`; includes `participantId`, `quizTitle`, `state`,
-  `answeredQuestions`, `recordsNamedResults` and `consent`, followed by the current `question`,
+  `answeredQuestions`, `recordsNamedResults`, `recordResults` and `consent`, followed by the current `question`,
   `results` or `game_ended`
 - `consent_updated`: Reply to an accepted `set_consent`; includes `consent`
 - `rejoin_failed`: The token is unknown or expired, or the room is gone. Join again as a new participant
@@ -561,9 +605,15 @@ Messages that open a conversation (`create_room`, `join_room`, `rejoin_room`,
   `feedback` carries `band` (10, 25, 50 or `null`) and `points` instead of a rank. Sent again when the
   presenter accepts a short answer after all; the `feedback` of those who gave it then carries
   `acceptedByPresenter: true`. For an ordering question, `feedback.question.options` are the items
-  as they were shown and `feedback.answer` the participant's order as indices into them
-- `game_ended`: Final results; includes `leaderboard`, and in a practice game
-  `summary: { score, maxScore, correct, total }`
+  as they were shown and `feedback.answer` the participant's order as indices into them.
+  - In a quiz whose `leaderboard` is `rank-only` or `none` there is **no** `leaderboard` field.
+    Instead: `leaderboardMode`, and `standing` with the participant's own `score` and, for
+    `rank-only`, `rank` and `of` (how many take part). Nothing about anybody else is sent
+  - In a quiz that sets `showCorrectAnswers`, `feedback.expected` holds the correct answer:
+    `correctIndices`, `correctAnswer`, `acceptedAnswers` (written out) or, for an ordering question,
+    `order` — indices into `feedback.question.options`, in the correct order
+- `game_ended`: Final results; includes `leaderboard` — or `leaderboardMode` and `standing`, as for
+  `results` — and in a practice game `summary: { score, maxScore, correct, total }`
 
 A practice game answers `start_practice` with `joined` (plus `practice: true` and
 `practiceQuizId`) and then the first `question`; `rejoined` carries the same two fields.

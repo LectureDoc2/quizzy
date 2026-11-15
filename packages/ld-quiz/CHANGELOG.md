@@ -7,6 +7,18 @@ attributes, and the package's exports. They are deliberately not tied to the
 quiz server's version, nor to `PROTOCOL_VERSION` in `src/protocol.js`; see
 [PUBLISH.md](../../PUBLISH.md) for why the three numbers move independently.
 
+## Unreleased
+
+No change to the element, its attributes, or the wire protocol.
+
+### Changed
+
+- **The console message for a quiz's warnings no longer says "removed markup".**
+  The server now also warns about quiz options that probably do not do what
+  the author means (an estimation question in a quiz that records all answers,
+  for one), and reports those through the same `room_created.warnings`. The
+  message reads "Quizzy has N warning(s) about this quiz".
+
 ## 1.0.1 — 2026-08-23
 
 No change to the element, its attributes, or the wire protocol. A deck pinned to

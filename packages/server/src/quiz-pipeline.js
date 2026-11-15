@@ -38,7 +38,8 @@ import { validateQuiz } from './quiz-validator.js';
  *   3. math   -- KaTeX runs last and skips the code regions step 1 produced,
  *                so `echo $PATH` is not read as a formula.
  *
- * Steps 1 and 2 both report through `warnings`.
+ * Steps 1 and 2 both report through `warnings`, after what the validator has
+ * to say about a quiz that is valid but probably not what its author means.
  *
  * @param {unknown} quiz
  * @returns {{valid: true, quiz: object, warnings: string[]} |
@@ -53,6 +54,6 @@ export function prepareQuiz(quiz) {
   return {
     valid: true,
     quiz: renderQuiz(sanitized.quiz),
-    warnings: [...highlighted.warnings, ...sanitized.warnings]
+    warnings: [...structure.warnings, ...highlighted.warnings, ...sanitized.warnings]
   };
 }

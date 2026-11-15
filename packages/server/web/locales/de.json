@@ -26,6 +26,7 @@
   "join.button": "Teilnehmen",
   "join.buttonInProgress": "Jetzt teilnehmen",
   "join.namePlaceholder": "Geben Sie Ihren Namen ein",
+  "join.namePlaceholderGraded": "Ihr vollständiger Name oder Ihre Matrikelnummer",
   "join.noRoom": "Es wurde kein Raumcode angegeben.",
   "join.waitingForStart": "Das Quiz hat noch nicht begonnen.",
   "join.progress": "Frage {current} von {total}.",
@@ -43,8 +44,13 @@
   "consent.withdraw": "Einwilligung widerrufen",
   "consent.give": "Mein Ergebnis aufnehmen",
 
+  "graded.joinNotice": "Dieses Quiz wird benotet. Ihr Name bzw. Ihre Matrikelnummer und jede Ihrer Antworten werden erfasst und Ihrer Lehrperson zur Bewertung übergeben. Bitte treten Sie mit Ihrem richtigen Namen oder Ihrer Matrikelnummer bei.",
+  "graded.isRecorded": "Benotetes Quiz: Ihr Name und alle Ihre Antworten werden zur Bewertung erfasst.",
+  "graded.wasRecorded": "Benotetes Quiz: Ihr Name und alle Ihre Antworten wurden zur Bewertung erfasst.",
+
   "privacy.join": "Damit Sie bei einem Verbindungsabbruch mit Ihrem Punktestand weitermachen können, speichert dieser Tab einen zufälligen Sitzungsschlüssel. Sonst wird nichts gespeichert; der Schlüssel wird gelöscht, sobald das Quiz endet oder der Tab geschlossen wird.",
   "privacy.joinConsent": "Ihr Name und Ihre Endpunktzahl gelangen nur dann in die Ergebnisdatei der Lehrperson, wenn Sie das Kästchen oben ankreuzen.",
+  "privacy.joinGraded": "Ihr Name und Ihre Antworten bleiben nur so lange auf dem Server, bis Ihre Lehrperson die Ergebnisse nach dem Quiz heruntergeladen hat; der Server speichert sie nicht dauerhaft.",
   "privacy.practice": "Damit Sie bei einem Verbindungsabbruch weitermachen können, speichert ein Spiel einen zufälligen Sitzungsschlüssel in seinem Tab. Sonst wird nichts gespeichert; der Schlüssel wird gelöscht, sobald das Quiz endet oder der Tab geschlossen wird.",
 
   "quiz.fallbackTitle": "Quiz",
@@ -73,6 +79,7 @@
   "results.counter": "Ergebnisse – Frage {number}",
   "results.counterOfTotal": "Ergebnisse – Frage {number} von {total}",
   "results.rankAndScore": "Ihr Rang: {rank} | Punkte: {score}",
+  "results.rankOfAndScore": "Ihr Rang: {rank} von {total} | Punkte: {score}",
   "results.score": "Punkte: {score}",
   "results.waitingForNext": "Warten auf die nächste Frage …",
   "results.complete": "Das Quiz ist beendet!",
@@ -85,6 +92,14 @@
   "feedback.acceptedByPresenter": "Richtig! Ihre Lehrperson hat diese Antwort anerkannt.",
   "feedback.yourAnswer": "Ihre Antwort:",
   "feedback.yourOrder": "Ihre Reihenfolge:",
+  "feedback.expectedOption": "Richtige Antwort",
+  "feedback.expectedNoOption": "Keine der Optionen war richtig.",
+  "feedback.expectedAnswer": "Richtige Antwort:",
+  "feedback.expectedOrder": "Richtige Reihenfolge:",
+  "feedback.expectedAccepted": {
+    "one": "Akzeptierte Antwort:",
+    "other": "Akzeptierte Antworten:"
+  },
   "feedback.onlyEstimate": "Ihre Schätzung war die einzige.",
   "feedback.closest": "Am nächsten dran von allen {count} Schätzungen!",
   "feedback.rank": "Platz {rank} von {count} Schätzungen",
@@ -147,6 +162,7 @@
   "error.name_too_long": "Der Name darf höchstens {max} Zeichen lang sein.",
   "error.name_invalid_characters": "Der Name darf nur Buchstaben, Leerzeichen, Bindestriche und Apostrophe enthalten.",
   "error.name_not_allowed": "Dieser Name ist nicht erlaubt.",
+  "error.name_taken": "Dieser Name wird in diesem Quiz bereits verwendet. Falls es Ihrer ist, etwa weil Sie das Gerät gewechselt haben, bitten Sie Ihre Lehrperson, ihn freizugeben.",
   "error.no_open_question": "Derzeit nimmt keine Frage Antworten an.",
   "error.invalid_answer": "Diese Antwort konnte nicht angenommen werden.",
   "error.consent_not_requested": "Dieses Quiz erfasst keine namentlichen Ergebnisse.",

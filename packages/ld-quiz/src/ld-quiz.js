@@ -586,11 +586,13 @@ class QuizHost extends HTMLElement {
               `(state: ${msg.state}, participants: ${msg.participantCount}).`,
           );
         }
-        // The server scrubs quiz markup it considers unsafe. Say so loudly:
-        // silently dropping part of a question would be worse than the markup.
+        // The server scrubs quiz markup it considers unsafe, and warns about
+        // options that probably do not do what the author means. Say so
+        // loudly: silently dropping part of a question would be worse than
+        // the markup.
         if (Array.isArray(msg.warnings) && msg.warnings.length > 0) {
           console.warn(
-            `Quizzy removed markup from this quiz (${msg.warnings.length} item(s)):\n  ` +
+            `Quizzy has ${msg.warnings.length} warning(s) about this quiz:\n  ` +
               msg.warnings.join("\n  "),
           );
         }

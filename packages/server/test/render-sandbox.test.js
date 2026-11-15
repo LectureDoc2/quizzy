@@ -102,17 +102,28 @@ describe('Render sandbox', () => {
     });
   }
 
-  it('carries recordNamedResults through to the room, and refuses anything but a boolean', async () => {
+  it('carries the quiz options through to the room, and refuses anything but their values', async () => {
     const sandbox = createRenderSandbox();
-    const prepared = await sandbox.prepareQuiz({ ...quiz('Named'), recordNamedResults: true });
+    const prepared = await sandbox.prepareQuiz({
+      ...quiz('Graded'), recordResults: 'all', leaderboard: 'none', showCorrectAnswers: true
+    });
     assert.strictEqual(prepared.valid, true);
-    assert.strictEqual(prepared.quiz.recordNamedResults, true);
+    assert.strictEqual(prepared.quiz.recordResults, 'all');
+    assert.strictEqual(prepared.quiz.leaderboard, 'none');
+    assert.strictEqual(prepared.quiz.showCorrectAnswers, true);
 
     // Refused before a worker is needed, like any other shape error.
     const refused = await createRenderSandbox({ workerPath: '/nonexistent/worker.js' })
-      .prepareQuiz({ ...quiz('Named'), recordNamedResults: 'false' });
+      .prepareQuiz({ ...quiz('Named'), recordResults: true });
     assert.strictEqual(refused.valid, false);
-    assert.ok(refused.errors.some((e) => e.includes('recordNamedResults')), refused.errors.join('; '));
+    assert.ok(refused.errors.some((e) => e.includes('recordResults')), refused.errors.join('; '));
+
+    // The key recordResults replaced must not be ignored: it would quietly
+    // stop recording.
+    const old = await createRenderSandbox({ workerPath: '/nonexistent/worker.js' })
+      .prepareQuiz({ ...quiz('Named'), recordNamedResults: true });
+    assert.strictEqual(old.valid, false);
+    assert.ok(old.errors.some((e) => e.includes('"recordResults": "named"')), old.errors.join('; '));
   });
 
   it('takes only the rendered strings from the worker', async () => {

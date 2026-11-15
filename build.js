@@ -96,6 +96,9 @@ const APP_ENTRIES = [
 const COPIES = [
     ["packages/server/web/index.html", "app/index.html"],
     ["packages/server/web/background.png", "app/background.png"],
+    ["packages/server/web/favicon.svg", "app/favicon.svg"],
+    ["packages/server/web/favicon.ico", "app/favicon.ico"],
+    ["packages/server/web/apple-touch-icon.png", "app/apple-touch-icon.png"],
     ["packages/server/web/demo.html", "app/demo.html"],
     ["packages/server/web/join.html", "app/join.html"],
     ["packages/server/web/practice.html", "app/practice.html"],

@@ -258,7 +258,7 @@ describe('Results export (browser, full stack)', () => {
   });
 
   it('adds name and final score of those who agreed, and of nobody else', async () => {
-    const quiz = { ...QUIZ, recordNamedResults: true };
+    const quiz = { ...QUIZ, recordResults: 'named' };
     const token = tokenFor('named', quiz);
 
     const presenter = await socket();
@@ -314,6 +314,114 @@ describe('Results export (browser, full stack)', () => {
     assert.ok(!/Bob|Carol/.test(csv), 'only those who agreed may be named');
     // The per-question part is unchanged and still anonymous.
     assert.ok(lines.find((l) => l.includes('1. TCP')).match(/,yes,2,66\.7%/));
+
+    await page.close();
+  });
+  it('lists every participant with every answer in a graded quiz, the removed entry included', async () => {
+    const quiz = {
+      title: 'Graded',
+      secret: 'high-entropy',
+      recordResults: 'all',
+      questions: [
+        QUIZ.questions[0],
+        { type: 'short-answer', text: 'Which operator compares?', acceptedAnswers: ['=='], match: 'exact' },
+        { type: 'ordering', text: 'Order by size', options: ['byte', 'short', 'int'] }
+      ]
+    };
+    const token = tokenFor('graded', quiz);
+    const presenter = await socket();
+    presenter.sendJson({ type: 'create_room', presenterToken: token, quiz });
+    const room = await presenter.take('room_created');
+
+    async function join(name) {
+      const ws = await socket();
+      ws.sendJson({ type: 'join_room', roomId: room.roomId, name });
+      const joined = await ws.take('joined');
+      ws.participantId = joined.participantId;
+      return ws;
+    }
+    const alice = await join('Alice Adams');
+    const bob = await join('Bob Brown');
+    const carol = await join('1234567'); // a matriculation number
+
+    const page = await openPage(browser);
+    page.on('pageerror', (e) => assert.fail(`control page error: ${e.message}`));
+    await page.goto(`${statics.origin}/control.html?token=${token}&room=${room.roomId}`);
+    await page.waitForSelector('.control__container');
+    // The control view says what this quiz does, and lists who is in it.
+    await page.waitForFunction(() => document.querySelectorAll('.participants-list__item').length === 3);
+    assert.match(await page.evaluate(() => document.getElementById('quiz-options').textContent), /^Graded:/);
+
+    presenter.sendJson({ type: 'start_game' });
+    await presenter.take('game_started');
+    alice.sendJson({ type: 'submit_answer', answer: [0, 2] }); // correct
+    bob.sendJson({ type: 'submit_answer', answer: [] });       // nothing selected
+    carol.sendJson({ type: 'submit_answer', answer: [1] });    // wrong
+    await presenter.take('question_results');
+
+    // Bob is removed by the lecturer, through the page, and comes back under
+    // the same name as a new entry.
+    await page.waitForFunction(() => document.querySelectorAll('.participants-list__remove').length === 3);
+    await page.evaluate(() => {
+      [...document.querySelectorAll('.participants-list__item')]
+        .find((item) => item.querySelector('.participants-list__name').textContent === 'Bob Brown')
+        .querySelector('.participants-list__remove').click();
+    });
+    await page.click('#confirm-dialog-confirm');
+    await bob.take('kicked');
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll('.participants-list__item--removed .participants-list__name')]
+        .some((n) => n.textContent === 'Bob Brown'));
+    const bobAgain = await join('Bob Brown');
+
+    presenter.sendJson({ type: 'next_question' });
+    await presenter.take('question_started');
+    alice.sendJson({ type: 'submit_answer', answer: '==' });      // correct, and looks like a formula
+    bobAgain.sendJson({ type: 'submit_answer', answer: '=' });    // wrong, likewise
+    // Carol does not answer this one.
+    await bobAgain.take('answer_accepted');
+    presenter.sendJson({ type: 'end_question' });
+    await presenter.take('question_results');
+
+    presenter.sendJson({ type: 'next_question' });
+    await presenter.take('question_started');
+    // Alice's socket still holds the two questions before this one.
+    let shown;
+    do {
+      const { question } = await alice.take('question');
+      shown = question.type === 'ordering' ? question.options : undefined;
+    } while (!shown);
+    const positions = (items) => items.map((item) => shown.indexOf(item));
+    alice.sendJson({ type: 'submit_answer', answer: positions(['byte', 'short', 'int']) });    // correct
+    bobAgain.sendJson({ type: 'submit_answer', answer: positions(['short', 'byte', 'int']) }); // wrong
+    carol.sendJson({ type: 'submit_answer', answer: positions(['int', 'short', 'byte']) });    // wrong
+    await presenter.take('question_results');
+
+    presenter.sendJson({ type: 'next_question' }); // ends the quiz
+    await presenter.take('game_ended');
+    await page.waitForFunction(
+      () => document.getElementById('export-panel').style.display === 'block'
+    );
+
+    const hint = await page.evaluate(() => document.getElementById('export-hint').textContent);
+    assert.match(hint, /lists every participant by name \(4 row\(s\)\), with every answer they gave/);
+    assert.match(hint, /Download it now: the server stores nothing permanently/);
+
+    const csv = await copyCsv(page);
+    const lines = csv.split('\r\n');
+    const section = lines.indexOf('"Individual results (every participant, recorded for grading)"');
+    assert.ok(section > 0, `individual section missing:\n${csv}`);
+    assert.deepStrictEqual(lines.slice(section + 1), [
+      'Name,Status,Final score,Q1 answer,Q1 points,Q2 answer,Q2 points,Q3 answer,Q3 points',
+      // The apostrophe keeps a spreadsheet from reading the answer as a formula.
+      "1234567,,0,2,0,,0,3 > 2 > 1,0",
+      "Alice Adams,,300,1 | 3,100,'==,100,1 > 2 > 3,100",
+      'Bob Brown,removed by lecturer,0,(nothing selected),0,,0,,0',
+      "Bob Brown,,0,,0,'=,0,2 > 1 > 3,0"
+    ]);
+    assert.ok(!csv.includes('participants who agreed to be named'), 'no consent section in a graded quiz');
+    // The per-question part is unchanged.
+    assert.ok(lines.find((l) => l.includes('1. TCP')).match(/,yes,1,33\.3%/));
 
     await page.close();
   });

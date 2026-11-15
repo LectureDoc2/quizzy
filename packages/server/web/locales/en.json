@@ -26,6 +26,7 @@
   "join.button": "Join Quiz",
   "join.buttonInProgress": "Join now",
   "join.namePlaceholder": "Enter your name",
+  "join.namePlaceholderGraded": "Your full name or matriculation number",
   "join.noRoom": "No room ID provided",
   "join.waitingForStart": "Waiting for the quiz to start.",
   "join.progress": "Question {current} of {total}.",
@@ -43,8 +44,13 @@
   "consent.withdraw": "Withdraw consent",
   "consent.give": "Include my result",
 
+  "graded.joinNotice": "This quiz is graded. Your name or matriculation number and every answer you give are recorded and handed to your lecturer for grading. Please join under your real name or your matriculation number.",
+  "graded.isRecorded": "Graded quiz: your name and all your answers are recorded for grading.",
+  "graded.wasRecorded": "Graded quiz: your name and all your answers were recorded for grading.",
+
   "privacy.join": "So that you can carry on with your score if your connection drops, this tab keeps a random session key. Nothing else is stored, and the key is deleted when the quiz ends or the tab is closed.",
   "privacy.joinConsent": "Your name and final score reach the lecturer's results file only if you tick the box above.",
+  "privacy.joinGraded": "Your name and your answers are kept on the server only until your lecturer has downloaded the results after the quiz; the server does not store them permanently.",
   "privacy.practice": "So that you can carry on if your connection drops, a game keeps a random session key in its tab. Nothing else is stored, and the key is deleted when the quiz ends or the tab is closed.",
 
   "quiz.fallbackTitle": "Quiz",
@@ -73,6 +79,7 @@
   "results.counter": "Results - Question {number}",
   "results.counterOfTotal": "Results - Question {number} of {total}",
   "results.rankAndScore": "Your rank: {rank} | Score: {score}",
+  "results.rankOfAndScore": "Your rank: {rank} of {total} | Score: {score}",
   "results.score": "Score: {score}",
   "results.waitingForNext": "Waiting for next question...",
   "results.complete": "Quiz complete!",
@@ -85,6 +92,14 @@
   "feedback.acceptedByPresenter": "Correct! Your lecturer accepted this answer.",
   "feedback.yourAnswer": "Your answer:",
   "feedback.yourOrder": "Your order:",
+  "feedback.expectedOption": "Correct answer",
+  "feedback.expectedNoOption": "None of the options was correct.",
+  "feedback.expectedAnswer": "Correct answer:",
+  "feedback.expectedOrder": "Correct order:",
+  "feedback.expectedAccepted": {
+    "one": "Accepted answer:",
+    "other": "Accepted answers:"
+  },
   "feedback.onlyEstimate": "Yours was the only estimate.",
   "feedback.closest": "Closest of all {count} estimates!",
   "feedback.rank": "#{rank} closest of {count} estimates",
@@ -147,6 +162,7 @@
   "error.name_too_long": "Name must be at most {max} characters",
   "error.name_invalid_characters": "Name must contain only letters, spaces, hyphens, and apostrophes",
   "error.name_not_allowed": "This name is not allowed",
+  "error.name_taken": "This name is already in use in this quiz. If it is yours, for example because you changed devices, ask your lecturer to release it.",
   "error.no_open_question": "No question is currently accepting answers",
   "error.invalid_answer": "This answer could not be accepted.",
   "error.consent_not_requested": "This quiz does not record named results.",

@@ -840,7 +840,7 @@ else, and deleted when the quiz ends or the tab is closed. Mention both in your
 privacy notice (Datenschutzerklärung); see `PARTICIPANT-REATTACH.md` for the
 reasoning.
 
-A quiz that sets `"recordNamedResults": true` additionally asks each participant,
+A quiz that sets `"recordResults": "named"` additionally asks each participant,
 with an unticked checkbox on the join page, whether their **name and final
 score** may appear in the results CSV. Nothing else about them is added: no
 answers to individual questions, no rank. Participants see their choice for the
@@ -849,6 +849,19 @@ the privacy notice should say what is collected and why, that the legal basis is
 consent (Art. 6(1)(a) GDPR), that consent is optional and can be withdrawn until
 the quiz ends, and that the downloaded CSV is then held by the lecturer, who is
 responsible for keeping and deleting it.
+
+A quiz that sets `"recordResults": "all"` is a **graded quiz**: it records every
+participant's name or matriculation number, each answer they gave and the points
+it scored, and puts all of it into the results CSV. Participants are not asked;
+the join page tells them above the name field before they join, and for the
+whole quiz. Consent is therefore not the legal basis, and the privacy notice —
+and whatever your examination regulations require — has to name the one that
+applies. As everywhere else, the server writes none of this to disk: it is held
+in RAM until the room is discarded (`ENDED_ROOM_RETENTION_MINUTES` after the
+control window is closed, twelve hours at most), and a restart discards it. The
+lecturer has to download the CSV when the quiz ends, and is from then on
+responsible for the file. A participant who leaves such a quiz stays in its
+records until then, beyond `DETACHED_RETENTION_MINUTES`.
 
 **Practice usage statistics** (`PRACTICE_STATS_DIR`) contain no personal data.
 They are totals per quiz and calendar day: games started, finished and

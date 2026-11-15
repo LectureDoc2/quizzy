@@ -168,7 +168,7 @@ believes to be the quiz title.
 ---
 title: Lineare Algebra
 secret: jzi9hnfn6cqO/h7HklslsI9/ijrGVJKm
-recordNamedResults: false
+recordResults: none
 timeLimit: 30
 ---
 ```
@@ -190,10 +190,12 @@ timeLimit: 30
 |---|---|---|
 | `title` | plain text, shown as written: no Markdown, no math | `title` |
 | `secret` | text | `secret` |
-| `recordNamedResults` | `true` or `false` | `recordNamedResults` |
+| `recordResults` | `none`, `named` or `all` | `recordResults` |
+| `leaderboard` | `complete`, `rank-only` or `none` | `leaderboard` |
+| `showCorrectAnswers` | `true` or `false` | `showCorrectAnswers` |
 | `timeLimit` | seconds, or `none` | not itself in the JSON: copied into every question that does not set its own |
 
-Any other key is an error.
+Any other key is an error. 
 
 ---
 
@@ -425,7 +427,7 @@ and could read `[of Methods]` as a link.
 
 | Quiz Markdown | JSON |
 |---|---|
-| front matter `title`, `secret`, `recordNamedResults` | the same top-level properties |
+| front matter `title`, `secret`, `recordResults`, `leaderboard`, `showCorrectAnswers` | the same top-level properties |
 | front matter `timeLimit` | each question's `timeLimit`, unless it sets its own |
 | `{type}` on the opening line | `type` |
 | the body before the block | `text` |
@@ -438,7 +440,8 @@ and could read `[of Methods]` as a link.
 | `{answers}` items | `acceptedAnswers`, in source order |
 
 The JSON is written with two-space indentation, top-level properties in the
-order `title`, `secret`, `recordNamedResults`, `questions`, and question
+order `title`, `secret`, `recordResults`, `leaderboard`, `showCorrectAnswers`,
+`questions`, and question
 properties in the order `type`, `text`, `options`, `correctIndices`,
 `correctAnswer`, `acceptedAnswers`, `match`, `timeLimit`. A property appears only
 when the source sets it. A stable order keeps the diffs of compiled files

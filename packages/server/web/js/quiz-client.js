@@ -102,6 +102,9 @@ class QuizClient {
     this.recordsNamedResults = false;
     this.consent = null;
     this.consentPending = false;
+    // A graded quiz: name and every answer are recorded, and nobody is asked.
+    // Said on the join form before joining, and from then on above the quiz.
+    this.recordsAllResults = false;
   }
 
   // Client-side validation (must match server-side). A refusal carries the
@@ -313,8 +316,11 @@ class QuizClient {
    *
    * @param {boolean} recordsNamedResults Whether this quiz asks at all.
    * @param {boolean|null} consent The participant's choice, as recorded.
+   * @param {string} [recordResults] The quiz's `recordResults`; 'all' is a
+   *   graded quiz, which records without asking.
    */
-  updateConsent(recordsNamedResults, consent) {
+  updateConsent(recordsNamedResults, consent, recordResults = 'none') {
+    this.recordsAllResults = recordResults === 'all';
     this.recordsNamedResults = recordsNamedResults === true;
     this.consent = this.recordsNamedResults && consent !== null ? consent === true : null;
     this.consentPending = false;
@@ -332,6 +338,18 @@ class QuizClient {
   renderConsentStatus() {
     const box = document.getElementById('consent-status');
     if (!box) return;
+    box.classList.toggle('consent-status--graded', this.recordsAllResults);
+    if (this.recordsAllResults) {
+      // Nothing to choose, so no button: the line only keeps saying what the
+      // join form said.
+      const text = document.createElement('span');
+      text.className = 'consent-status__text';
+      text.textContent = t(this.state === 'ended' ? 'graded.wasRecorded' : 'graded.isRecorded');
+      box.replaceChildren(text);
+      box.classList.remove('consent-status--given');
+      box.hidden = false;
+      return;
+    }
     if (!this.recordsNamedResults || this.consent === null) {
       box.hidden = true;
       box.replaceChildren();
@@ -426,11 +444,15 @@ class QuizClient {
     // Only when the quiz's author opted in. Never pre-ticked: consent is
     // something the student gives, not something they have to undo.
     const offerConsent = !!(status && status.recordsNamedResults === true);
+    // A graded quiz records name and answers without asking. There is nothing
+    // to tick; what there is to do is say so before anybody joins.
+    const graded = !!(status && status.recordResults === 'all');
 
     content.innerHTML = `
       <div id="room-state" class="room-state"></div>
       <form id="join-form">
-        <input type="text" id="name" class="input" placeholder="${html('join.namePlaceholder')}" maxlength="50" required>
+        ${graded ? `<p class="graded-notice" id="graded-notice" role="note">${html('graded.joinNotice')}</p>` : ''}
+        <input type="text" id="name" class="input" placeholder="${html(graded ? 'join.namePlaceholderGraded' : 'join.namePlaceholder')}" maxlength="50" required>
         ${offerConsent ? `
         <label class="consent-option" for="consent">
           <input type="checkbox" id="consent" class="consent-option__box">
@@ -440,7 +462,7 @@ class QuizClient {
         <div id="name-error" class="error-text" style="display:none;margin-top:0.5rem;color:var(--error-color)"></div>
       </form>
       <p class="join-privacy" id="join-privacy">
-        ${html('privacy.join')}${offerConsent ? ` ${html('privacy.joinConsent')}` : ''}
+        ${html('privacy.join')}${offerConsent ? ` ${html('privacy.joinConsent')}` : ''}${graded ? ` ${html('privacy.joinGraded')}` : ''}
       </p>
     `;
 
@@ -567,7 +589,7 @@ class QuizClient {
         // "Join Quiz" -- from here on it names the quiz being played.
         this.setHeading(this.quizTitle || t('quiz.fallbackTitle'));
         this.showNotice(null);
-        this.updateConsent(msg.recordsNamedResults, msg.consent);
+        this.updateConsent(msg.recordsNamedResults, msg.consent, msg.recordResults);
         // A practice game starts at once; its first question follows.
         this.renderWaiting(this.practice ? t('status.starting') : undefined);
         break;
@@ -587,7 +609,7 @@ class QuizClient {
         };
         // Back from the server, so a reload shows the choice again. On an
         // ended quiz the game_ended that follows turns it final.
-        this.updateConsent(msg.recordsNamedResults, msg.consent);
+        this.updateConsent(msg.recordsNamedResults, msg.consent, msg.recordResults);
         if (msg.state === 'lobby') {
           this.rejoinContext = null;
           this.state = 'joined';
@@ -700,7 +722,7 @@ class QuizClient {
           if (Number.isInteger(msg.totalQuestions)) this.totalQuestions = msg.totalQuestions;
           this.renderPracticeResults(msg);
         } else {
-          this.renderResults(msg.leaderboard, msg.questionIndex, msg.waiting, msg.feedback);
+          this.renderResults(msg);
         }
         break;
 
@@ -715,7 +737,7 @@ class QuizClient {
         if (this.practice) {
           this.renderPracticeFinal(msg.summary);
         } else {
-          this.renderFinalResults(msg.leaderboard);
+          this.renderFinalResults(msg);
         }
         break;
 
@@ -1097,12 +1119,33 @@ class QuizClient {
     refresh();
   }
 
-  renderResults(leaderboard, questionIndex, waiting, feedback) {
-    const content = document.getElementById('content');
+  /**
+   * How the participant stands: their rank and score above the top of the
+   * leaderboard -- or, in a quiz that keeps the leaderboard from its
+   * participants, only what the server sent about themselves (`standing`: the
+   * score, and in 'rank-only' the place). Such a quiz sends no leaderboard at
+   * all, so there is nothing here that could show somebody else.
+   *
+   * @param {object} msg A `results` or `game_ended` message.
+   * @param {number} top How many leaderboard entries to list.
+   */
+  renderStandings(msg, top) {
+    if (!Array.isArray(msg.leaderboard)) {
+      const standing = msg.standing || {};
+      const score = Number(standing.score) || 0;
+      const rank = Number(standing.rank);
+      const total = Number(standing.of);
+      const line = Number.isInteger(rank) && rank > 0 && Number.isInteger(total)
+        ? html('results.rankOfAndScore', { rank, total, score })
+        : html('results.score', { score });
+      return `<div class="my-stats">${line}</div>`;
+    }
+
+    const leaderboard = msg.leaderboard;
     const myEntry = leaderboard.find(e => e.id === this.participantId);
     const myRank = myEntry ? leaderboard.indexOf(myEntry) + 1 : '-';
 
-    const listHtml = leaderboard.slice(0, 5).map((entry, i) => `
+    const listHtml = leaderboard.slice(0, top).map((entry, i) => `
       <div class="leaderboard__item ${entry.id === this.participantId ? 'leaderboard__item--highlight' : ''}">
         <span class="leaderboard__rank">${i + 1}</span>
         <span class="leaderboard__name">${this.escapeHtml(entry.name)}</span>
@@ -1110,40 +1153,58 @@ class QuizClient {
       </div>
     `).join('');
 
+    return `
+        <div class="my-stats">${html('results.rankAndScore', { rank: myRank, score: myEntry ? Number(myEntry.score) : 0 })}</div>
+        <div class="leaderboard">${listHtml}</div>`;
+  }
+
+  renderResults(msg) {
+    const content = document.getElementById('content');
     content.innerHTML = `
       <div class="results">
-        <div class="question__counter">${html('results.counter', { number: questionIndex + 1 })}</div>
-        ${this.renderFeedback(feedback)}
-        <div class="my-stats">${html('results.rankAndScore', { rank: myRank, score: myEntry ? Number(myEntry.score) : 0 })}</div>
-        <div class="leaderboard">${listHtml}</div>
-        <p class="waiting-text">${html(waiting ? 'results.waitingForNext' : 'results.complete')}</p>
+        <div class="question__counter">${html('results.counter', { number: msg.questionIndex + 1 })}</div>
+        ${this.renderFeedback(msg.feedback)}
+        ${this.renderStandings(msg, 5)}
+        <p class="waiting-text">${html(msg.waiting ? 'results.waitingForNext' : 'results.complete')}</p>
       </div>
     `;
   }
 
   /**
    * The closed question again, with how this participant's answer fared.
-   * The server sends only a verdict, never the correct answer -- revealing it
-   * is the presenter's call. Question text and options are server-rendered
-   * HTML (math, code), the same markup renderQuestion() shows; everything else
-   * is escaped or numeric.
+   * The server sends a verdict, and the correct answer (`expected`) only in a
+   * quiz whose author opted in -- otherwise revealing it is the presenter's
+   * call. Question text and options are server-rendered HTML (math, code), the
+   * same markup renderQuestion() shows; everything else is escaped or numeric.
    */
   renderFeedback(feedback) {
     if (!feedback || !feedback.question) return '';
     const question = feedback.question;
+    const expected = feedback.expected && typeof feedback.expected === 'object' ? feedback.expected : null;
     let detailHtml = '';
+    let expectedHtml = '';
     let verdict = t('feedback.notAnswered');
     let verdictClass = 'feedback__verdict--none';
 
     if (question.type === 'multiple-choice') {
       const chosen = new Set(Array.isArray(feedback.answer) ? feedback.answer : []);
+      // Marked in words as well as by the border: colour alone would not say
+      // it to everybody.
+      const correct = expected && Array.isArray(expected.correctIndices)
+        ? new Set(expected.correctIndices)
+        : null;
       detailHtml = `
         <div class="options feedback__options">
           ${(question.options || []).map((opt, i) => `
-            <div class="option feedback__option ${chosen.has(i) ? 'option--selected' : ''}">${opt}</div>
+            <div class="option feedback__option ${chosen.has(i) ? 'option--selected' : ''} ${correct?.has(i) ? 'feedback__option--expected' : ''}">${opt}${
+              correct?.has(i) ? `<span class="feedback__expected-tag">${html('feedback.expectedOption')}</span>` : ''
+            }</div>
           `).join('')}
         </div>
       `;
+      if (correct && correct.size === 0) {
+        expectedHtml = `<div class="feedback__expected">${html('feedback.expectedNoOption')}</div>`;
+      }
       if (feedback.answered) {
         verdict = t(feedback.isCorrect ? 'feedback.correct' : 'feedback.wrong');
         verdictClass = feedback.isCorrect ? 'feedback__verdict--correct' : 'feedback__verdict--wrong';
@@ -1154,6 +1215,13 @@ class QuizClient {
         detailHtml = `
           <div class="feedback__estimate">${html('feedback.yourAnswer')} <strong>${
             Number.isFinite(answer) ? i18n.formatNumber(answer) : '-'
+          }</strong></div>
+        `;
+      }
+      if (expected && Number.isFinite(Number(expected.correctAnswer))) {
+        expectedHtml = `
+          <div class="feedback__expected">${html('feedback.expectedAnswer')} <strong>${
+            i18n.formatNumber(Number(expected.correctAnswer))
           }</strong></div>
         `;
       }
@@ -1183,8 +1251,9 @@ class QuizClient {
       }
     } else if (question.type === 'ordering') {
       // The participant's own order. The server sends the items as they were
-      // shown and the answer as positions in that list -- never the correct
-      // order, which is the presenter's to reveal.
+      // shown and the answer as positions in that list. The correct order
+      // comes with it only in a quiz that shows correct answers (`expected`);
+      // otherwise it is the presenter's to reveal.
       const options = Array.isArray(question.options) ? question.options : [];
       const order = Array.isArray(feedback.answer)
         ? feedback.answer.filter((i) => Number.isInteger(i) && i >= 0 && i < options.length)
@@ -1206,6 +1275,23 @@ class QuizClient {
         verdict = t(feedback.isCorrect ? 'feedback.correct' : 'feedback.wrong');
         verdictClass = feedback.isCorrect ? 'feedback__verdict--correct' : 'feedback__verdict--wrong';
       }
+      // Not under an order that is already the correct one.
+      const correctOrder = expected && Array.isArray(expected.order)
+        ? expected.order.filter((i) => Number.isInteger(i) && i >= 0 && i < options.length)
+        : [];
+      if (correctOrder.length > 0 && !(feedback.answered && feedback.isCorrect)) {
+        expectedHtml = `
+          <div class="feedback__expected">${html('feedback.expectedOrder')}</div>
+          <ol class="ordering ordering--feedback ordering--expected" role="list">
+            ${correctOrder.map((i) => `
+              <li class="ordering__item">
+                <span class="ordering__number" aria-hidden="true"></span>
+                <div class="ordering__content">${options[i]}</div>
+              </li>
+            `).join('')}
+          </ol>
+        `;
+      }
     } else if (question.type === 'short-answer') {
       // The participant's own text: escaped, like every other participant
       // input on this page.
@@ -1223,6 +1309,17 @@ class QuizClient {
       if (feedback.answered && feedback.isCorrect && feedback.acceptedByPresenter === true) {
         verdict = t('feedback.acceptedByPresenter');
       }
+      // The author's accepted answers, written out by the server; plain text.
+      const accepted = expected && Array.isArray(expected.acceptedAnswers)
+        ? expected.acceptedAnswers.filter((a) => typeof a === 'string' && a !== '')
+        : [];
+      if (accepted.length > 0) {
+        expectedHtml = `
+          <div class="feedback__expected">${html('feedback.expectedAccepted', { count: accepted.length })} ${
+            accepted.map((a) => `<strong>${this.escapeHtml(a)}</strong>`).join(' · ')
+          }</div>
+        `;
+      }
     }
 
     return `
@@ -1230,6 +1327,7 @@ class QuizClient {
         <div class="question__text feedback__question">${question.text}</div>
         ${detailHtml}
         <div class="feedback__verdict ${verdictClass}">${this.escapeHtml(verdict)}</div>
+        ${expectedHtml}
       </div>
     `;
   }
@@ -1338,24 +1436,12 @@ class QuizClient {
     container.append(list);
   }
 
-  renderFinalResults(leaderboard) {
+  renderFinalResults(msg) {
     const content = document.getElementById('content');
-    const myEntry = leaderboard.find(e => e.id === this.participantId);
-    const myRank = myEntry ? leaderboard.indexOf(myEntry) + 1 : '-';
-
-    const listHtml = leaderboard.slice(0, 10).map((entry, i) => `
-      <div class="leaderboard__item ${entry.id === this.participantId ? 'leaderboard__item--highlight' : ''}">
-        <span class="leaderboard__rank">${i + 1}</span>
-        <span class="leaderboard__name">${this.escapeHtml(entry.name)}</span>
-        <span class="leaderboard__score">${entry.score}</span>
-      </div>
-    `).join('');
-
     content.innerHTML = `
       <div class="results">
         <h2>${html('results.finalHeading')}</h2>
-        <div class="my-stats">${html('results.rankAndScore', { rank: myRank, score: myEntry ? Number(myEntry.score) : 0 })}</div>
-        <div class="leaderboard">${listHtml}</div>
+        ${this.renderStandings(msg, 10)}
         <p class="waiting-text">${html('results.thanks')}</p>
       </div>
     `;

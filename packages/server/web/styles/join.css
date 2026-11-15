@@ -106,6 +106,35 @@
     overflow-wrap: anywhere;
   }
 
+  /* The correct answer, in a quiz that shows it (showCorrectAnswers). Always
+     in words as well: the border alone would not say it to everybody. */
+  .feedback__expected {
+    margin-top: var(--quiz-space-md);
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+
+  .feedback__option--expected {
+    border-color: var(--quiz-success-dark);
+    border-width: 2px;
+  }
+
+  .feedback__expected-tag {
+    display: block;
+    margin-top: var(--quiz-space-xs);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--quiz-success-dark);
+
+    &::before {
+      content: "✓ ";
+    }
+  }
+
+  .ordering--expected .ordering__item {
+    border-color: var(--quiz-success-dark);
+  }
+
   /* The expected length of a short answer, under its input. Turns into a
      warning once the answer is longer than any accepted one. */
   .answer-length {
@@ -298,6 +327,27 @@
     font-size: 0.875rem;
     padding: 0.375rem var(--quiz-space-sm);
     width: 100%;
+  }
+
+  /* A graded quiz: name and every answer are recorded, and nobody is asked.
+     Said where it cannot be missed -- above the name field, before joining --
+     and kept above the quiz from then on. */
+  .graded-notice {
+    font-size: 0.9375rem;
+    font-weight: 500;
+    line-height: 1.4;
+    color: var(--quiz-text);
+    background: var(--quiz-surface-alt);
+    border: 1px solid var(--quiz-border);
+    border-left: 0.25rem solid var(--quiz-danger-dark);
+    border-radius: var(--quiz-radius-sm);
+    padding: var(--quiz-space-sm);
+    margin: 0 0 var(--quiz-space-md);
+    text-align: left;
+  }
+
+  .consent-status--graded {
+    border-left: 0.25rem solid var(--quiz-danger-dark);
   }
 
   /* --- Practice mode ---------------------------------------------------- */

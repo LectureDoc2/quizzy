@@ -391,16 +391,40 @@ participant's browser keeps only a random resume key, per tab, in
 `sessionStorage`. What to put in the privacy notice: DEPLOY.md §13a. Why the
 planned presenter cookie needs no consent banner: PRESENTER-TOKEN.md §5.
 
-The post-game export is aggregate, with one consent-gated exception. A quiz
-that sets `recordNamedResults` offers each participant an unticked checkbox on
-the join page; only those who tick it, and do not withdraw before the quiz
+The post-game export is aggregate, unless the quiz's author opts in to more
+with `recordResults`. A quiz that sets it to `"named"` offers each participant
+an unticked checkbox on the join page; only those who tick it, and do not withdraw before the quiz
 ends, appear in the export, with exactly two fields: name and final score. The
 server freezes that list when the game ends (`Room.snapshotNamedResults()`)
 and sends it to the presenter only from then on. It lives in RAM like
 everything else; it leaves the server only in the CSV the lecturer downloads,
 and from that point the lecturer is responsible for the file. Names cannot
 start a spreadsheet formula: the name validator admits only letters, spaces,
-hyphens and apostrophes, starting with a letter.
+hyphens and apostrophes, starting with a letter, or a matriculation number.
+
+A quiz that sets `recordResults` to `"all"` is a graded one, and records
+without asking: every participant's name, each answer they gave and the points
+it scored. The join page says so above the name field, before anybody joins,
+and repeats it for the whole quiz. The records are kept per room
+(`Room.resultRecords`), apart from the participants, because a participant
+whose connection dropped is purged after `DETACHED_RETENTION_MINUTES` and must
+not vanish from a grade sheet; they are capped relative to the room's peak
+attendance, an eviction is reported in the export, and they go with the room.
+The presenter is sent them only once the game has ended
+(`Room.getIndividualResults()`). In the CSV a free-text answer that starts
+with `=`, `+`, `-` or `@` is prefixed with an apostrophe, so that a
+spreadsheet does not read a participant's answer as a formula. Names are unique
+in such a room (`Room.isNameTaken()`), which also means that a join attempt
+tells anybody holding the room code whether a given name is in use — and
+proves only that a name is used once, not who typed it.
+
+Two further options limit what a participant is *sent*, not merely shown.
+With `leaderboard` set to `"rank-only"` or `"none"`, the messages that carry
+the leaderboard to participants carry only their own standing instead
+(`standingsFor()` in server.js is the one place that decides this); the
+presenter still gets the leaderboard. `showCorrectAnswers` adds the correct
+answer to a participant's feedback, which without it never carries it; the
+feedback is only sent once the question has closed.
 
 ---
 

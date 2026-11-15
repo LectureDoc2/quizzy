@@ -1,6 +1,7 @@
 {
-  "title": "Java - Felder (Arrays)\n(Programmierung 1 - Prof. Dr. Michael Eichberg)",
+  "title": "Java - Felder (Arrays)\n(Quiz mit Bonuspunkten)",
   "secret": "WUZYDWu8HH7tGI7lEptC2Ys34ob-K0DviUPutD8jm6N_MtyYuz7O-2niZBlL0fxT",
+  "showCorrectAnswers": true,
   "questions": [
     {
       "type": "multiple-choice",
@@ -27,7 +28,12 @@
     {
       "type": "short-answer",
       "text": "Mit welchem Ausdruck greift man auf das <b>letzte</b> Element eines beliebigen (nicht leeren) Feldes <code>a</code> zu?",
-      "acceptedAnswers": ["a\\[a.length - 1\\][;]", "a\\[a.length-1\\][;]", "a\\[a.length -1\\][;]", "a\\[a.length- 1\\][;]"],
+      "acceptedAnswers": [
+        "a\\[a.length - 1\\][;]",
+        "a\\[a.length-1\\][;]",
+        "a\\[a.length -1\\][;]",
+        "a\\[a.length- 1\\][;]"
+      ],
       "match": "exact",
       "timeLimit": 45
     },
@@ -281,7 +287,12 @@
     {
       "type": "short-answer",
       "text": "Welchen Typ hat der Parameter <code>strings</code> innerhalb der Methode <code>void printAll(String separator, String... strings)</code>?",
-      "acceptedAnswers": ["String\\[\\]", "String \\[\\]", "java.lang.String\\[\\]", "java.lang.String \\[\\]"],
+      "acceptedAnswers": [
+        "String\\[\\]",
+        "String \\[\\]",
+        "java.lang.String\\[\\]",
+        "java.lang.String \\[\\]"
+      ],
       "match": "exact",
       "timeLimit": 45
     },

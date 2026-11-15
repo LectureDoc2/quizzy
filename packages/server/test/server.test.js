@@ -1165,7 +1165,7 @@ describe('Server integration', () => {
   });
 
   describe('consent to named results', () => {
-    const NAMED_QUIZ = { ...QUIZ, recordNamedResults: true };
+    const NAMED_QUIZ = { ...QUIZ, recordResults: 'named' };
     const openNamedRoom = () => openRoom(tokenFor('michael', NAMED_QUIZ), NAMED_QUIZ);
 
     async function joinWithConsent(roomId, name, consent) {
@@ -1272,6 +1272,252 @@ describe('Server integration', () => {
       assert.strictEqual(rejoined.type, 'rejoined');
       assert.strictEqual(rejoined.recordsNamedResults, true);
       assert.strictEqual(rejoined.consent, true);
+    });
+  });
+
+  describe('graded quizzes: leaderboard, correct answers, recording everything', () => {
+    const openWith = (options, name = 'michael') => {
+      const quiz = { ...QUIZ, ...options };
+      return openRoom(tokenFor(name, quiz), quiz).then((presenter) => ({ ...presenter, quiz }));
+    };
+
+    /** Start the quiz and play its first question: Alice right, Bob wrong. */
+    async function playFirstQuestion(presenter, alice, bob) {
+      send(presenter.ws, { type: 'start_game' });
+      await waitFor(presenter.ws, 'game_started');
+      await waitFor(alice.ws, 'question');
+      await waitFor(bob.ws, 'question');
+      send(alice.ws, { type: 'submit_answer', answer: [0, 2] });
+      await waitFor(alice.ws, 'answer_accepted');
+      send(bob.ws, { type: 'submit_answer', answer: [1] });
+      return {
+        forPresenter: await waitFor(presenter.ws, 'question_results'),
+        forAlice: await waitFor(alice.ws, 'results'),
+        forBob: await waitFor(bob.ws, 'results')
+      };
+    }
+
+    it('sends the leaderboard and no correct answer by default, exactly as before', async () => {
+      const presenter = await openWith({});
+      const { roomId } = presenter.created;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      const bob = await joinRoom(roomId, 'Bob Brown');
+      assert.strictEqual(alice.reply.recordResults, 'none');
+      const { forAlice } = await playFirstQuestion(presenter, alice, bob);
+
+      assert.deepStrictEqual(Object.keys(forAlice).sort(), ['feedback', 'leaderboard', 'questionIndex', 'type', 'waiting']);
+      assert.deepStrictEqual(forAlice.leaderboard.map(({ name, score }) => ({ name, score })), [
+        { name: 'Alice Adams', score: 100 },
+        { name: 'Bob Brown', score: 0 }
+      ]);
+      assert.ok(!('expected' in forAlice.feedback));
+
+      const ended = waitFor(alice.ws, 'game_ended');
+      send(presenter.ws, { type: 'end_game' });
+      assert.deepStrictEqual(Object.keys(await ended).sort(), ['leaderboard', 'type']);
+    });
+
+    for (const mode of ['none', 'rank-only']) {
+      it(`never sends a participant anybody else's name or score with leaderboard "${mode}"`, async () => {
+        const presenter = await openWith({ leaderboard: mode });
+        const { roomId } = presenter.created;
+        const alice = await joinRoom(roomId, 'Alice Adams');
+        const bob = await joinRoom(roomId, 'Bob Brown');
+        const { forPresenter, forAlice, forBob } = await playFirstQuestion(presenter, alice, bob);
+
+        const expectStanding = (msg, own, other, standing) => {
+          assert.ok(!('leaderboard' in msg), 'no leaderboard field at all');
+          assert.strictEqual(msg.leaderboardMode, mode);
+          assert.deepStrictEqual(msg.standing, standing);
+          assert.ok(!JSON.stringify(msg).includes(other), `${own} is told nothing about ${other}`);
+        };
+        const rank = (place) => (mode === 'rank-only' ? { rank: place, of: 2 } : {});
+        expectStanding(forAlice, 'Alice', 'Bob', { score: 100, ...rank(1) });
+        expectStanding(forBob, 'Bob', 'Alice', { score: 0, ...rank(2) });
+        // Their own verdict is theirs to see.
+        assert.strictEqual(forAlice.feedback.isCorrect, true);
+        assert.strictEqual(forBob.feedback.isCorrect, false);
+
+        // The presenter sees what the presenter always saw.
+        assert.deepStrictEqual(forPresenter.leaderboard.map((e) => e.name), ['Alice Adams', 'Bob Brown']);
+        assert.deepStrictEqual(forPresenter.answers.map((a) => a.name).sort(), ['Alice Adams', 'Bob Brown']);
+
+        // A latecomer lands on the results screen: the same rule.
+        const carol = await joinRoom(roomId, 'Carol Clark');
+        expectStanding(await waitFor(carol.ws, 'results'), 'Carol', 'Alice', { score: 0, ...(mode === 'rank-only' ? { rank: 2, of: 3 } : {}) });
+
+        const endedForAlice = waitFor(alice.ws, 'game_ended');
+        const endedForBob = waitFor(bob.ws, 'game_ended');
+        const endedForPresenter = waitFor(presenter.ws, 'game_ended');
+        send(presenter.ws, { type: 'end_game' });
+        expectStanding(await endedForAlice, 'Alice', 'Bob', { score: 100, ...(mode === 'rank-only' ? { rank: 1, of: 3 } : {}) });
+        expectStanding(await endedForBob, 'Bob', 'Alice', { score: 0, ...(mode === 'rank-only' ? { rank: 2, of: 3 } : {}) });
+        assert.strictEqual((await endedForPresenter).leaderboard.length, 3);
+
+        // And after a reload of the final screen.
+        bob.ws.terminate();
+        const ws = await connect();
+        send(ws, { type: 'rejoin_room', roomId, resumeToken: bob.reply.resumeToken });
+        assert.strictEqual((await next(ws)).type, 'rejoined');
+        expectStanding(await waitFor(ws, 'game_ended'), 'Bob', 'Alice', { score: 0, ...(mode === 'rank-only' ? { rank: 2, of: 3 } : {}) });
+      });
+    }
+
+    it('sends the correct answer with the feedback when the quiz says so, and only then', async () => {
+      const presenter = await openWith({ showCorrectAnswers: true });
+      const { roomId } = presenter.created;
+      const alice = await joinRoom(roomId, 'Alice Adams');
+      const bob = await joinRoom(roomId, 'Bob Brown');
+      send(presenter.ws, { type: 'start_game' });
+      // Never with the question itself.
+      const question = await waitFor(alice.ws, 'question');
+      assert.ok(!JSON.stringify(question).includes('correctIndices'));
+      assert.ok(!('expected' in question));
+      await waitFor(bob.ws, 'question');
+      send(alice.ws, { type: 'submit_answer', answer: [0, 2] });
+      send(bob.ws, { type: 'submit_answer', answer: [1] });
+      assert.deepStrictEqual((await waitFor(alice.ws, 'results')).feedback.expected, { correctIndices: [0, 2] });
+      assert.deepStrictEqual((await waitFor(bob.ws, 'results')).feedback.expected, { correctIndices: [0, 2] });
+
+      send(presenter.ws, { type: 'next_question' });
+      await waitFor(alice.ws, 'question');
+      send(presenter.ws, { type: 'end_question' });
+      assert.deepStrictEqual((await waitFor(alice.ws, 'results')).feedback.expected, { correctAnswer: 128 });
+    });
+
+    it('tells the control view which options are in effect', async () => {
+      const graded = await openWith({ recordResults: 'all', leaderboard: 'none', showCorrectAnswers: true });
+      const control = await connect();
+      send(control, { type: 'control_connect', presenterToken: tokenFor('michael', graded.quiz), roomId: graded.created.roomId });
+      assert.deepStrictEqual((await next(control)).options, {
+        recordResults: 'all', leaderboard: 'none', showCorrectAnswers: true
+      });
+
+      const plain = await openWith({}, 'another lecturer');
+      const plainControl = await connect();
+      send(plainControl, { type: 'control_connect', presenterToken: tokenFor('another lecturer', plain.quiz), roomId: plain.created.roomId });
+      assert.deepStrictEqual((await next(plainControl)).options, {
+        recordResults: 'none', leaderboard: 'complete', showCorrectAnswers: false
+      });
+    });
+
+    it('warns the presenter about an estimation question in a quiz that records all answers', async () => {
+      const graded = await openWith({ recordResults: 'all' });
+      assert.strictEqual(graded.created.type, 'room_created');
+      assert.strictEqual(graded.created.warnings.length, 1);
+      assert.match(graded.created.warnings[0], /^question 2: is an estimation question in a quiz that records all answers/);
+
+      const plain = await openWith({}, 'another lecturer');
+      assert.deepStrictEqual(plain.created.warnings, []);
+    });
+
+
+    describe('recordResults: "all"', () => {
+      const openGraded = () => openWith({ recordResults: 'all' });
+
+      it('says so before anybody joins, and when they have', async () => {
+        const { created } = await openGraded();
+        const probe = await connect();
+        send(probe, { type: 'room_status', roomId: created.roomId });
+        const status = await next(probe);
+        assert.strictEqual(status.recordResults, 'all');
+        assert.strictEqual(status.recordsNamedResults, false, 'nobody is asked for consent');
+
+        const alice = await joinRoom(created.roomId, 'Alice Adams');
+        assert.strictEqual(alice.reply.recordResults, 'all');
+        assert.strictEqual(alice.reply.consent, false);
+      });
+
+      it('refuses a second participant with the same name, and leaves their socket open for another', async () => {
+        const { created } = await openGraded();
+        const first = await joinRoom(created.roomId, 'Alice Adams');
+        assert.strictEqual(first.reply.type, 'joined');
+
+        const second = await joinRoom(created.roomId, 'alice  ADAMS');
+        assert.strictEqual(second.reply.type, 'error');
+        assert.strictEqual(second.reply.code, 'name_taken');
+
+        send(second.ws, { type: 'join_room', roomId: created.roomId, name: 'Alice Adamson' });
+        assert.strictEqual((await next(second.ws)).type, 'joined');
+
+        // The same participant coming back is not a second one.
+        first.ws.terminate();
+        const back = await connect();
+        send(back, { type: 'rejoin_room', roomId: created.roomId, resumeToken: first.reply.resumeToken });
+        assert.strictEqual((await next(back)).type, 'rejoined');
+      });
+
+      it('does not make names unique in any other quiz', async () => {
+        const { created } = await openWith({ recordResults: 'named' });
+        assert.strictEqual((await joinRoom(created.roomId, 'Alice Adams')).reply.type, 'joined');
+        assert.strictEqual((await joinRoom(created.roomId, 'Alice Adams')).reply.type, 'joined');
+      });
+
+      it('exports every answer by name once the quiz has ended, and frees a name the presenter removes', async () => {
+        const presenter = await openGraded();
+        const { roomId } = presenter.created;
+        const alice = await joinRoom(roomId, 'Alice Adams');
+        const bob = await joinRoom(roomId, 'Bob Brown');
+        await playFirstQuestion(presenter, alice, bob);
+
+        send(presenter.ws, { type: 'export_results' });
+        const midGame = (await waitFor(presenter.ws, 'results_export')).statistics;
+        assert.strictEqual(midGame.recordResults, 'all');
+        assert.strictEqual(midGame.individualResults, null, 'nothing by name before the quiz has ended');
+
+        // Bob's phone dies; he cannot come back under his name ...
+        const dropped = waitFor(presenter.ws, 'participant_left');
+        bob.ws.terminate();
+        await dropped;
+        assert.strictEqual((await joinRoom(roomId, 'Bob Brown')).reply.code, 'name_taken');
+
+        // ... until the presenter removes the old entry.
+        send(presenter.ws, { type: 'kick_participant', participantId: bob.reply.participantId });
+        await waitFor(presenter.ws, 'participant_left');
+        send(presenter.ws, { type: 'get_participants' });
+        const listed = (await waitFor(presenter.ws, 'participants_list')).participants;
+        assert.deepStrictEqual(listed.find((p) => p.id === bob.reply.participantId), {
+          id: bob.reply.participantId, name: 'Bob Brown', score: 0, connected: false, left: true, removed: true
+        });
+        // The old entry cannot come back, token or not.
+        const stale = await connect();
+        send(stale, { type: 'rejoin_room', roomId, resumeToken: bob.reply.resumeToken });
+        assert.strictEqual((await next(stale)).type, 'rejoin_failed');
+
+        const bobAgain = await joinRoom(roomId, 'Bob Brown');
+        assert.strictEqual(bobAgain.reply.type, 'joined');
+        await waitFor(bobAgain.ws, 'results');
+
+        send(presenter.ws, { type: 'next_question' });
+        await waitFor(alice.ws, 'question');
+        await waitFor(bobAgain.ws, 'question');
+        send(alice.ws, { type: 'submit_answer', answer: 100 });
+        await waitFor(alice.ws, 'answer_accepted');
+        send(bobAgain.ws, { type: 'submit_answer', answer: 128 });
+        await waitFor(presenter.ws, 'question_results');
+
+        const ended = waitFor(presenter.ws, 'game_ended');
+        send(presenter.ws, { type: 'end_game' });
+        const stats = (await ended).statistics;
+        assert.strictEqual(stats.namedResults, null);
+        assert.deepStrictEqual(stats.individualResults, [
+          { name: 'Alice Adams', score: 150, answers: [
+            { questionIndex: 0, answer: [0, 2], points: 100 },
+            { questionIndex: 1, answer: 100, points: 50 }
+          ] },
+          { name: 'Bob Brown', score: 0, removed: true, answers: [
+            { questionIndex: 0, answer: [1], points: 0 }
+          ] },
+          { name: 'Bob Brown', score: 100, answers: [
+            { questionIndex: 1, answer: 128, points: 100 }
+          ] }
+        ]);
+
+        // Still there for a control view opened after the end.
+        send(presenter.ws, { type: 'export_results' });
+        assert.deepStrictEqual((await waitFor(presenter.ws, 'results_export')).statistics.individualResults,
+          stats.individualResults);
+      });
     });
   });
 

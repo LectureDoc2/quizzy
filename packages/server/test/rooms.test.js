@@ -1311,7 +1311,7 @@ describe('Practice rooms', () => {
 describe('Consent to named results', () => {
   const QUIZ = {
     title: 'Named',
-    recordNamedResults: true,
+    recordResults: 'named',
     questions: [{ type: 'multiple-choice', text: 'Q1', options: ['A', 'B'], correctIndices: [0] }]
   };
 
@@ -1334,7 +1334,7 @@ describe('Consent to named results', () => {
   });
 
   it('is never recorded when the quiz does not ask, or in a practice game', () => {
-    const plain = new Room('ABC123', 'token', { ...QUIZ, recordNamedResults: undefined });
+    const plain = new Room('ABC123', 'token', { ...QUIZ, recordResults: undefined });
     assert.strictEqual(plain.recordsNamedResults(), false);
     const p = plain.addParticipant({}, 'Alice', true);
     assert.strictEqual(p.consent, false);
@@ -1410,13 +1410,353 @@ describe('Consent to named results', () => {
   });
 
   it('has no named results at all when the quiz does not ask', () => {
-    const room = new Room('ABC123', 'token', { ...QUIZ, recordNamedResults: false });
+    const room = new Room('ABC123', 'token', { ...QUIZ, recordResults: 'none' });
     room.addParticipant({}, 'Alice', true);
     room.state = 'ended';
     room.snapshotNamedResults();
     const stats = room.getStatistics();
     assert.strictEqual(stats.recordsNamedResults, false);
     assert.strictEqual(stats.namedResults, null);
+  });
+});
+
+describe('Leaderboard modes', () => {
+  const quizWith = (leaderboard) => ({
+    title: 'Board',
+    leaderboard,
+    questions: [{ type: 'multiple-choice', text: 'Q1', options: ['A', 'B'], correctIndices: [0] }]
+  });
+
+  it('is complete unless the quiz says otherwise, and always in a practice game', () => {
+    assert.strictEqual(new Room('ABC123', 'token', quizWith(undefined)).leaderboardMode(), 'complete');
+    assert.strictEqual(new Room('ABC123', 'token', quizWith('complete')).leaderboardMode(), 'complete');
+    assert.strictEqual(new Room('ABC123', 'token', quizWith('rank-only')).leaderboardMode(), 'rank-only');
+    assert.strictEqual(new Room('ABC123', 'token', quizWith('none')).leaderboardMode(), 'none');
+    // Not a value the validator lets through; the room does not trust that.
+    assert.strictEqual(new Room('ABC123', 'token', quizWith('hidden')).leaderboardMode(), 'complete');
+    const practice = new Room('ABC123', 'token', quizWith('none'));
+    practice.practice = true;
+    assert.strictEqual(practice.leaderboardMode(), 'complete');
+  });
+
+  it('gives a participant their own score only, when there is no leaderboard for them', () => {
+    const room = new Room('ABC123', 'token', quizWith('none'));
+    const alice = room.addParticipant({}, 'Alice');
+    const bob = room.addParticipant({}, 'Bob');
+    alice.score = 100;
+    assert.deepStrictEqual(room.getStanding(alice.id), { score: 100 });
+    assert.deepStrictEqual(room.getStanding(bob.id), { score: 0 });
+    assert.deepStrictEqual(room.getStanding('nobody'), { score: 0 });
+  });
+
+  it('adds the place in rank-only, shared by equal scores, with the places after them skipped', () => {
+    const room = new Room('ABC123', 'token', quizWith('rank-only'));
+    const [a, b, c, d] = ['Alice', 'Bob', 'Carol', 'Dave'].map((name) => room.addParticipant({}, name));
+    a.score = 200; b.score = 100; c.score = 200; d.score = 0;
+    assert.deepStrictEqual(room.getStanding(a.id), { score: 200, rank: 1, of: 4 });
+    assert.deepStrictEqual(room.getStanding(c.id), { score: 200, rank: 1, of: 4 });
+    assert.deepStrictEqual(room.getStanding(b.id), { score: 100, rank: 3, of: 4 });
+    assert.deepStrictEqual(room.getStanding(d.id), { score: 0, rank: 4, of: 4 });
+    // Nothing in a standing names anybody.
+    assert.ok(!JSON.stringify(room.getStanding(b.id)).includes('Alice'));
+    assert.deepStrictEqual(room.getStanding('nobody'), { score: 0, rank: null, of: 4 });
+  });
+});
+
+describe('Correct answers in the feedback (showCorrectAnswers)', () => {
+  const QUESTIONS = [
+    { type: 'multiple-choice', text: 'Q1', options: ['A', 'B', 'C'], correctIndices: [2, 0] },
+    { type: 'estimation', text: 'Q2', correctAnswer: 128 },
+    { type: 'short-answer', text: 'Q3', acceptedAnswers: ['Overloading [of Methods]', 'int\\[\\]', 'Overloading of Methods'] },
+    { type: 'ordering', text: 'Q4', options: ['first', 'second', 'third'] }
+  ];
+
+  /** The feedback on question `index`, to somebody who did not answer it. */
+  function feedbackOn(index, options = {}) {
+    const room = new Room('ABC123', 'token', { title: 'Shown', ...options, questions: QUESTIONS });
+    const alice = room.addParticipant({}, 'Alice');
+    room.startGame();
+    for (let i = 0; i < index; i++) {
+      room.endQuestion();
+      room.nextQuestion();
+    }
+    const results = room.endQuestion();
+    return { room, feedback: room.getAnswerFeedback(alice.id, results) };
+  }
+
+  it('is not sent unless the quiz opts in', () => {
+    for (let index = 0; index < QUESTIONS.length; index++) {
+      assert.ok(!('expected' in feedbackOn(index).feedback));
+      assert.ok(!('expected' in feedbackOn(index, { showCorrectAnswers: false }).feedback));
+      // Only a literal true counts.
+      assert.ok(!('expected' in feedbackOn(index, { showCorrectAnswers: 'true' }).feedback));
+    }
+  });
+
+  it('names the correct options, the correct number and the accepted answers written out', () => {
+    const on = { showCorrectAnswers: true };
+    assert.deepStrictEqual(feedbackOn(0, on).feedback.expected, { correctIndices: [0, 2] });
+    assert.deepStrictEqual(feedbackOn(1, on).feedback.expected, { correctAnswer: 128 });
+    // Optional parts written out, escapes resolved, duplicates dropped.
+    assert.deepStrictEqual(feedbackOn(2, on).feedback.expected, {
+      acceptedAnswers: ['Overloading of Methods', 'int[]']
+    });
+  });
+
+  it('gives the correct order as positions in the list as it was shown', () => {
+    const { room, feedback } = feedbackOn(3, { showCorrectAnswers: true });
+    const shown = feedback.question.options;
+    assert.deepStrictEqual(feedback.expected.order.map((position) => shown[position]), ['first', 'second', 'third']);
+    assert.strictEqual(feedback.expected.order.length, room.currentOrder.length);
+  });
+
+  it('also applies in a practice game, next to the band', () => {
+    const room = new Room('ABC123', 'token', { title: 'P', showCorrectAnswers: true, questions: [QUESTIONS[1]] });
+    room.practice = true;
+    const student = room.addParticipant({}, 'Student');
+    room.startGame();
+    room.currentAnswers.set(student.id, { answer: 120, timestamp: Date.now() });
+    const feedback = room.getAnswerFeedback(student.id, room.endQuestion());
+    assert.strictEqual(feedback.band, 10);
+    assert.deepStrictEqual(feedback.expected, { correctAnswer: 128 });
+  });
+});
+
+describe('Recording all results (recordResults: "all")', () => {
+  const QUIZ = {
+    title: 'Graded',
+    recordResults: 'all',
+    questions: [
+      { type: 'multiple-choice', text: 'Q1', options: ['A', 'B'], correctIndices: [0] },
+      { type: 'short-answer', text: 'Q2', acceptedAnswers: ['Overloading'] },
+      { type: 'ordering', text: 'Q3', options: ['first', 'second', 'third'] }
+    ]
+  };
+
+  const answer = (room, participant, value) => {
+    assert.ok(room.submitAnswer(participant.id, value), `answer of ${participant.name} refused`);
+  };
+
+  it('is one of three modes, and only the named one asks for consent', () => {
+    const all = new Room('ABC123', 'token', QUIZ);
+    assert.strictEqual(all.recordMode(), 'all');
+    assert.strictEqual(all.recordsAllResults(), true);
+    assert.strictEqual(all.recordsNamedResults(), false);
+    assert.strictEqual(all.addParticipant({}, 'Alice', true).consent, false);
+
+    assert.strictEqual(new Room('ABC123', 'token', { ...QUIZ, recordResults: 'named' }).recordMode(), 'named');
+    assert.strictEqual(new Room('ABC123', 'token', { ...QUIZ, recordResults: 'none' }).recordMode(), 'none');
+    assert.strictEqual(new Room('ABC123', 'token', { ...QUIZ, recordResults: undefined }).recordMode(), 'none');
+    // The key recordResults replaced no longer switches anything on.
+    assert.strictEqual(new Room('ABC123', 'token', { ...QUIZ, recordResults: undefined, recordNamedResults: true }).recordMode(), 'none');
+
+    const practice = new Room('ABC123', 'token', QUIZ);
+    practice.practice = true;
+    assert.strictEqual(practice.recordMode(), 'none');
+    assert.strictEqual(practice.isNameTaken('Alice'), false);
+  });
+
+  it('lists every participant with every answer and its points, once the game has ended', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const alice = room.addParticipant({}, 'Alice');
+    const bob = room.addParticipant({}, 'Bob');
+    const carol = room.addParticipant({}, 'Carol'); // never answers
+
+    room.startGame();
+    answer(room, alice, [0]);
+    answer(room, bob, [1]);
+    room.endQuestion();
+    assert.strictEqual(room.getStatistics().individualResults, null, 'nothing by name before the end');
+
+    room.nextQuestion();
+    answer(room, alice, 'overloading');
+    answer(room, bob, 'Overriding');
+    room.endQuestion();
+
+    room.nextQuestion();
+    // Answers arrive as shown positions; the record holds authored indices,
+    // so 0, 1, 2 is the correct order whatever the shuffle was.
+    const correct = [0, 1, 2].map((item) => room.currentOrder.indexOf(item));
+    answer(room, alice, correct);
+    room.endQuestion();
+
+    room.state = 'ended';
+    const stats = room.getStatistics();
+    assert.strictEqual(stats.recordResults, 'all');
+    assert.strictEqual(stats.recordsNamedResults, false);
+    assert.strictEqual(stats.namedResults, null);
+    assert.strictEqual(stats.droppedIndividualResults, 0);
+    assert.deepStrictEqual(stats.individualResults, [
+      { name: 'Alice', score: 300, answers: [
+        { questionIndex: 0, answer: [0], points: 100 },
+        { questionIndex: 1, answer: 'overloading', points: 100 },
+        { questionIndex: 2, answer: [0, 1, 2], points: 100 }
+      ] },
+      { name: 'Bob', score: 0, answers: [
+        { questionIndex: 0, answer: [1], points: 0 },
+        { questionIndex: 1, answer: 'Overriding', points: 0 }
+      ] },
+      { name: 'Carol', score: 0, answers: [] }
+    ]);
+    // A copy: the export cannot change the record.
+    stats.individualResults[0].answers[0].points = 0;
+    assert.strictEqual(room.getStatistics().individualResults[0].answers[0].points, 100);
+  });
+
+  it('records nothing by name in the other modes', () => {
+    for (const recordResults of ['none', 'named', undefined]) {
+      const room = new Room('ABC123', 'token', { ...QUIZ, recordResults });
+      const alice = room.addParticipant({}, 'Alice', true);
+      room.startGame();
+      answer(room, alice, [0]);
+      room.endQuestion();
+      room.state = 'ended';
+      assert.strictEqual(room.resultRecords.size, 0);
+      assert.strictEqual(room.getStatistics().individualResults, null);
+    }
+  });
+
+  it('keeps the record of a participant who is gone for good', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const ws = {};
+    const alice = room.addParticipant(ws, 'Alice');
+    room.addParticipant({}, 'Bob');
+    room.startGame();
+    answer(room, alice, [0]);
+    room.endQuestion();
+
+    room.detachParticipant(ws, 0);
+    assert.strictEqual(room.sweepDetached(DETACHED_TTL_MS), 1);
+    assert.strictEqual(room.getParticipantById(alice.id), null);
+
+    room.state = 'ended';
+    assert.deepStrictEqual(room.getStatistics().individualResults.find((r) => r.name === 'Alice'), {
+      name: 'Alice', score: 100, answers: [{ questionIndex: 0, answer: [0], points: 100 }]
+    });
+  });
+
+  it('corrects the record when the presenter accepts an answer, also of somebody who has left', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const ws = {};
+    const alice = room.addParticipant(ws, 'Alice');
+    room.addParticipant({}, 'Bob');
+    room.startGame();
+    room.endQuestion();
+    room.nextQuestion();
+    answer(room, alice, 'Overriding');
+    room.endQuestion();
+    room.detachParticipant(ws, 0);
+    room.sweepDetached(DETACHED_TTL_MS);
+
+    assert.ok(room.setAnswerAccepted(1, 'Overriding', true));
+    assert.deepStrictEqual(room.resultRecords.get(alice.id).answers, [
+      { questionIndex: 1, answer: 'Overriding', points: 100, acceptedByPresenter: true }
+    ]);
+    assert.strictEqual(room.resultRecords.get(alice.id).score, 100);
+
+    assert.ok(room.setAnswerAccepted(1, 'Overriding', false));
+    assert.deepStrictEqual(room.resultRecords.get(alice.id).answers, [
+      { questionIndex: 1, answer: 'Overriding', points: 0 }
+    ]);
+    assert.strictEqual(room.resultRecords.get(alice.id).score, 0);
+  });
+
+  it('refuses a second participant with the same name, whatever its case or spacing', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const ws = {};
+    assert.ok(room.addParticipant(ws, 'Max Müller'));
+    assert.strictEqual(room.isNameTaken('Max Müller'), true);
+    assert.strictEqual(room.addParticipant({}, 'Max Müller'), null);
+    assert.strictEqual(room.addParticipant({}, 'max  MÜLLER'), null);
+    assert.strictEqual(room.getParticipantCount(), 1);
+    assert.ok(room.addParticipant({}, 'Max Mueller'), 'another name is another participant');
+    assert.ok(room.addParticipant({}, '1234567'));
+    assert.strictEqual(room.addParticipant({}, '1234567'), null);
+
+    // Taken while its participant is away, too ...
+    room.detachParticipant(ws, 0);
+    assert.strictEqual(room.addParticipant({}, 'Max Müller'), null);
+  });
+
+  it('keeps a name taken for the whole quiz once it has answers, and frees it otherwise', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const aliceWs = {};
+    const bobWs = {};
+    const alice = room.addParticipant(aliceWs, 'Alice');
+    room.addParticipant(bobWs, 'Bob');
+    room.addParticipant({}, 'Carol');
+    room.startGame();
+    answer(room, alice, [0]);
+    room.endQuestion();
+
+    room.detachParticipant(aliceWs, 0);
+    room.detachParticipant(bobWs, 0);
+    assert.strictEqual(room.sweepDetached(DETACHED_TTL_MS), 2);
+    // Alice left answers behind: the name is what her grade is filed under.
+    assert.strictEqual(room.addParticipant({}, 'Alice'), null);
+    // Bob left nothing; his name is free again.
+    assert.ok(room.addParticipant({}, 'Bob'));
+  });
+
+  it('lets the presenter free a name: the record stays, marked as removed', () => {
+    const room = new Room('ABC123', 'token', QUIZ);
+    const ws = {};
+    const first = room.addParticipant(ws, 'Alice');
+    room.addParticipant({}, 'Bob');
+    room.startGame();
+    answer(room, first, [0]);
+    room.endQuestion();
+
+    // Gone for good, and still listed, so that there is something to remove.
+    room.detachParticipant(ws, 0);
+    room.sweepDetached(DETACHED_TTL_MS);
+    assert.deepStrictEqual(room.getParticipantList().find((p) => p.id === first.id), {
+      id: first.id, name: 'Alice', score: 100, connected: false, left: true
+    });
+
+    assert.strictEqual(room.purgeParticipant(first.id), false, 'nobody left to purge');
+    assert.strictEqual(room.markResultRecordRemoved(first.id), true);
+    assert.strictEqual(room.markResultRecordRemoved(first.id), false, 'only once');
+    assert.strictEqual(room.getParticipantList().find((p) => p.id === first.id).removed, true);
+
+    const second = room.addParticipant({}, 'Alice');
+    assert.ok(second, 'the name is free again');
+    assert.notStrictEqual(second.id, first.id);
+
+    room.state = 'ended';
+    assert.deepStrictEqual(room.getStatistics().individualResults.filter((r) => r.name === 'Alice'), [
+      { name: 'Alice', score: 100, removed: true, answers: [{ questionIndex: 0, answer: [0], points: 100 }] },
+      { name: 'Alice', score: 0, answers: [] }
+    ]);
+  });
+
+  it('does not make names unique, or list those who left, in the other modes', () => {
+    const room = new Room('ABC123', 'token', { ...QUIZ, recordResults: 'named' });
+    const first = room.addParticipant({}, 'Alice');
+    assert.ok(room.addParticipant({}, 'Alice'));
+    assert.strictEqual(room.markResultRecordRemoved(first.id), false);
+    assert.ok(room.getParticipantList().every((p) => !('left' in p)));
+  });
+
+  it('caps the records of those who left, never one of somebody still around, and counts what it drops', () => {
+    const room = new Room('ABC123', 'token', { ...QUIZ, questions: [QUIZ.questions[0]] });
+    const stayWs = {};
+    const stay = room.addParticipant(stayWs, 'Stay');
+    room.startGame();
+    answer(room, stay, [0]);
+    const cap = room.resultRecordCap();
+    for (let i = 0; i < cap + 5; i++) {
+      // A record with an answer whose participant is gone for good.
+      room.resultRecords.set(`gone_${i}`, {
+        name: `Gone ${i}`, nameKey: `gone ${i}`, score: 0,
+        answers: [{ questionIndex: 0, answer: [1], points: 0 }]
+      });
+    }
+    assert.ok(room.addParticipant({}, 'Late'));
+    assert.strictEqual(room.resultRecords.size, cap);
+    assert.ok(room.resultRecords.has(stay.id), 'somebody in the room keeps their record');
+    assert.strictEqual(room.droppedResultRecords, 7);
+    assert.strictEqual(room.getStatistics().droppedIndividualResults, 7);
   });
 });
 

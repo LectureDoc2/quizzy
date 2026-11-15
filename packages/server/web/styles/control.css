@@ -238,6 +238,128 @@
         padding: var(--quiz-space-md);
     }
 
+    /* Which of the quiz's options are in effect: what participants are shown,
+       and what is recorded about them. Absent for a quiz that sets none. */
+    .quiz-options {
+        list-style: none;
+        margin: 0 0 var(--quiz-space-md) 0;
+        padding: var(--quiz-space-sm) var(--quiz-space-md);
+        border: 1px solid var(--quiz-border);
+        border-left: 0.25rem solid var(--quiz-primary);
+        border-radius: var(--quiz-radius-sm);
+        background: var(--quiz-surface-alt);
+        font-size: 0.875rem;
+        color: var(--quiz-text);
+
+        &[hidden] {
+            display: none;
+        }
+    }
+
+    .quiz-options__item + .quiz-options__item {
+        margin-top: var(--quiz-space-xs);
+    }
+
+    /* --- Participants of a graded quiz ------------------------------------- */
+
+    .participants-panel {
+        margin-bottom: var(--quiz-space-lg);
+
+        h3 {
+            margin: 0 0 var(--quiz-space-xs) 0;
+            color: var(--quiz-text);
+        }
+    }
+
+    .participants-hint {
+        color: var(--quiz-text-secondary);
+        font-size: 0.875rem;
+        margin: 0 0 var(--quiz-space-md) 0;
+    }
+
+    .participants-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: var(--quiz-space-xs);
+    }
+
+    .participants-list__item {
+        display: flex;
+        align-items: center;
+        gap: var(--quiz-space-sm);
+        padding: var(--quiz-space-xs) var(--quiz-space-sm);
+        border: 1px solid var(--quiz-border);
+        border-radius: var(--quiz-radius-sm);
+        background: var(--quiz-surface);
+    }
+
+    .participants-list__name {
+        flex: 1;
+        min-width: 0;
+        overflow-wrap: anywhere;
+        font-weight: 500;
+    }
+
+    .participants-list__state {
+        font-size: 0.75rem;
+        color: var(--quiz-text-secondary);
+    }
+
+    .participants-list__item--reconnecting .participants-list__state {
+        color: var(--quiz-warning);
+    }
+
+    .participants-list__item--removed .participants-list__name {
+        text-decoration: line-through;
+        color: var(--quiz-text-secondary);
+    }
+
+    .participants-list__score {
+        min-width: 3rem;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .participants-list__remove {
+        flex: none;
+        padding: 2px var(--quiz-space-sm);
+        font-size: 0.875rem;
+    }
+
+    /* --- Confirmation dialog ------------------------------------------------ */
+
+    .confirm-dialog {
+        max-width: min(28rem, calc(100vw - 2 * var(--quiz-space-md)));
+        padding: var(--quiz-space-lg);
+        border: 1px solid var(--quiz-border);
+        border-radius: var(--quiz-radius);
+        background: var(--quiz-surface);
+        color: var(--quiz-text);
+
+        &::backdrop {
+            background: rgb(0 0 0 / 0.5);
+        }
+    }
+
+    .confirm-dialog__title {
+        margin: 0 0 var(--quiz-space-sm) 0;
+    }
+
+    .confirm-dialog__text {
+        margin: 0 0 var(--quiz-space-lg) 0;
+        color: var(--quiz-text-secondary);
+    }
+
+    .confirm-dialog__actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: var(--quiz-space-sm);
+    }
+
     .sessions-container {
         max-width: 800px;
         margin: 0 auto;

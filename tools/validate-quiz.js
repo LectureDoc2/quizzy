@@ -42,7 +42,7 @@ function describe(file) {
 
   return {
     errors: [],
-    warnings: checkSecret(quiz),
+    warnings: [...locateQuizMessages(raw, structure.warnings), ...checkSecret(quiz)],
     summary: `${quiz.questions.length} question${quiz.questions.length === 1 ? '' : 's'}` +
              (quiz.title ? ` — ${quiz.title}` : '')
   };
@@ -74,7 +74,7 @@ for (const file of files) {
   if (warnings.length > 0) {
     warned += warnings.length;
     console.warn(`! ${file}  (${summary})`);
-    for (const warning of warnings) console.warn(`    ${warning}`);
+    for (const warning of warnings) console.warn(warning.replace(/^/gm, '    '));
   } else {
     console.log(`✓ ${file}  (${summary})`);
   }

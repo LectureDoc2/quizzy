@@ -236,10 +236,13 @@ already flags. Three properties keep it defensible:
 - nothing is written to disk, and a restart still discards everything;
 - the per-question export stays aggregate. `recordQuestionStatistics`
   records counts and distributions, never names, and reattach did not change
-  that. The one way names enter the export is opt-in: a quiz that sets
-  `recordNamedResults` lists the name and final score of participants who
-  ticked the consent box and did not withdraw before the end. The page keeps
-  no copy of that choice; a rejoin gets it back from the server.
+  that. Names enter the export only if the quiz's author opts in: a quiz that
+  sets `"recordResults": "named"` lists the name and final score of
+  participants who ticked the consent box and did not withdraw before the end.
+  The page keeps no copy of that choice; a rejoin gets it back from the server.
+  A graded quiz (`"recordResults": "all"`) records every participant's name
+  and answers and says so before they join; there a participant's record
+  outlives the reconnect window, in RAM, until the room is discarded.
 
 `DEPLOY.md` describes `DETACHED_RETENTION_MINUTES` as a data-protection knob,
 not merely a memory one.

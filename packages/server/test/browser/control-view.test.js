@@ -27,8 +27,12 @@ describe('Control view rendering (browser)', () => {
     await statics.close();
   });
 
-  /** Open the control page with a stubbed socket that the test drives. */
-  async function openControlPage() {
+  /**
+   * Open the control page with a stubbed socket that the test drives.
+   *
+   * @param {object} [connected] Fields of `control_connected` to set or replace.
+   */
+  async function openControlPage(connected = {}) {
     const page = await openPage(browser);
     const dialogs = [];
     page.on('dialog', async (d) => { dialogs.push(d.message()); await d.dismiss(); });
@@ -53,7 +57,7 @@ describe('Control view rendering (browser)', () => {
     await page.goto(`${statics.origin}/control.html?token=SECRET-TOKEN-a1b2c3&room=ROOM01`);
     await page.waitForFunction(() => window.__ws && window.__sent.length > 0);
 
-    await page.evaluate(() =>
+    await page.evaluate((connected) =>
       window.__push({
         type: 'control_connected',
         roomId: 'ROOM01',
@@ -63,8 +67,10 @@ describe('Control view rendering (browser)', () => {
         currentQuestionIndex: 0,
         question: null,
         participantCount: 1,
-        leaderboard: []
-      })
+        leaderboard: [],
+        ...connected
+      }),
+      connected
     );
 
     return { page, dialogs };
@@ -342,5 +348,173 @@ describe('Control view rendering (browser)', () => {
     assert.strictEqual(await page.evaluate(() => document.querySelectorAll('.answer-group__toggle').length), 0,
       'the last results can no longer be re-scored');
     await page.close();
+  });
+  describe('ending the quiz', () => {
+    const dialogState = (page) => page.evaluate(() => {
+      const dialog = document.querySelector('dialog.confirm-dialog');
+      if (!dialog) return null;
+      return {
+        open: dialog.open,
+        modal: dialog.matches(':modal'),
+        title: dialog.querySelector('.confirm-dialog__title').textContent,
+        text: dialog.querySelector('.confirm-dialog__text').textContent,
+        buttons: [...dialog.querySelectorAll('button')].map((b) => b.textContent),
+        focused: document.activeElement?.textContent ?? null
+      };
+    });
+    const sentEndGame = (page) => page.evaluate(() => window.__sent.filter((m) => m.type === 'end_game').length);
+
+    it('asks before ending a quiz that has questions left, and ends it only on a yes', async () => {
+      // On the results of question 1 of 3.
+      const { page } = await openControlPage({ totalQuestions: 3 });
+      await page.click('#btn-end-game');
+      assert.deepStrictEqual(await dialogState(page), {
+        open: true,
+        modal: true,
+        title: 'End the quiz now?',
+        text: 'Questions 2 to 3 have not been played yet. Ending the quiz cannot be undone.',
+        buttons: ['Continue quiz', 'End quiz'],
+        // A stray Enter must not end the quiz.
+        focused: 'Continue quiz'
+      });
+      assert.strictEqual(await sentEndGame(page), 0, 'nothing is sent while the question is open');
+
+      await page.click('#confirm-dialog-cancel');
+      assert.strictEqual(await dialogState(page), null, 'the dialog is gone');
+      assert.strictEqual(await sentEndGame(page), 0, '"Continue quiz" ends nothing');
+
+      // Escape is a no as well.
+      await page.click('#btn-end-game');
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => !document.querySelector('dialog.confirm-dialog'));
+      assert.strictEqual(await sentEndGame(page), 0);
+
+      await page.click('#btn-end-game');
+      await page.click('#confirm-dialog-confirm');
+      assert.strictEqual(await dialogState(page), null);
+      assert.strictEqual(await sentEndGame(page), 1);
+    });
+
+    it('names the one question that is left', async () => {
+      const { page } = await openControlPage(); // question 1 of 2
+      await page.click('#btn-end-game');
+      assert.strictEqual((await dialogState(page)).text,
+        'Question 2 has not been played yet. Ending the quiz cannot be undone.');
+    });
+
+    it('does not ask after the last question', async () => {
+      const { page } = await openControlPage({ currentQuestionIndex: 1 }); // question 2 of 2
+      await page.click('#btn-end-game');
+      assert.strictEqual(await dialogState(page), null, 'no dialog');
+      assert.strictEqual(await sentEndGame(page), 1);
+    });
+  });
+
+  describe('the options of a quiz', () => {
+    const optionLines = (page) => page.evaluate(() => {
+      const list = document.getElementById('quiz-options');
+      return list.hidden ? null : [...list.querySelectorAll('li')].map((li) => li.textContent);
+    });
+
+    it('says nothing for a quiz that sets none, and shows no participant list', async () => {
+      for (const options of [undefined, { recordResults: 'none', leaderboard: 'complete', showCorrectAnswers: false }]) {
+        const { page } = await openControlPage(options ? { options } : {});
+        assert.strictEqual(await optionLines(page), null);
+        await page.evaluate(() => window.__push({
+          type: 'participants_list',
+          participants: [{ id: 'p1', name: 'Alice', score: 0, connected: true }]
+        }));
+        assert.strictEqual(
+          await page.evaluate(() => document.getElementById('participants-panel').style.display), 'none');
+      }
+    });
+
+    it('says what participants will not see and what is recorded', async () => {
+      const { page } = await openControlPage({
+        options: { recordResults: 'all', leaderboard: 'rank-only', showCorrectAnswers: true }
+      });
+      const lines = await optionLines(page);
+      assert.strictEqual(lines.length, 3);
+      assert.match(lines[0], /^Graded: every participant's name and answers are recorded/);
+      assert.match(lines[1], /do not see the leaderboard, only their own score and rank/);
+      assert.match(lines[2], /shown the correct answer after each question/);
+
+      const none = await openControlPage({ options: { recordResults: 'named', leaderboard: 'none', showCorrectAnswers: false } });
+      const noneLines = await optionLines(none.page);
+      assert.strictEqual(noneLines.length, 2);
+      assert.match(noneLines[0], /can agree to have their name and final score/);
+      assert.match(noneLines[1], /only their own score\.$/);
+    });
+  });
+
+  describe('the participants of a graded quiz', () => {
+    const GRADED = { options: { recordResults: 'all', leaderboard: 'complete', showCorrectAnswers: false } };
+    const PARTICIPANTS = [
+      { id: 'p2', name: 'Bob Brown', score: 0, connected: false },
+      { id: 'p1', name: 'Alice Adams', score: 100, connected: true },
+      { id: 'p3', name: 'Carol Clark', score: 100, connected: false, left: true },
+      { id: 'p4', name: 'Dave Dunn', score: 0, connected: false, left: true, removed: true },
+      { id: 'p5', name: PAYLOAD, score: 0, connected: true }
+    ];
+    const rows = (page) => page.evaluate(() =>
+      [...document.querySelectorAll('.participants-list__item')].map((item) => ({
+        name: item.querySelector('.participants-list__name').textContent,
+        state: item.querySelector('.participants-list__state').textContent,
+        score: item.querySelector('.participants-list__score').textContent,
+        remove: !!item.querySelector('.participants-list__remove')
+      })));
+
+    it('lists everybody with a record, by name, and never parses a name as markup', async () => {
+      const { page, dialogs } = await openControlPage(GRADED);
+      await page.evaluate((participants) => window.__push({ type: 'participants_list', participants }), PARTICIPANTS);
+      assert.deepStrictEqual(await rows(page), [
+        { name: PAYLOAD, state: 'connected', score: '0', remove: true },
+        { name: 'Alice Adams', state: 'connected', score: '100', remove: true },
+        { name: 'Bob Brown', state: 'reconnecting', score: '0', remove: true },
+        { name: 'Carol Clark', state: 'left', score: '100', remove: true },
+        // Already removed: nothing left to do.
+        { name: 'Dave Dunn', state: 'removed', score: '0', remove: false }
+      ]);
+      assert.deepStrictEqual(await page.evaluate(() => window.__hits), []);
+      assert.deepStrictEqual(dialogs, []);
+      // Somebody who left for good is not "reconnecting".
+      assert.strictEqual(
+        await page.evaluate(() => document.getElementById('participants-reconnecting').textContent),
+        ' \u00b7 1 reconnecting');
+    });
+
+    it('removes a participant only after asking, and says what happens to their answers', async () => {
+      const { page } = await openControlPage(GRADED);
+      await page.evaluate((participants) => window.__push({ type: 'participants_list', participants }), PARTICIPANTS);
+      const clickRemove = (name) => page.evaluate((name) => {
+        [...document.querySelectorAll('.participants-list__item')]
+          .find((item) => item.querySelector('.participants-list__name').textContent === name)
+          .querySelector('.participants-list__remove').click();
+      }, name);
+      const kicks = () => page.evaluate(() => window.__sent.filter((m) => m.type === 'kick_participant'));
+
+      await clickRemove('Carol Clark');
+      const dialog = await page.evaluate(() => ({
+        title: document.querySelector('.confirm-dialog__title').textContent,
+        text: document.querySelector('.confirm-dialog__text').textContent
+      }));
+      assert.strictEqual(dialog.title, 'Remove Carol Clark?');
+      assert.match(dialog.text, /name becomes free/);
+      assert.match(dialog.text, /stay in the results file, marked as removed/);
+      await page.click('#confirm-dialog-cancel');
+      assert.deepStrictEqual(await kicks(), []);
+
+      await clickRemove('Carol Clark');
+      await page.click('#confirm-dialog-confirm');
+      assert.deepStrictEqual(await kicks(), [{ type: 'kick_participant', participantId: 'p3' }]);
+      // And the list is asked for again, to show what the server made of it.
+      await page.waitForFunction(() => window.__sent.filter((m) => m.type === 'get_participants').length >= 2);
+    });
+
+    it('offers no removal once the quiz has ended', async () => {
+      const { page } = await openControlPage({ ...GRADED, state: 'ended' });
+      await page.evaluate((participants) => window.__push({ type: 'participants_list', participants }), PARTICIPANTS);
+      assert.ok((await rows(page)).every((row) => !row.remove));
+    });
   });
 });

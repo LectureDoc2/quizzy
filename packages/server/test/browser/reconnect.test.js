@@ -331,7 +331,7 @@ describe('Participant reattach (browser, full stack)', () => {
   });
 
   it('shows the consent choice again after a reload, without keeping it on the device', async () => {
-    const quiz = { ...QUIZ, recordNamedResults: true };
+    const quiz = { ...QUIZ, recordResults: 'named' };
     presenter = await socket();
     presenter.sendJson({ type: 'create_room', presenterToken: tokenFor(`named-${roomCounter++}`, quiz), quiz });
     roomId = (await presenter.take('room_created')).roomId;

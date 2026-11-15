@@ -84,7 +84,7 @@ function inspect(text) {
   return {
     quiz,
     errors: [],
-    warnings: checkSecret(quiz),
+    warnings: [...locateQuizMessages(text, structure.warnings), ...checkSecret(quiz)],
     summary: `${count} question${count === 1 ? '' : 's'}` + (quiz.title ? ` — ${quiz.title}` : ''),
   };
 }

@@ -184,6 +184,23 @@ export function expandAcceptedAnswer(source, match = MATCH_MODES[0]) {
 }
 
 /**
+ * An accepted answer as a participant may be shown it: every optional part
+ * written out, without the brackets and the escapes of the authoring syntax --
+ * "Overloading [of Methods]" is "Overloading of Methods", `int\[\]` is
+ * "int[]". Plain text; null for an entry the validator would have refused.
+ *
+ * @param {string} source
+ * @returns {string|null}
+ */
+export function writtenOutAnswer(source) {
+  if (typeof source !== 'string') return null;
+  const parsed = parseAcceptedAnswer(source);
+  if (parsed.error) return null;
+  const text = collapseWhitespace(parsed.parts.map((part) => part.text).join('').normalize('NFC'));
+  return text === '' ? null : text;
+}
+
+/**
  * The form two answers are compared in.
  *
  * Applied to the accepted answers and to what the participant typed alike,

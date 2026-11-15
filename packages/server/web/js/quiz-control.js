@@ -21,6 +21,57 @@ function replaceChildren(parent, ...nodes) {
   parent.replaceChildren(...nodes);
 }
 
+/**
+ * Ask before doing something that cannot be undone, in a modal dialog.
+ *
+ * A native <dialog>: it traps the focus, dims the page, and closes on Escape
+ * without any of that being written here. The focus starts on the button that
+ * changes nothing, so that a stray Enter does not end a quiz. No <form
+ * method="dialog">: the page's CSP says `form-action 'none'`.
+ *
+ * @param {{title: string, text: string, confirmLabel: string, cancelLabel: string}} options
+ * @returns {Promise<boolean>} whether the presenter confirmed.
+ */
+function confirmDialog({ title, text, confirmLabel, cancelLabel }) {
+  return new Promise((resolve) => {
+    const dialog = el("dialog", "confirm-dialog");
+    dialog.setAttribute("aria-labelledby", "confirm-dialog-title");
+    const heading = el("h3", "confirm-dialog__title", title);
+    heading.id = "confirm-dialog-title";
+    const actions = el("div", "confirm-dialog__actions");
+    const cancel = el("button", "btn btn--secondary", cancelLabel);
+    cancel.type = "button";
+    cancel.id = "confirm-dialog-cancel";
+    const confirm = el("button", "btn btn--danger", confirmLabel);
+    confirm.type = "button";
+    confirm.id = "confirm-dialog-confirm";
+    actions.append(cancel, confirm);
+    dialog.append(heading, el("p", "confirm-dialog__text", text), actions);
+
+    // Settled by the click itself rather than by the `close` event, which the
+    // browser only delivers later: the page is back as it was by the time the
+    // click handler returns. What is left for `close` is Escape, a "no".
+    let settled = false;
+    const settle = (confirmed) => {
+      if (settled) return;
+      settled = true;
+      if (dialog.open) dialog.close();
+      dialog.remove();
+      resolve(confirmed);
+    };
+    cancel.addEventListener("click", () => settle(false));
+    confirm.addEventListener("click", () => settle(true));
+    dialog.addEventListener("close", () => settle(false));
+
+    document.body.append(dialog);
+    dialog.showModal();
+    cancel.focus();
+  });
+}
+
+/** How long joins and leaves are collected before the list is asked for again. */
+const PARTICIPANTS_REFRESH_MS = 300;
+
 class QuizControl {
   constructor() {
     this.ws = null;
@@ -33,6 +84,39 @@ class QuizControl {
     // Ids of participants whose connection dropped and who may still come
     // back. They keep their place on the leaderboard, marked as reconnecting.
     this.reconnectingIds = new Set();
+    // Everybody the server lists, as `participants_list` last said. Shown
+    // only in a quiz that records all answers; see renderParticipants().
+    this.participants = [];
+    this.participantsRefresh = null;
+    // Ids of those who are out of the quiz for good -- removed by the
+    // presenter, or gone longer than they can reconnect -- but still listed in
+    // a graded quiz. The last leaderboard the server sent may still name them.
+    this.goneIds = new Set();
+  }
+
+  /** The quiz's options, as the server applies them. */
+  get options() {
+    return (this.roomState && this.roomState.options) || {};
+  }
+
+  /** A quiz that records name and every answer of every participant. */
+  get graded() {
+    return this.options.recordResults === "all";
+  }
+
+  /**
+   * Ask for the list of participants again, soon. Only a graded quiz shows
+   * the list; a hall joining at once asks once, not once per join.
+   */
+  refreshParticipants() {
+    if (!this.graded || this.participantsRefresh) return;
+    this.participantsRefresh = setTimeout(() => {
+      this.participantsRefresh = null;
+      // 1 is OPEN; a list asked for on a closed socket would throw in a timer.
+      if (this.ws && this.ws.readyState === 1) {
+        this.ws.send(JSON.stringify({ type: "get_participants" }));
+      }
+    }, PARTICIPANTS_REFRESH_MS);
   }
 
   async init() {
@@ -143,6 +227,7 @@ class QuizControl {
         this.roomState.leaderboard = msg.leaderboard;
         this.updateControlUI();
         this.renderResults(msg);
+        this.refreshParticipants(); // the scores have changed
         break;
 
       case "answer_count":
@@ -163,15 +248,21 @@ class QuizControl {
         if (typeof msg.reconnecting === "number") this.roomState.reconnectingCount = msg.reconnecting;
         this.updateParticipantCount();
         this.renderLeaderboard();
+        this.refreshParticipants();
         break;
 
       case "participants_list":
+        this.participants = Array.isArray(msg.participants) ? msg.participants : [];
+        // `left` is somebody who is gone for good and only still listed for
+        // the record they left (a graded quiz); they are not coming back.
         this.reconnectingIds = new Set(
-          (msg.participants || []).filter((p) => p.connected === false).map((p) => p.id),
+          this.participants.filter((p) => p.connected === false && !p.left).map((p) => p.id),
         );
+        this.goneIds = new Set(this.participants.filter((p) => p.left).map((p) => p.id));
         this.roomState.reconnectingCount = this.reconnectingIds.size;
         this.updateParticipantCount();
         this.renderLeaderboard();
+        this.renderParticipants();
         break;
 
       case "game_ended":
@@ -181,6 +272,7 @@ class QuizControl {
         this.updateControlUI();
         this.renderLeaderboard(msg.leaderboard);
         this.renderExportPanel();
+        this.renderParticipants(); // nobody can be removed any more
         break;
 
       case "results_export":
@@ -208,6 +300,7 @@ class QuizControl {
             <span class="participant-count">Participants: <span id="participants"></span><span id="participants-reconnecting" class="participant-count__reconnecting"></span></span>
           </div>
         </div>
+        <ul class="quiz-options" id="quiz-options" hidden></ul>
 
         <div class="control__panel">
           <div class="panel status-panel">
@@ -264,6 +357,16 @@ class QuizControl {
           <h3>Leaderboard</h3>
           <div id="leaderboard-content"></div>
         </div>
+
+        <div class="panel participants-panel" id="participants-panel" style="display:none">
+          <h3>Participants</h3>
+          <p class="participants-hint">
+            This quiz records every participant's name and answers, and a name can be used only once.
+            Removing a participant frees their name, for somebody who cannot get back in under it;
+            what they answered so far stays in the results, marked as removed.
+          </p>
+          <div id="participants-content"></div>
+        </div>
       </div>
     `;
 
@@ -272,7 +375,9 @@ class QuizControl {
     this.updateParticipantCount();
 
     this.updateControlUI();
+    this.renderOptions();
     this.renderLeaderboard();
+    this.renderParticipants();
     this.renderCurrentQuestion();
 
     // Event listeners
@@ -299,10 +404,122 @@ class QuizControl {
 
     const btnEndGame = document.getElementById("btn-end-game");
     if (btnEndGame) {
-      btnEndGame.addEventListener("click", () => {
-        this.ws.send(JSON.stringify({ type: "end_game" }));
-      });
+      btnEndGame.addEventListener("click", () => this.endGame());
     }
+  }
+
+  /**
+   * End the quiz -- after asking, if there are questions left.
+   *
+   * The button sits next to "Next Question", on every results screen, and
+   * ending cannot be undone: the room stops taking joins and answers. After
+   * the last question there is nothing to lose, and nothing is asked.
+   */
+  async endGame() {
+    const { currentQuestionIndex, totalQuestions } = this.roomState;
+    const next = currentQuestionIndex + 2; // 1-based number of the next question
+    if (next <= totalQuestions) {
+      const unplayed = next === totalQuestions
+        ? `Question ${next} has not been played yet.`
+        : `Questions ${next} to ${totalQuestions} have not been played yet.`;
+      const confirmed = await confirmDialog({
+        title: "End the quiz now?",
+        text: `${unplayed} Ending the quiz cannot be undone.`,
+        confirmLabel: "End quiz",
+        cancelLabel: "Continue quiz",
+      });
+      if (!confirmed) return;
+    }
+    this.ws.send(JSON.stringify({ type: "end_game" }));
+  }
+
+  /**
+   * Say which of the quiz's options are in effect, where the presenter sees it
+   * before starting: these decide what participants are shown and what is
+   * recorded about them, and a typo in the quiz file should not be discovered
+   * on the students' phones. Nothing is shown for a quiz that sets none.
+   */
+  renderOptions() {
+    const list = document.getElementById("quiz-options");
+    if (!list) return;
+    const { recordResults, leaderboard, showCorrectAnswers } = this.options;
+    const lines = [];
+    if (recordResults === "all") {
+      lines.push("Graded: every participant's name and answers are recorded for the results file. Names are unique.");
+    } else if (recordResults === "named") {
+      lines.push("Participants can agree to have their name and final score in the results file.");
+    }
+    if (leaderboard === "none") {
+      lines.push("Participants do not see the leaderboard, only their own score.");
+    } else if (leaderboard === "rank-only") {
+      lines.push("Participants do not see the leaderboard, only their own score and rank.");
+    }
+    if (showCorrectAnswers) {
+      lines.push("Participants are shown the correct answer after each question.");
+    }
+    replaceChildren(list, ...lines.map((line) => el("li", "quiz-options__item", line)));
+    list.hidden = lines.length === 0;
+  }
+
+  /**
+   * The participants of a graded quiz, with a way to remove one.
+   *
+   * Only there, because only there a name stays taken: somebody whose phone
+   * died cannot join again under their name until their old entry is removed.
+   * That is also why this lists people who are long gone (`left`) -- the
+   * leaderboard above drops them once they can no longer reconnect.
+   */
+  renderParticipants() {
+    const panel = document.getElementById("participants-panel");
+    const content = document.getElementById("participants-content");
+    if (!panel || !content) return;
+    if (!this.graded) {
+      panel.style.display = "none";
+      return;
+    }
+    panel.style.display = "block";
+
+    if (this.participants.length === 0) {
+      replaceChildren(content, el("p", "empty", "No participants yet"));
+      return;
+    }
+
+    const ended = this.roomState.state === "ended";
+    const sorted = [...this.participants].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    const list = el("ul", "participants-list");
+    for (const participant of sorted) {
+      const state = participant.removed ? "removed"
+        : participant.left ? "left"
+        : participant.connected === false ? "reconnecting"
+        : "connected";
+      const item = el("li", `participants-list__item participants-list__item--${state}`);
+      item.append(el("span", "participants-list__name", participant.name));
+      item.append(el("span", "participants-list__state", state));
+      item.append(el("span", "participants-list__score", Number(participant.score) || 0));
+      if (!participant.removed && !ended) {
+        const remove = el("button", "btn btn--secondary participants-list__remove", "Remove");
+        remove.type = "button";
+        remove.addEventListener("click", () => this.removeParticipant(participant));
+        item.append(remove);
+      }
+      list.append(item);
+    }
+    replaceChildren(content, list);
+  }
+
+  async removeParticipant(participant) {
+    const confirmed = await confirmDialog({
+      title: `Remove ${participant.name}?`,
+      text: "They are disconnected, and the name becomes free for somebody to join under again. " +
+        "The answers recorded so far stay in the results file, marked as removed.",
+      confirmLabel: "Remove",
+      cancelLabel: "Keep",
+    });
+    if (!confirmed) return;
+    this.ws.send(JSON.stringify({ type: "kick_participant", participantId: participant.id }));
+    // The server answers with participant_left only if somebody was still
+    // there to leave; ask for the list either way.
+    this.refreshParticipants();
   }
 
   updateControlUI() {
@@ -558,7 +775,9 @@ class QuizControl {
     const content = document.getElementById("leaderboard-content");
     if (!content) return;
 
-    const list = leaderboard || this.roomState.leaderboard || [];
+    // Without those who have just been removed: the server leaves them off the
+    // next leaderboard, and until then this one would still show them.
+    const list = (leaderboard || this.roomState.leaderboard || []).filter((entry) => !this.goneIds.has(entry.id));
     if (list.length === 0) {
       replaceChildren(content, el("p", "empty", "No participants yet"));
       return;
@@ -595,14 +814,26 @@ class QuizControl {
     const named = this.statistics.recordsNamedResults && Array.isArray(this.statistics.namedResults)
       ? this.statistics.namedResults.length
       : null;
+    const individual = Array.isArray(this.statistics.individualResults)
+      ? this.statistics.individualResults
+      : null;
+    const dropped = Number(this.statistics.droppedIndividualResults) || 0;
     hint.textContent =
       `${answered} of ${this.statistics.totalQuestions} question(s) played. ` +
       "The summary shows how each question was answered, so you can see which " +
       "topics need revisiting. " +
-      (named === null
-        ? "It contains no participant names."
-        : `It also lists the names and final scores of the ${named} participant(s) ` +
-          "who agreed to this; everyone else is left out, and no individual answers are included.");
+      (individual !== null
+        ? `It also lists every participant by name (${individual.length} row(s)), with every answer they gave ` +
+          "and the points it scored, for grading. Download it now: the server stores nothing " +
+          "permanently and discards these results shortly after this window is closed." +
+          (dropped > 0
+            ? ` Warning: the records of ${dropped} participant(s) who had left were dropped, ` +
+              "because the room held more records than it keeps."
+            : "")
+        : named === null
+          ? "It contains no participant names."
+          : `It also lists the names and final scores of the ${named} participant(s) ` +
+            "who agreed to this; everyone else is left out, and no individual answers are included.");
 
     panel.style.display = "block";
 
@@ -661,6 +892,39 @@ class QuizControl {
 
   static csvRow(fields) {
     return fields.map(QuizControl.csvField).join(",");
+  }
+
+  /**
+   * Text a participant typed, as a cell of its own. A spreadsheet reads a
+   * cell that starts with = + - or @ as a formula, so such a cell gets the
+   * apostrophe that tells it not to; the answer is what follows it.
+   */
+  static csvText(value) {
+    const text = String(value);
+    return /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+  }
+
+  /**
+   * One participant's answer to one question, for a cell of the individual
+   * results. Options and items by the numbers the summary above gives them:
+   * "1 | 3" is the first and third option, "2 > 1 > 3" the order the items
+   * were put in (the correct one is 1 > 2 > 3). Empty when not answered.
+   *
+   * @param {string} type The question's type.
+   * @param {unknown} answer As the server recorded it; see
+   *   Room.getIndividualResults().
+   */
+  static recordedAnswer(type, answer) {
+    if (answer === undefined || answer === null) return "";
+    if (type === "multiple-choice") {
+      if (!Array.isArray(answer)) return "";
+      return answer.length === 0 ? "(nothing selected)" : answer.map((i) => i + 1).join(" | ");
+    }
+    if (type === "ordering") {
+      return Array.isArray(answer) ? answer.map((i) => i + 1).join(" > ") : "";
+    }
+    if (type === "estimation") return typeof answer === "number" ? answer : "";
+    return QuizControl.csvText(answer);
   }
 
   /**
@@ -805,6 +1069,45 @@ class QuizControl {
         rows.push(QuizControl.csvRow(["Name", "Final score"]));
         for (const entry of stats.namedResults) {
           rows.push(QuizControl.csvRow([entry.name, Number(entry.score) || 0]));
+        }
+      }
+    }
+
+    // Only in a quiz that records all answers (recordResults: "all"), and only
+    // once it has ended: everybody by name, with each answer and its points.
+    // One row per participant, two columns per played question.
+    if (Array.isArray(stats.individualResults)) {
+      rows.push("");
+      rows.push(QuizControl.csvRow(["Individual results (every participant, recorded for grading)"]));
+      const dropped = Number(stats.droppedIndividualResults) || 0;
+      if (dropped > 0) {
+        rows.push(QuizControl.csvRow([
+          `Warning: the records of ${dropped} participant(s) who had left were dropped.`,
+        ]));
+      }
+      if (stats.individualResults.length === 0) {
+        rows.push(QuizControl.csvRow(["Nobody took part."]));
+      } else {
+        const header = ["Name", "Status", "Final score"];
+        for (const q of stats.questions) {
+          header.push(`Q${q.questionIndex + 1} answer`, `Q${q.questionIndex + 1} points`);
+        }
+        rows.push(QuizControl.csvRow(header));
+        for (const entry of stats.individualResults) {
+          const answers = new Map((entry.answers || []).map((a) => [a.questionIndex, a]));
+          const row = [
+            entry.name,
+            entry.removed ? "removed by lecturer" : "",
+            Number(entry.score) || 0,
+          ];
+          for (const q of stats.questions) {
+            const given = answers.get(q.questionIndex);
+            row.push(
+              given ? QuizControl.recordedAnswer(q.type, given.answer) : "",
+              given ? Number(given.points) || 0 : 0,
+            );
+          }
+          rows.push(QuizControl.csvRow(row));
         }
       }
     }

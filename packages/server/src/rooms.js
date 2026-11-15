@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomInt } from 'crypto';
-import { answerLengths, groupAnswers, matchesAcceptedAnswer, matchOf, measuredLength, normalizeAnswer } from './short-answer.js';
+import { answerLengths, groupAnswers, matchesAcceptedAnswer, matchOf, measuredLength, normalizeAnswer, writtenOutAnswer } from './short-answer.js';
 import { invertOrder, isIdentity, isPermutation, shuffledOrder } from './ordering.js';
 
 /**
@@ -117,6 +117,24 @@ function practiceEstimationBand(answer, correctAnswer) {
  */
 const SHORT_ANSWER_GROUPS_IN_EXPORT = 20;
 
+/**
+ * A quiz that records all answers keeps a record per participant for the
+ * export, and keeps it after the participant has gone (see
+ * Room.resultRecords). Capped like the detached participants, so that joining,
+ * answering and leaving in a loop cannot grow the room without bound; sized far
+ * above what a hall produces, because what the cap evicts is somebody's grade.
+ */
+const RESULT_RECORDS_CAP_FACTOR = 10;
+const RESULT_RECORDS_CAP_MIN = 300;
+
+/**
+ * The form two names are compared in where names must be unique: case and
+ * spacing do not make "Max  Müller" somebody other than "max müller".
+ */
+function nameKey(name) {
+  return String(name).normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
 class Room {
   constructor(roomId, presenterToken, quiz) {
     this.roomId = roomId;
@@ -167,15 +185,75 @@ class Room {
     // export, frozen when the game ends; null until then. See
     // snapshotNamedResults().
     this.namedResults = null;
+    // Only in a quiz that records all answers: what the export will say about
+    // each participant. Kept here rather than read off the participants at the
+    // end, because a participant whose connection dropped is purged after
+    // DETACHED_TTL_MS -- and must not vanish from a grade sheet for it.
+    // participantId -> { name, nameKey, score, answers: [], removed? }
+    this.resultRecords = new Map();
+    // Records the cap evicted; reported in the export, never silently.
+    this.droppedResultRecords = 0;
+  }
+
+  /**
+   * What this room records about its participants for the lecturer's export:
+   * 'none', 'named' (name and final score of those who consent) or 'all' (name
+   * and every answer of everybody, for grading). Only a live quiz whose author
+   * opted in records anything; a practice game has no lecturer and no export.
+   */
+  recordMode() {
+    if (this.practice) return 'none';
+    const mode = this.quiz.recordResults;
+    return mode === 'named' || mode === 'all' ? mode : 'none';
   }
 
   /**
    * Whether this room asks its participants for consent to be named in the
-   * export. Only a live quiz whose author opted in; a practice game has no
-   * lecturer and no export.
+   * export.
    */
   recordsNamedResults() {
-    return !this.practice && this.quiz.recordNamedResults === true;
+    return this.recordMode() === 'named';
+  }
+
+  /**
+   * Whether this room records every answer of every participant. Nobody is
+   * asked: the join page says so before anybody joins.
+   */
+  recordsAllResults() {
+    return this.recordMode() === 'all';
+  }
+
+  /**
+   * What a participant is told about how everybody stands: 'complete' (the
+   * leaderboard), 'rank-only' (their own score and place) or 'none' (their own
+   * score). The presenter always sees the leaderboard. A practice game's board
+   * has only its one student on it.
+   */
+  leaderboardMode() {
+    if (this.practice) return 'complete';
+    const mode = this.quiz.leaderboard;
+    return mode === 'rank-only' || mode === 'none' ? mode : 'complete';
+  }
+
+  /** Whether a participant's feedback names the correct answer. */
+  showsCorrectAnswers() {
+    return this.quiz.showCorrectAnswers === true;
+  }
+
+  /**
+   * Whether somebody in this room already goes by `name`. Only a room that
+   * records all answers cares: there a name is what a grade is filed under,
+   * and it stays taken for the whole quiz -- also while its participant is
+   * away -- until the presenter removes the entry (see
+   * markResultRecordRemoved()).
+   */
+  isNameTaken(name) {
+    if (!this.recordsAllResults()) return false;
+    const key = nameKey(name);
+    for (const record of this.resultRecords.values()) {
+      if (!record.removed && record.nameKey === key) return true;
+    }
+    return false;
   }
 
   /** Number of live sockets attached to this room, presenter included. */
@@ -212,8 +290,11 @@ class Room {
    * @param {boolean} consent Whether the participant agreed to have their name
    *   and final score in the export. Only a literal `true` counts, and only in
    *   a room that asks; see recordsNamedResults().
+   * @returns {object|null} The participant; null only in a room that records
+   *   all answers, when the name is taken (see isNameTaken()).
    */
   addParticipant(ws, name, consent = false) {
+    if (this.isNameTaken(name)) return null;
     const id = `p_${Date.now()}_${randomBytes(9).toString('base64url')}`;
     const participant = {
       id,
@@ -227,6 +308,10 @@ class Room {
     this.resumeTokens.set(resumeToken, id);
     this.resumeTokenById.set(id, resumeToken);
     this.peakParticipants = Math.max(this.peakParticipants, this.participants.size);
+    if (this.recordsAllResults()) {
+      this.resultRecords.set(id, { name, nameKey: nameKey(name), score: 0, answers: [] });
+      this.enforceResultRecordCap();
+    }
     this.updateEmptySince();
     return participant;
   }
@@ -348,8 +433,51 @@ class Room {
       }
     }
     this.forgetResumeToken(id);
+    // Somebody who never answered leaves nothing to grade: their record goes
+    // with them, and their name is free again.
+    const record = this.resultRecords.get(id);
+    if (record && record.answers.length === 0) this.resultRecords.delete(id);
     this.updateEmptySince();
     return found;
+  }
+
+  /**
+   * The presenter removes a participant from a quiz that records all answers.
+   *
+   * Unlike everywhere else, a kick here does not forget: what the participant
+   * answered so far stays in the export, marked as removed, because it may be
+   * exactly what a later dispute is about. What the removal does is free the
+   * name -- the way back in for somebody whose phone died and who cannot
+   * present their resume token any more.
+   *
+   * @returns {boolean} whether there was a record to mark.
+   */
+  markResultRecordRemoved(id) {
+    const record = this.resultRecords.get(id);
+    if (!record || record.removed) return false;
+    record.removed = true;
+    return true;
+  }
+
+  resultRecordCap() {
+    return Math.max(RESULT_RECORDS_CAP_MIN, RESULT_RECORDS_CAP_FACTOR * this.peakParticipants);
+  }
+
+  /**
+   * Evict the oldest records of people who have left for good. Never one of
+   * somebody who is in the room or may still come back, so an honest hall
+   * cannot lose anything to this; and never silently -- see
+   * getStatistics().
+   */
+  enforceResultRecordCap() {
+    const cap = this.resultRecordCap();
+    if (this.resultRecords.size <= cap) return;
+    for (const id of this.resultRecords.keys()) {
+      if (this.resultRecords.size <= cap) break;
+      if (this.getParticipantById(id)) continue;
+      this.resultRecords.delete(id);
+      this.droppedResultRecords++;
+    }
   }
 
   forgetResumeToken(id) {
@@ -404,14 +532,33 @@ class Room {
   /**
    * Everybody the presenter should know about, with whether they are
    * connected right now. Never includes the resume token.
+   *
+   * A room that records all answers also lists those who are gone for good
+   * but left a record (`left: true`) -- their name is still taken, and this
+   * list is where the presenter frees it -- and those the presenter removed
+   * (`removed: true`).
    */
   getParticipantList() {
     const list = [];
+    const listed = new Set();
     for (const [, p] of this.participants) {
       list.push({ id: p.id, name: p.name, score: p.score, connected: true });
+      listed.add(p.id);
     }
     for (const [, { participant: p }] of this.detached) {
       list.push({ id: p.id, name: p.name, score: p.score, connected: false });
+      listed.add(p.id);
+    }
+    for (const [id, record] of this.resultRecords) {
+      if (listed.has(id)) continue;
+      list.push({
+        id,
+        name: record.name,
+        score: record.score,
+        connected: false,
+        left: true,
+        ...(record.removed ? { removed: true } : {})
+      });
     }
     return list;
   }
@@ -686,6 +833,17 @@ class Room {
           timestamp: this.currentAnswers.get(participantId)?.timestamp
         });
       }
+      // Apart from the participant, who may be purged before the export is
+      // taken; see resultRecords.
+      const record = this.resultRecords.get(participantId);
+      if (record) {
+        record.score += points;
+        record.answers.push({
+          questionIndex: this.currentQuestionIndex,
+          answer: this.currentAnswers.get(participantId)?.answer,
+          points
+        });
+      }
     }
 
     this.recordQuestionStatistics(question, results);
@@ -747,6 +905,18 @@ class Room {
     for (const [participantId, points] of results.scores) {
       const delta = points - (before.get(participantId) || 0);
       if (delta === 0) continue;
+      // The record for the export is corrected whether or not its participant
+      // is still around.
+      const record = this.resultRecords.get(participantId);
+      if (record) {
+        record.score += delta;
+        const recorded = record.answers.find(a => a.questionIndex === this.currentQuestionIndex);
+        if (recorded) {
+          recorded.points = points;
+          if (this.currentAnswers.get(participantId)?.acceptedByPresenter) recorded.acceptedByPresenter = true;
+          else delete recorded.acceptedByPresenter;
+        }
+      }
       // Somebody kicked meanwhile, or gone longer than DETACHED_TTL_MS, has no
       // score left to correct.
       const participant = this.getParticipantById(participantId);
@@ -775,8 +945,9 @@ class Room {
    *
    * Deliberately aggregate: counts and distributions, never names. Nothing here
    * identifies a participant, which keeps the per-question part of the export
-   * free of personal data. The one exception, names with final scores, is
-   * gated on consent and kept apart; see snapshotNamedResults().
+   * free of personal data. What does name somebody is kept apart: names with
+   * final scores, gated on consent (see snapshotNamedResults()), and in a quiz
+   * that records all answers, everybody's (see getIndividualResults()).
    */
   recordQuestionStatistics(question, results) {
     if (this.questionStats.some(s => s.questionIndex === this.currentQuestionIndex)) {
@@ -884,9 +1055,37 @@ class Room {
   }
 
   /**
-   * Aggregate statistics for every question that has been played, plus -- in a
-   * room that asks for consent, once the game has ended -- the names and final
-   * scores of those who gave it. Used by the presenter's post-game export.
+   * In a quiz that records all answers, once the game has ended: every
+   * participant who answered anything or is still around, with their name,
+   * final score and each answer they gave. null before the end and in any
+   * other quiz.
+   *
+   * Answers are as scoring saw them: option indices for a multiple-choice
+   * question, the number, the text, and for an ordering question the authored
+   * item indices in the participant's order (0, 1, 2, ... is the correct one).
+   * A question somebody did not answer is simply not among their answers.
+   *
+   * No snapshot is needed, unlike snapshotNamedResults(): the records do not
+   * depend on who is still in the room, and nothing changes them once the game
+   * has ended.
+   */
+  getIndividualResults() {
+    if (!this.recordsAllResults() || this.state !== 'ended') return null;
+    return Array.from(this.resultRecords.values())
+      .map((record) => ({
+        name: record.name,
+        score: record.score,
+        ...(record.removed ? { removed: true } : {}),
+        answers: record.answers.map((a) => ({ ...a }))
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /**
+   * Aggregate statistics for every question that has been played, plus -- once
+   * the game has ended -- what the quiz records by name: in a room that asks
+   * for consent, the names and final scores of those who gave it; in one that
+   * records all answers, everybody's. Used by the presenter's post-game export.
    */
   getStatistics() {
     return {
@@ -894,8 +1093,12 @@ class Room {
       roomId: this.roomId,
       totalQuestions: this.quiz.questions.length,
       questions: this.questionStats.map(s => ({ ...s })),
+      recordResults: this.recordMode(),
       recordsNamedResults: this.recordsNamedResults(),
-      namedResults: this.namedResults ? this.namedResults.map(r => ({ ...r })) : null
+      namedResults: this.namedResults ? this.namedResults.map(r => ({ ...r })) : null,
+      individualResults: this.getIndividualResults(),
+      // Records the cap evicted; see enforceResultRecordCap().
+      droppedIndividualResults: this.droppedResultRecords
     };
   }
 
@@ -1029,10 +1232,12 @@ class Room {
    * Deliberately the minimum: the question itself (so it can be shown again),
    * the participant's own answer, and a verdict -- right or wrong, or for an
    * estimate how it ranked among everybody's (in a practice game, which band
-   * of relative error it fell into and what that scored). It never carries the correct
-   * answer (revealing it is the presenter's call, on the projector), the
+   * of relative error it fell into and what that scored). Unless the quiz's
+   * author opted in (see getExpectedAnswer()), it never carries the correct
+   * answer (revealing it is the presenter's call, on the projector) or the
    * distance to it (which together with one's own answer *is* the correct
-   * answer), or anything about another participant beyond a count.
+   * answer). It never carries anything about another participant beyond a
+   * count.
    *
    * @param {string} participantId
    * @param {{scores: Map, ranks: Map}} results scoreQuestion()'s result for the
@@ -1059,7 +1264,8 @@ class Room {
     if (question.type === 'ordering') {
       // The items as they were shown, and the answer as positions in that
       // list (see getShownAnswer()). The authored order is the correct one, so
-      // it is never sent.
+      // it is not sent -- unless the quiz shows correct answers, and then in
+      // the same terms; see getExpectedAnswer().
       const order = Array.isArray(this.currentOrder) ? this.currentOrder : [];
       feedback.question.options = order.map((item) => question.options[item]);
     }
@@ -1085,7 +1291,43 @@ class Room {
         : null;
     }
 
+    if (this.showsCorrectAnswers()) {
+      const expected = this.getExpectedAnswer(question);
+      if (expected) feedback.expected = expected;
+    }
+
     return feedback;
+  }
+
+  /**
+   * The correct answer to the current question, in the terms the participant
+   * knows it in. Only for a quiz whose author set `showCorrectAnswers`, and
+   * only ever sent with the feedback on a question that has closed -- nobody
+   * can still answer it.
+   *
+   * @returns {object|null} null when the question has nothing to show.
+   */
+  getExpectedAnswer(question) {
+    if (question.type === 'multiple-choice') {
+      return { correctIndices: [...(question.correctIndices || [])].sort((a, b) => a - b) };
+    }
+    if (question.type === 'estimation') {
+      const correct = Number(question.correctAnswer);
+      return Number.isFinite(correct) ? { correctAnswer: correct } : null;
+    }
+    if (question.type === 'short-answer') {
+      // Written out, not as authored: "[...]" is the author's notation.
+      const accepted = (Array.isArray(question.acceptedAnswers) ? question.acceptedAnswers : [])
+        .map(writtenOutAnswer)
+        .filter((answer) => answer !== null);
+      return accepted.length > 0 ? { acceptedAnswers: [...new Set(accepted)] } : null;
+    }
+    if (question.type === 'ordering') {
+      // Like the participant's own answer (see getShownAnswer()): positions
+      // in the list as it was shown, here in the correct order.
+      return Array.isArray(this.currentOrder) ? { order: invertOrder(this.currentOrder) } : null;
+    }
+    return null;
   }
 
   nextQuestion() {
@@ -1116,6 +1358,30 @@ class Room {
     }
     list.sort((a, b) => b.score - a.score);
     return list;
+  }
+
+  /**
+   * How one participant stands, for a room whose participants do not get the
+   * leaderboard (see leaderboardMode()): their own score, and in 'rank-only'
+   * their place and how many take part. Nothing in it names anybody else.
+   *
+   * Equal scores share a place, and the places after them are skipped -- a
+   * place depends only on how many scored strictly more, never on the order
+   * people joined in.
+   *
+   * @param {string} participantId
+   * @param {Array} [leaderboard] getLeaderboard()'s result, passed in so a
+   *   room full of participants is ranked from one list.
+   * @returns {{score: number, rank?: number|null, of?: number}}
+   */
+  getStanding(participantId, leaderboard = this.getLeaderboard()) {
+    const own = leaderboard.find((entry) => entry.id === participantId);
+    const standing = { score: own ? own.score : 0 };
+    if (this.leaderboardMode() === 'rank-only') {
+      standing.rank = own ? 1 + leaderboard.filter((entry) => entry.score > own.score).length : null;
+      standing.of = leaderboard.length;
+    }
+    return standing;
   }
 
   /**

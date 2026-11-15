@@ -72,7 +72,7 @@ describe('Join page (browser, full stack)', () => {
 
   /** Replace the room from beforeEach with one whose quiz asks for consent. */
   async function openNamedRoom() {
-    const quiz = { ...QUIZ, recordNamedResults: true };
+    const quiz = { ...QUIZ, recordResults: 'named' };
     presenter = connectSocket(`${originFor('ws', loopbackHost(), backendPort)}/ws`);
     sockets.push(presenter);
     await presenter.opened;

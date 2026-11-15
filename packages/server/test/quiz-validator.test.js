@@ -14,7 +14,7 @@ describe('validateQuiz: short-answer questions', () => {
       match: 'strict',
       timeLimit: 40
     }));
-    assert.deepStrictEqual(result, { valid: true, errors: [] });
+    assert.deepStrictEqual(result, { valid: true, errors: [], warnings: [] });
   });
 
   it('requires a non-empty array of strings', () => {
@@ -102,7 +102,7 @@ describe('validateQuiz: ordering questions', () => {
   it('accepts 2 to 10 distinct items, markup and code included', () => {
     assert.deepStrictEqual(
       validateQuiz(orderingWith({ options: ['<code>7</code>', '<code>0xB</code>', '<code>0x12</code>'], timeLimit: 30 })),
-      { valid: true, errors: [] }
+      { valid: true, errors: [], warnings: [] }
     );
     assert.strictEqual(validateQuiz(orderingWith({ options: ['a', 'b'] })).valid, true);
     const ten = Array.from({ length: QUIZ_LIMITS.maxOrderingItems }, (_, i) => `item ${i}`);
@@ -140,6 +140,92 @@ describe('validateQuiz: ordering questions', () => {
       validateQuiz(orderingWith({ options: ['a', 'b'], match: 'exact' })).errors[0],
       /match only applies to short-answer questions/
     );
+  });
+});
+
+describe('validateQuiz: quiz options', () => {
+  const quizWithOptions = (options, questions) => ({
+    title: 'Test',
+    ...options,
+    questions: questions || [{ type: 'multiple-choice', text: 'Q', options: ['A', 'B'], correctIndices: [0] }]
+  });
+  const errorsOf = (options) => validateQuiz(quizWithOptions(options)).errors;
+
+  it('accepts every value of recordResults, leaderboard and showCorrectAnswers', () => {
+    for (const recordResults of ['none', 'named', 'all']) {
+      for (const leaderboard of ['complete', 'rank-only', 'none']) {
+        for (const showCorrectAnswers of [true, false]) {
+          assert.deepStrictEqual(
+            validateQuiz(quizWithOptions({ recordResults, leaderboard, showCorrectAnswers })),
+            { valid: true, errors: [], warnings: [] }
+          );
+        }
+      }
+    }
+  });
+
+  it('refuses anything else, by name', () => {
+    assert.match(errorsOf({ recordResults: true })[0], /^recordResults must be one of "none", "named", "all"\./);
+    assert.match(errorsOf({ recordResults: 'everything' })[0], /^recordResults must be one of/);
+    assert.match(errorsOf({ leaderboard: false })[0], /^leaderboard must be one of "complete", "rank-only", "none"\./);
+    assert.match(errorsOf({ leaderboard: 'rank' })[0], /^leaderboard must be one of/);
+    // A string must not switch on something that shows answers.
+    assert.match(errorsOf({ showCorrectAnswers: 'false' })[0], /^showCorrectAnswers must be true or false\./);
+  });
+
+  it('refuses the key recordResults replaced, and says what to write', () => {
+    for (const value of [true, false]) {
+      const { valid, errors } = validateQuiz(quizWithOptions({ recordNamedResults: value }));
+      assert.strictEqual(valid, false);
+      assert.match(errors[0], /^recordNamedResults was replaced by recordResults: write "recordResults": "named"/);
+    }
+    assert.deepStrictEqual(quizMessagePath(errorsOf({ recordNamedResults: true })[0]), ['recordNamedResults']);
+  });
+
+  it('refuses an option written in another case, which would otherwise be ignored silently', () => {
+    assert.match(errorsOf({ leaderBoard: 'none' })[0], /^leaderBoard is not an option of a quiz; write it as leaderboard\./);
+    assert.match(errorsOf({ recordresults: 'all' })[0], /write it as recordResults/);
+    assert.match(errorsOf({ ShowCorrectAnswers: true })[0], /write it as showCorrectAnswers/);
+    // Any other unknown key is none of the validator's business.
+    assert.strictEqual(validateQuiz(quizWithOptions({ author: 'me', leaderboards: 'none' })).valid, true);
+  });
+
+  const mixed = [
+    { type: 'multiple-choice', text: 'Q1', options: ['A', 'B'], correctIndices: [0] },
+    { type: 'estimation', text: 'Q2', correctAnswer: 42 },
+    { type: 'estimation', text: 'Q3', correctAnswer: 7 }
+  ];
+
+  it('warns about every estimation question of a quiz that records all answers, and says why', () => {
+    const result = validateQuiz(quizWithOptions({ recordResults: 'all' }, mixed));
+    assert.strictEqual(result.valid, true, 'a warning does not make a quiz invalid');
+    assert.deepStrictEqual(result.errors, []);
+    assert.strictEqual(result.warnings.length, 2);
+    assert.match(result.warnings[0], /^question 2: is an estimation question in a quiz that records all answers/);
+    assert.match(result.warnings[0], /"recordResults": "all"/);
+    assert.match(result.warnings[0], /scored by its place among everybody's estimates/);
+    assert.match(result.warnings[0], /depend on the other participants/);
+    assert.match(result.warnings[1], /^question 3: /);
+  });
+
+  it('does not warn when not all answers are recorded, or without an estimation question', () => {
+    for (const recordResults of [undefined, 'none', 'named']) {
+      assert.deepStrictEqual(validateQuiz(quizWithOptions({ recordResults }, mixed)).warnings, []);
+    }
+    assert.deepStrictEqual(validateQuiz(quizWithOptions({ recordResults: 'all' })).warnings, []);
+  });
+
+  it('has no warnings for a quiz that is not valid', () => {
+    const result = validateQuiz(quizWithOptions({ recordResults: 'all', leaderboard: 'hidden' }, mixed));
+    assert.strictEqual(result.valid, false);
+    assert.deepStrictEqual(result.warnings, []);
+  });
+
+  it('points a warning at the line of its question', () => {
+    const quiz = quizWithOptions({ recordResults: 'all' }, mixed);
+    const text = JSON.stringify(quiz, null, 2);
+    const [located] = locateQuizMessages(text, validateQuiz(quiz).warnings);
+    assert.match(located, /^line \d+: question 2: is an estimation question/);
   });
 });
 

@@ -74,6 +74,9 @@ const GENERIC_REJECTION = 'Unable to open that session. Please check the room co
  */
 const QUIZ_FINISHED = 'This quiz has already finished.';
 
+/** Said to a second participant with the same name, where names are unique. */
+const NAME_TAKEN = 'This name is already in use in this quiz.';
+
 /** Said for a practice quiz id that is not (or no longer) in the catalog. */
 const PRACTICE_UNAVAILABLE = 'This practice quiz is not available. Please pick one from the list.';
 
@@ -612,7 +615,9 @@ function createQuizServer(options = {}) {
 
       opened.room.creatorKey = creatorKey;
       if (prepared.warnings.length > 0) {
-        console.warn(`Quiz "${prepared.quiz.title}" needed changes before it could be shown:`);
+        // Markup that was scrubbed, and options that probably do not do what
+        // the author means; see quiz-pipeline.js.
+        console.warn(`Quiz "${prepared.quiz.title}" has ${prepared.warnings.length} warning(s):`);
         for (const warning of prepared.warnings) console.warn(`  - ${warning}`);
       }
       return { room: opened.room, created: true, warnings: prepared.warnings };
@@ -760,7 +765,10 @@ function createQuizServer(options = {}) {
             currentQuestionIndex: room.currentQuestionIndex,
             participantCount: room.getParticipantCount(),
             // Whether the join form offers consent to being named in the export.
-            recordsNamedResults: room.recordsNamedResults()
+            recordsNamedResults: room.recordsNamedResults(),
+            // 'none', 'named' or 'all'. With 'all' the join form says, before
+            // anybody joins, that name and answers are recorded for grading.
+            recordResults: room.recordMode()
           }));
           break;
         }
@@ -820,6 +828,14 @@ function createQuizServer(options = {}) {
           // Consent is opt-in: only a literal `true` counts, and only in a room
           // whose quiz asks for it (Room.addParticipant() checks that too).
           const participant = room.addParticipant(ws, nameValidation.name, msg.consent === true);
+          if (!participant) {
+            // Only in a quiz that records all answers, where a name is what a
+            // grade is filed under; see Room.isNameTaken(). Like a refused
+            // name, not charged to the failure budget: the socket stays open
+            // for another try.
+            ws.send(JSON.stringify({ type: 'error', code: 'name_taken', message: NAME_TAKEN }));
+            return;
+          }
           ws.roomId = roomId;
           ws.role = 'participant';
           ws.participantId = participant.id;
@@ -835,6 +851,7 @@ function createQuizServer(options = {}) {
             // Echoed, so the page shows what was recorded rather than what it
             // meant to send.
             recordsNamedResults: room.recordsNamedResults(),
+            recordResults: room.recordMode(),
             consent: participant.consent
           }));
 
@@ -915,6 +932,7 @@ function createQuizServer(options = {}) {
             answeredQuestions: participant.answers.map((a) => a.questionIndex),
             // So that a reload shows the choice again; the page keeps no copy.
             recordsNamedResults: room.recordsNamedResults(),
+            recordResults: room.recordMode(),
             consent: participant.consent,
             ...(room.practice ? { practice: true, practiceQuizId: room.practiceQuizId } : {})
           }));
@@ -974,7 +992,15 @@ function createQuizServer(options = {}) {
             question: room.getCurrentQuestion(),
             participantCount: room.getParticipantCount(),
             reconnectingCount: room.getReconnectingCount(),
-            leaderboard: room.getLeaderboard()
+            leaderboard: room.getLeaderboard(),
+            // The quiz's options as the room applies them, so the control view
+            // can say before the quiz starts what participants will (not) see
+            // and what is being recorded.
+            options: {
+              recordResults: room.recordMode(),
+              leaderboard: room.leaderboardMode(),
+              showCorrectAnswers: room.showsCorrectAnswers()
+            }
           }));
           break;
         }
@@ -1245,7 +1271,14 @@ function createQuizServer(options = {}) {
           // Purged -- record and resume token both -- before the socket is
           // closed. Closing alone would now merely detach them, and a kick would
           // be undone by the page's own automatic reconnect.
-          if (!room.purgeParticipant(msg.participantId)) break;
+          //
+          // In a quiz that records all answers, what they answered so far
+          // stays in the export, marked as removed, and their name becomes
+          // free again -- also for somebody who left so long ago that there is
+          // nobody to purge any more. See Room.markResultRecordRemoved().
+          const present = room.purgeParticipant(msg.participantId);
+          const recorded = room.markResultRecordRemoved(msg.participantId);
+          if (!present && !recorded) break;
 
           if (target) {
             safeSend(target, { type: 'kicked' });
@@ -1374,21 +1407,40 @@ function createQuizServer(options = {}) {
       // Only reachable by a rejoin: a first join to a finished room is refused.
       safeSend(ws, {
         type: 'game_ended',
-        leaderboard: room.getLeaderboard(),
+        ...standingsFor(room, participantId, room.getLeaderboard()),
         ...(room.practice ? { summary: room.getPracticeSummary() } : {})
       });
     }
   }
 
   /**
-   * A participant's view of a closed question: the shared leaderboard plus
-   * their own answer feedback (see Room.getAnswerFeedback()).
+   * What one participant is told about how everybody stands.
+   *
+   * The leaderboard, with everybody's name and score -- unless the quiz says
+   * otherwise (see Room.leaderboardMode()). Then there is no `leaderboard`
+   * field at all, only the participant's own `standing`: nothing about anybody
+   * else leaves the server, rather than being sent and not shown.
+   *
+   * The one place that decides this, for every message that used to carry the
+   * leaderboard to a participant. The presenter's messages do not go through
+   * here: the presenter always gets the leaderboard.
+   */
+  function standingsFor(room, participantId, leaderboard) {
+    const mode = room.leaderboardMode();
+    if (mode === 'complete') return { leaderboard };
+    return { leaderboardMode: mode, standing: room.getStanding(participantId, leaderboard) };
+  }
+
+  /**
+   * A participant's view of a closed question: how everybody stands (see
+   * standingsFor()) plus their own answer feedback (see
+   * Room.getAnswerFeedback()).
    */
   function resultsMessage(room, participantId, results, leaderboard) {
     const message = {
       type: 'results',
       questionIndex: room.currentQuestionIndex,
-      leaderboard,
+      ...standingsFor(room, participantId, leaderboard),
       waiting: room.currentQuestionIndex < room.quiz.questions.length - 1,
       feedback: room.getAnswerFeedback(participantId, results)
     };
@@ -1457,11 +1509,21 @@ function createQuizServer(options = {}) {
     if (room.practice) practiceStats?.gameFinished(room.practiceEntry, room.getPracticeSummary());
     const finalLeaderboard = room.getLeaderboard();
 
-    room.broadcastToParticipants({
-      type: 'game_ended',
-      leaderboard: finalLeaderboard,
-      ...(room.practice ? { summary: room.getPracticeSummary() } : {})
-    });
+    if (room.leaderboardMode() === 'complete') {
+      room.broadcastToParticipants({
+        type: 'game_ended',
+        leaderboard: finalLeaderboard,
+        ...(room.practice ? { summary: room.getPracticeSummary() } : {})
+      });
+    } else {
+      // Each their own standing, and nobody else's; see standingsFor().
+      for (const [ws, participant] of room.participants) {
+        safeSend(ws, {
+          type: 'game_ended',
+          ...standingsFor(room, participant.id, finalLeaderboard)
+        });
+      }
+    }
 
     // The presenter additionally gets the aggregate statistics, so the export
     // is ready the moment the quiz finishes rather than requiring the room to
